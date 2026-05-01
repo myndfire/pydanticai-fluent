@@ -1,0 +1,14 @@
+[project]
+name = "agent-harness-examples"
+version = "0.1.0"
+description = "Examples for the agent-harness package"
+requires-python = ">=3.11"
+dependencies = [
+    "agent-harness",
+    "pydantic-ai",
+    "beanie",
+    "colorama"
+]
+
+[tool.uv.sources]
+agent-harness = { path = "../agent_harness" }

@@ -1,0 +1,17 @@
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "Managed Agent framework with fluent API"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic-ai",
+    "python-dotenv",
+    "structlog",
+    "jinja2",
+    "pydantic-settings",
+    "aio-pika",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["agent_harness*"]
