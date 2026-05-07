@@ -1,4 +1,7 @@
-from beanie import Document, init_beanie
+try:
+    from beanie import Document
+except ImportError:
+    Document = object
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 import uuid
 from collections import defaultdict

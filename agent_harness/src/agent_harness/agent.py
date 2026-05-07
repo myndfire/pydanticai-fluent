@@ -23,7 +23,19 @@ from .memory import (
 from .prompts import PromptProvider, StaticPrompts
 from .observability import Observability
 from .tools import ToolRegistry
-from .guards import GuardConfig, GuardRunner, ErrorContext, AgentRunResult
+from .guards import (
+    GuardConfig,
+    GuardRunner,
+    ErrorContext,
+    AgentRunResult,
+    AgentRetryConfig,
+    ToolRetryConfig,
+    ResultValidatorRetryConfig,
+    ContentFilterConfig,
+    PIIDetectionConfig,
+    CostLimitsConfig,
+    CircuitBreakerConfig,
+)
 from .errorhandling import ErrorHandlingConfig, ErrorHandler
 from .evaluators import Evaluator
 
@@ -232,16 +244,72 @@ class ManagedAgent:
         self.evaluators.extend(evaluators)
         return self
 
-    def with_guards(self, config: GuardConfig) -> "ManagedAgent":
-        """Set guard configuration."""
-        self.guards = config
-        self._guard_runner = GuardRunner(config)
-        return self
-
     def with_error_handling(self, config: ErrorHandlingConfig) -> "ManagedAgent":
         """Set error handling configuration."""
         self.error_handling = config
         self._error_handler = ErrorHandler(config)
+        return self
+
+    def with_agent_retries(self, config: AgentRetryConfig) -> "ManagedAgent":
+        """Set agent-level retry configuration."""
+        self.guards.agent = config
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_tool_retries(self, config: ToolRetryConfig) -> "ManagedAgent":
+        """Set tool-level retry configuration."""
+        self.guards.tool = config
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_result_validator_retries(self, config: ResultValidatorRetryConfig) -> "ManagedAgent":
+        """Set result validator retry configuration."""
+        self.guards.result_validator = config
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_content_filter(self, config: ContentFilterConfig) -> "ManagedAgent":
+        """Set content filter configuration."""
+        self.guards.enable_content_filter = config.enabled
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_pii_detection(self, config: PIIDetectionConfig) -> "ManagedAgent":
+        """Set PII detection configuration."""
+        self.guards.enable_pii_detection = config.enabled
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_cost_limits(self, config: CostLimitsConfig) -> "ManagedAgent":
+        """Set cost limits configuration."""
+        self.guards.enable_cost_limits = config.max_tokens_per_request is not None
+        self.guards.max_tokens_per_request = config.max_tokens_per_request
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_circuit_breaker(self, config: CircuitBreakerConfig) -> "ManagedAgent":
+        """Set circuit breaker configuration."""
+        self.guards.enable_circuit_breaker = config.enabled
+        self.guards.failure_threshold = config.failure_threshold
+        self.guards.circuit_timeout = config.circuit_timeout
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_guardrails(
+        self,
+        content_filter: Optional[ContentFilterConfig] = None,
+        pii_detection: Optional[PIIDetectionConfig] = None,
+        cost_limits: Optional[CostLimitsConfig] = None,
+    ) -> "ManagedAgent":
+        """Set multiple guardrail configurations at once."""
+        if content_filter:
+            self.guards.enable_content_filter = content_filter.enabled
+        if pii_detection:
+            self.guards.enable_pii_detection = pii_detection.enabled
+        if cost_limits:
+            self.guards.enable_cost_limits = cost_limits.max_tokens_per_request is not None
+            self.guards.max_tokens_per_request = cost_limits.max_tokens_per_request
+        self._guard_runner = GuardRunner(self.guards)
         return self
 
     def with_ollama(
@@ -362,7 +430,7 @@ class ManagedAgent:
                     prompt_id=prompt_id, **prompt_vars
                 )
                 if system_prompt:
-                    self._agent._system_prompt = system_prompt
+                    self._agent._system_prompts = (system_prompt,)
 
                 result = await self._guard_runner.run_with_guards(
                     agent=self._agent,

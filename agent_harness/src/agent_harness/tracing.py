@@ -1,7 +1,21 @@
 """Distributed tracing with Logfire (default) and OpenTelemetry."""
 
+import os
+from pathlib import Path
 from typing import Protocol, Any
 from contextlib import asynccontextmanager
+
+# Load .env from common locations before other imports
+_env_paths = [
+    Path.cwd() / ".env",
+    Path(__file__).parent.parent.parent / ".env",
+    Path.cwd().parent / ".env",
+]
+for env_path in _env_paths:
+    if env_path.exists():
+        from dotenv import load_dotenv
+        load_dotenv(env_path)
+        break
 
 
 class Tracer(Protocol):
