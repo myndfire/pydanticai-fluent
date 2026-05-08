@@ -5,6 +5,91 @@ from collections import defaultdict
 from datetime import datetime
 
 
+class LogfireMetrics:
+    """Logfire metrics collector - sends metrics to Logfire."""
+
+    def __init__(self, service_name: str = "agent"):
+        """
+        Initialize Logfire metrics.
+
+        Args:
+            service_name: Service name for metrics
+        """
+        self.service_name = service_name
+        self.logfire = None
+        self._setup_logfire()
+
+    def _setup_logfire(self):
+        """Setup Logfire for metrics."""
+        try:
+            import logfire
+
+            # Reuse existing configuration if available
+            if getattr(logfire, "_configured", False):
+                self.logfire = logfire
+                return
+
+            logfire.configure(
+                service_name=self.service_name,
+                send_to_logfire=True,
+                console=False,
+            )
+            logfire._configured = True
+            self.logfire = logfire
+            print(f"✅ Logfire metrics initialized")
+
+        except Exception as e:
+            print(f"⚠️  Failed to setup Logfire metrics: {str(e)}")
+            self.logfire = None
+
+    def counter(self, name: str, value: int = 1, **labels):
+        """Increment a counter metric."""
+        if self.logfire:
+            try:
+                metric_name = f"{self.service_name}_{name}"
+                # Logfire doesn't have explicit counters, use info with metrics
+                self.logfire.info(
+                    f"metric_counter",
+                    metric=metric_name,
+                    value=value,
+                    **labels,
+                )
+            except Exception:
+                pass
+
+    def gauge(self, name: str, value: float, **labels):
+        """Set a gauge metric."""
+        if self.logfire:
+            try:
+                metric_name = f"{self.service_name}_{name}"
+                self.logfire.info(
+                    f"metric_gauge",
+                    metric=metric_name,
+                    value=value,
+                    **labels,
+                )
+            except Exception:
+                pass
+
+    def histogram(self, name: str, value: float, **labels):
+        """Record a histogram value."""
+        if self.logfire:
+            try:
+                metric_name = f"{self.service_name}_{name}"
+                self.logfire.info(
+                    f"metric_histogram",
+                    metric=metric_name,
+                    value=value,
+                    **labels,
+                )
+            except Exception:
+                pass
+
+    def summary(self, name: str, value: float, **labels):
+        """Record a summary value."""
+        self.histogram(name, value, **labels)
+
+
 class MetricsCollector(Protocol):
     """Protocol for metrics collection."""
 

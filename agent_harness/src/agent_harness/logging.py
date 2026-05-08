@@ -26,6 +26,127 @@ class Logger(Protocol):
         ...
 
 
+class LogfireLogger:
+    """Logfire structured logging with automatic tracing integration."""
+
+    def __init__(self, service_name: str = "agent", logfire_instance: Any = None):
+        """
+        Initialize Logfire logger.
+
+        Args:
+            service_name: Service name for log entries
+            logfire_instance: Optional Logfire instance (if None, will initialize)
+        """
+        self.service_name = service_name
+        self.logfire = logfire_instance
+        self._setup_logfire()
+        self._setup_structlog()
+
+    def _setup_logfire(self):
+        """Setup Logfire if not already configured."""
+        if self.logfire is not None:
+            return
+
+        try:
+            import logfire
+
+            # Skip if already configured
+            if getattr(logfire, "_configured", False):
+                self.logfire = logfire
+                return
+
+            logfire.configure(
+                service_name=self.service_name,
+                send_to_logfire=True,
+                console=False,
+            )
+            logfire._configured = True
+            self.logfire = logfire
+            print(f"✅ Logfire logger initialized")
+
+        except Exception as e:
+            print(f"⚠️  Failed to setup Logfire logger: {str(e)}")
+            # Fallback to console logger
+            self.logfire = None
+
+    def _setup_structlog(self):
+        """Configure structlog to use Logfire."""
+        try:
+            # Configure structlog (simplified)
+            structlog.configure(
+                processors=[
+                    structlog.contextvars.merge_contextvars,
+                    structlog.processors.add_log_level,
+                    structlog.processors.TimeStamper(fmt="iso"),
+                    structlog.processors.StackInfoRenderer(),
+                    structlog.processors.format_exc_info,
+                    structlog.processors.JSONRenderer(),
+                ],
+                context_class=dict,
+                logger_factory=structlog.PrintLoggerFactory(),
+                cache_logger_on_first_use=True,
+            )
+
+        except Exception as e:
+            print(f"⚠️  Failed to configure structlog: {str(e)}")
+
+    def _log_to_logfire(self, level: str, message: str, context: dict):
+        """Send log to Logfire."""
+        if not self.logfire:
+            return
+
+        try:
+            log_method = getattr(self.logfire, level, self.logfire.info)
+            log_method(message, **context)
+        except Exception as e:
+            print(f"⚠️  Failed to log to Logfire: {str(e)}")
+
+    def debug(self, message: str, **context):
+        """Log debug message."""
+        if self.logfire:
+            self._log_to_logfire("debug", message, context)
+
+    def info(self, message: str, **context):
+        """Log info message."""
+        if self.logfire:
+            self._log_to_logfire("info", message, context)
+        else:
+            # Fallback to console
+            import structlog
+            logger = structlog.get_logger()
+            logger.info(message, **context)
+
+    def warning(self, message: str, **context):
+        """Log warning message."""
+        if self.logfire:
+            self._log_to_logfire("warning", message, context)
+
+    def error(self, message: str, **context):
+        """Log error message."""
+        if self.logfire:
+            self._log_to_logfire("error", message, context)
+
+
+class ConsoleLogger:
+    """Protocol for structured logging."""
+
+    def debug(self, message: str, **context):
+        """Log debug message."""
+        ...
+
+    def info(self, message: str, **context):
+        """Log info message."""
+        ...
+
+    def warning(self, message: str, **context):
+        """Log warning message."""
+        ...
+
+    def error(self, message: str, **context):
+        """Log error message."""
+        ...
+
+
 class ConsoleLogger:
     """Simple console logger (default)."""
 

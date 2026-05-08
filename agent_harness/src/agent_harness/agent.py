@@ -325,9 +325,19 @@ class ManagedAgent:
             base_url=base_url,
         )
 
-    def with_output(self, output_type: Any) -> "ManagedAgent":
-        """Set the output type for structured responses."""
-        self._agent = Agent(model=self._agent._model, output_type=output_type)
+    def with_output(self, output_type: Any, output_retries: int = 3) -> "ManagedAgent":
+        """
+        Set the output type for structured responses.
+
+        Args:
+            output_type: The Pydantic model for structured output
+            output_retries: Number of retries for output validation (default: 3)
+        """
+        self._agent = Agent(
+            model=self._agent._model,
+            output_type=output_type,
+            output_retries=output_retries,
+        )
         return self
 
     def with_rabbitmq(

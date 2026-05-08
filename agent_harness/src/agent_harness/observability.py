@@ -4,9 +4,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, Union
 
-from .logging import Logger, ConsoleLogger
+from .logging import Logger, ConsoleLogger, LogfireLogger
 from .tracing import Tracer, LogfireTracer, NoOpTracer
-from .metrics import MetricsCollector, NoOpMetrics, MetricNames
+from .metrics import MetricsCollector, NoOpMetrics, MetricNames, LogfireMetrics
 
 
 class Observability:
@@ -285,6 +285,13 @@ class ObservabilityBuilder:
         self._loggers.append(FileLogger(log_file=log_file))
         return self
 
+    def with_logfire_logging(self) -> "ObservabilityBuilder":
+        """Add Logfire as a logging backend."""
+        from .logging import LogfireLogger
+
+        self._loggers.append(LogfireLogger(service_name=self.service_name))
+        return self
+
     def with_logfire_tracing(
         self,
         send_to_logfire: bool = True,
@@ -353,6 +360,52 @@ class ObservabilityBuilder:
         from .metrics import InMemoryMetrics
 
         self._metrics.append(InMemoryMetrics())
+        return self
+
+    def with_logfire_metrics(self) -> "ObservabilityBuilder":
+        """Add Logfire as a metrics backend."""
+        from .metrics import LogfireMetrics
+
+        self._metrics.append(LogfireMetrics(service_name=self.service_name))
+        return self
+
+    def with_logfire_observability(
+        self,
+        send_to_logfire: bool = True,
+        include_tracing: bool = True,
+        include_metrics: bool = True,
+    ) -> "ObservabilityBuilder":
+        """
+        Add complete Logfire observability (logging, tracing, metrics).
+
+        Args:
+            send_to_logfire: Send to Logfire cloud or local only
+            include_tracing: Enable Logfire tracing
+            include_metrics: Enable Logfire metrics
+
+        Returns:
+            Self for chaining
+        """
+        # Add Logfire logging (structured logging to Logfire)
+        self._loggers.append(LogfireLogger(service_name=self.service_name))
+
+        # Add Logfire tracing
+        if include_tracing:
+            from .tracing import LogfireTracer
+
+            self._tracers.append(
+                LogfireTracer(
+                    service_name=self.service_name,
+                    send_to_logfire=send_to_logfire,
+                )
+            )
+
+        # Add Logfire metrics
+        if include_metrics:
+            from .metrics import LogfireMetrics
+
+            self._metrics.append(LogfireMetrics(service_name=self.service_name))
+
         return self
 
     def build(self) -> Observability:
