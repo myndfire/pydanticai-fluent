@@ -6,6 +6,7 @@ Simple, elegant composition-based design with fluent API.
 
 from .agent import ManagedAgent
 from .config import AgentConfig
+from .model_config import ModelConfig, build_model
 from .memory import (
     MemoryProvider,
     InMemoryProvider,
@@ -66,6 +67,8 @@ __all__ = [
     # Core
     "ManagedAgent",
     "AgentConfig",
+    "ModelConfig",
+    "build_model",
     # Memory
     "MemoryProvider",
     "InMemoryProvider",

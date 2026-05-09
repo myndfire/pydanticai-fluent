@@ -1,20 +1,15 @@
 """Core ManagedAgent with fluent API for crosscutting concerns."""
 
-import os
 import time
-import traceback
 import uuid
 from datetime import datetime
 from typing import Any, Optional, TypeVar
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelResponse
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.ollama import OllamaProvider
+from pydantic_ai.messages import ModelResponse
 
 from .memory import (
     MemoryProvider,
-    InMemoryProvider,
     TurnData,
     UsageData,
     MessageHistory,
@@ -36,6 +31,7 @@ from .guards import (
     CostLimitsConfig,
     CircuitBreakerConfig,
 )
+from .model_config import ModelConfig, build_model
 from .errorhandling import ErrorHandlingConfig, ErrorHandler
 from .evaluators import Evaluator
 
@@ -67,9 +63,16 @@ class ManagedAgent:
     Elegant agent with fluent configuration API.
 
     Usage:
-        agent = (
-            ManagedAgent()
-            .with_model("ollama:gpt-oss:20b")
+        from agent_harness import ManagedAgent
+        from agent_harness.model_config import ModelConfig
+
+        agent = ManagedAgent(
+            model=ModelConfig(provider="openai", model_name="gpt-4o", api_key="sk-...")
+        )
+
+        # Or configure fluently
+        agent = ManagedAgent().with_model(
+            ModelConfig(provider="anthropic", model_name="claude-sonnet-4-20250514")
         )
 
         # Run with explicit message history and save targets
@@ -86,7 +89,7 @@ class ManagedAgent:
 
     def __init__(
         self,
-        model: str = "ollama:gpt-oss:20b",
+        model: Optional[ModelConfig] = None,
         prompts: Optional[PromptProvider] = None,
         observability: Optional[Observability] = None,
         tools: Optional[ToolRegistry] = None,
@@ -98,7 +101,7 @@ class ManagedAgent:
         Initialize managed agent with optional components.
 
         Args:
-            model: Model name (default: "ollama:gpt-oss:20b")
+            model: ModelConfig (default: ollama with gpt-oss:20b)
             prompts: Prompt provider (default: StaticPrompts)
             observability: Observability (logging, tracing, metrics)
             tools: Tool registry (default: empty ToolRegistry)
@@ -106,16 +109,11 @@ class ManagedAgent:
             guards: Guard configuration (default: GuardConfig with defaults)
             deps_type: Type for dependency injection
         """
-        if model.startswith("ollama:"):
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-            model_name = model.split(":", 1)[1]
-            provider = OllamaProvider(base_url=base_url)
-            model_obj = OpenAIChatModel(model_name, provider=provider)
-            self._agent: Agent[Any, Any] = Agent(model=model_obj, deps_type=deps_type)
-        else:
-            self._agent = Agent(model=model, deps_type=deps_type)
-
-        self.model = model
+        model_config = model or ModelConfig(provider="ollama", model_name="gpt-oss:20b")
+        self._agent: Agent[Any, Any] = Agent(
+            model=build_model(model_config), deps_type=deps_type
+        )
+        self.model = f"{model_config.provider}:{model_config.model_name}"
         self._deps_type = deps_type
 
         self.prompts = prompts or StaticPrompts()
@@ -143,26 +141,15 @@ class ManagedAgent:
 
     def with_model(
         self,
-        model: str,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        model: ModelConfig,
     ) -> "ManagedAgent":
-        """Set the model with optional authentication."""
-        if model.startswith("ollama:"):
-            model_name = model.split(":", 1)[1]
-            base_url = base_url or os.getenv(
-                "OLLAMA_BASE_URL", "http://localhost:11434/v1"
-            )
-            provider = OllamaProvider(base_url=base_url)
-            model_obj = OpenAIChatModel(model_name, provider=provider)
-            self._agent = Agent(model=model_obj)
-            self.model = model
-        else:
-            # If a custom base_url is provided, OpenAIChatModel may not need a special provider.
-            # We'll default to constructing without explicit provider.
-            model_obj = OpenAIChatModel(model)
-            self._agent = Agent(model=model_obj)
-            self.model = model
+        """Set the model using a ModelConfig object.
+
+        Args:
+            model: ModelConfig specifying provider, model_name, api_key, base_url.
+        """
+        self._agent = Agent(model=build_model(model))
+        self.model = f"{model.provider}:{model.model_name}"
         return self
 
     def with_short_term_memory(self, provider: MemoryProvider) -> "ManagedAgent":
@@ -216,19 +203,10 @@ class ManagedAgent:
         )
 
         current_toolsets = list(self._agent.toolsets)
-        model = self.model
-
-        if model.startswith("ollama:"):
-            model_name = model.split(":", 1)[1]
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-            provider = OllamaProvider(base_url=base_url)
-            model_obj = OpenAIChatModel(model_name, provider=provider)
-            self._agent = Agent(
-                model=model_obj, toolsets=current_toolsets + [mcp_server]
-            )
-        else:
-            self._agent = Agent(model=model, toolsets=current_toolsets + [mcp_server])
-
+        self._agent = Agent(
+            model=self._agent._model,
+            toolsets=current_toolsets + [mcp_server],
+        )
         return self
 
     def with_mcp_servers(
@@ -311,19 +289,6 @@ class ManagedAgent:
             self.guards.max_tokens_per_request = cost_limits.max_tokens_per_request
         self._guard_runner = GuardRunner(self.guards)
         return self
-
-    def with_ollama(
-        self,
-        model_name: str,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
-    ) -> "ManagedAgent":
-        """Configure Ollama model."""
-        return self.with_model(
-            model=f"ollama:{model_name}",
-            api_key=api_key,
-            base_url=base_url,
-        )
 
     def with_output(self, output_type: Any, output_retries: int = 3) -> "ManagedAgent":
         """
@@ -548,7 +513,7 @@ class ManagedAgent:
                 source = "memory"
             elif any(
                 x in error_type or x in error_msg
-                for x in ["timeout", "model", "llm", "ollama", "openai", "api"]
+                for x in ["timeout", "model", "llm", "ollama", "openai", "anthropic", "google", "groq", "mistral", "cohere", "openrouter", "grok", "deepseek", "cerebras", "bedrock", "huggingface", "api"]
             ):
                 source = "llm"
             elif any(

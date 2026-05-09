@@ -5,6 +5,7 @@ from agent_harness.tools import ToolRegistry
 from agent_harness.prompts import StaticPrompts
 from agent_harness.observability import Observability
 from agent_harness.logging import ConsoleLogger
+from agent_harness.model_config import ModelConfig
 from agent_harness.guards import GuardConfig
 from agent_harness.errorhandling import ErrorHandlingConfig
 from agent_harness.evaluators import Evaluator

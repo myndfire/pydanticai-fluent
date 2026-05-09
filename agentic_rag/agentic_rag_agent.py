@@ -24,6 +24,7 @@ from agent_harness.guards import (
 )
 from agent_harness.errorhandling import ErrorHandlingConfig
 from agent_harness.evaluators import Evaluator
+from agent_harness.model_config import ModelConfig
 
 
 def get_labs(category: str) -> str:
@@ -94,7 +95,7 @@ async def chat_loop():
     tools = ToolRegistry().add_many(get_labs, get_diagnosis, get_findings)
     agent = (
         ManagedAgent()
-        .with_model("ollama:gpt-oss:20b")
+        .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
         .with_short_term_memory(short_term)
         .with_long_term_memory(long_term)
         .with_tools(tools)

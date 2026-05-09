@@ -10,6 +10,7 @@ from agent_harness.observability import Observability
 from agent_harness.tracing import LogfireTracer
 from agent_harness.prompts import StaticPrompts
 from agent_harness.errorhandling import ErrorHandlingConfig, AgentErrorContext
+from agent_harness.model_config import ModelConfig
 from pydantic_ai.settings import ModelSettings
 
 
@@ -79,7 +80,7 @@ async def main():
 
     agent = (
         ManagedAgent()
-        .with_model("ollama:gpt-oss:20b")
+        .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
         .with_prompts(StaticPrompts("You are a helpful assistant"))
         .with_observability(obs)
         .with_short_term_memory(short_term)

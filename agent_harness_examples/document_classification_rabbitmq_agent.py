@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from agent_harness import (
     ManagedAgent,
+    ModelConfig,
     MessagingService,
     MessageHistory,
     StaticPrompts,
@@ -98,7 +99,7 @@ def create_agent(short_term, long_term, obs):
     """Create the managed agent with all configurations."""
     return (
         ManagedAgent()
-        .with_model("ollama:gpt-oss:20b")
+        .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
         .with_prompts(StaticPrompts("You are a helpful assistant"))
         .with_observability(obs)
         .with_short_term_memory(short_term)
