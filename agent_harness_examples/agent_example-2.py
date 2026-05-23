@@ -7,7 +7,9 @@ from dotenv import load_dotenv
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import MessageHistory, InMemoryProvider, MongoMemory
 from agent_harness.observability import Observability
-from agent_harness.tracing import LogfireTracer
+from agent_harness.logging import ConsoleLogger
+from agent_harness.tracing import LogfireTracer, OTELTracer
+from agent_harness.metrics import OTLPMetrics
 from agent_harness.prompts import StaticPrompts
 from agent_harness.errorhandling import ErrorHandlingConfig, AgentErrorContext
 from agent_harness.model_config import ModelConfig
@@ -75,7 +77,23 @@ async def main():
         timeout=30.0,
     )
 
-    obs = Observability(tracer=LogfireTracer(service_name="agent"))
+    obs = Observability(
+        tracer=LogfireTracer(service_name="agent_example-2_service"),
+        loggers=[ConsoleLogger()],
+        tracers=[
+            OTELTracer(
+                service_name="agent_example-2_service",
+                otlp_endpoint="http://localhost:4317",
+                sample_rate=1.0,
+            ),
+        ],
+        metrics_list=[
+            OTLPMetrics(
+                service_name="agent_example-2_service",
+                otlp_endpoint="http://localhost:4319",
+            ),
+        ],
+    )
     obs.logger.info("Starting agent execution")
 
     agent = (

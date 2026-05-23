@@ -10,6 +10,9 @@ dependencies = [
     "jinja2",
     "pydantic-settings",
     "aio-pika",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-grpc",
 ]
 
 [tool.setuptools.packages.find]
