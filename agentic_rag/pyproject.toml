@@ -1,7 +1,7 @@
 [project]
-name = "agent-harness-examples"
+name = "agentic-rag"
 version = "0.1.0"
-description = "Examples for the agent-harness package"
+description = "RAG agent example for the agent-harness package"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic-ai",
@@ -15,5 +15,13 @@ dependencies = [
     "agent-harness",
 ]
 
-[tool.uv.sources]
-agent-harness = { path = "../agent_harness", editable = true }
+[project.urls]
+Repository = "https://github.com/myndfire/pydanticai-fluent"
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv.sources.agent-harness]
+path = "../agent_harness"
+editable = true

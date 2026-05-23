@@ -62,6 +62,10 @@ cd agent_harness && uv sync
 cd ../agent_harness_examples && uv sync
 ```
 
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).
+
 ---
 
 > For detailed API docs, configuration, and examples, see [`USAGE.md`](USAGE.md).

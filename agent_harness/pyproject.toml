@@ -2,6 +2,21 @@
 name = "agent-harness"
 version = "0.1.0"
 description = "Managed Agent framework with fluent API"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "agent-harness contributors" },
+]
+keywords = ["ai", "llm", "agent", "pydantic-ai", "fluent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 requires-python = ">=3.11"
 dependencies = [
     "pydantic-ai",
@@ -14,6 +29,13 @@ dependencies = [
     "opentelemetry-sdk",
     "opentelemetry-exporter-otlp-proto-grpc",
 ]
+
+[project.urls]
+Repository = "https://github.com/myndfire/pydanticai-fluent"
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]

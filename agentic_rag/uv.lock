@@ -49,9 +49,9 @@ requires-dist = [
 ]
 
 [[package]]
-name = "agent-harness-examples"
+name = "agentic-rag"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "agent-harness" },
     { name = "aio-pika" },

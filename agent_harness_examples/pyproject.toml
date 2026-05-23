@@ -10,6 +10,13 @@ dependencies = [
     "colorama"
 ]
 
+[project.urls]
+Repository = "https://github.com/myndfire/pydanticai-fluent"
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [tool.uv.sources.agent-harness]
 path = "../agent_harness"
 editable = true
