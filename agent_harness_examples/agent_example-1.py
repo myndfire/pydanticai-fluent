@@ -6,7 +6,6 @@ from agent_harness.prompts import StaticPrompts
 from agent_harness.observability import Observability
 from agent_harness.logging import ConsoleLogger
 from agent_harness.model_config import ModelConfig
-from agent_harness.guards import GuardConfig
 from agent_harness.errorhandling import ErrorHandlingConfig
 from agent_harness.evaluators import Evaluator
 
@@ -36,13 +35,12 @@ async def main():
     tools = ToolRegistry().add_many(repeat, shout)
     agent = (
         ManagedAgent()
-        .with_model("ollama:gpt-oss:20b")
+        .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
         .with_short_term_memory(short_term)
         .with_long_term_memory(long_term)
         .with_tools(tools)
         .with_prompts(StaticPrompts("You are a helpful bot. Use the provided tools when instructed."))
         .with_observability(Observability())
-        .with_guards(GuardConfig())
         .with_error_handling(ErrorHandlingConfig())
         .with_evaluators(PrintEvaluator())
     )

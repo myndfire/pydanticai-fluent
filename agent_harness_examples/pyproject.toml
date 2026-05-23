@@ -10,5 +10,6 @@ dependencies = [
     "colorama"
 ]
 
-[tool.uv.sources]
-agent-harness = { path = "../agent_harness" }
+[tool.uv.sources.agent-harness]
+path = "../agent_harness"
+editable = true
