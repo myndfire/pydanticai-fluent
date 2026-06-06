@@ -22,7 +22,7 @@ Demonstrates:
   - on_error callback for unexpected failures
 
 Usage:
-    python 06_token_limits.py
+    uv run python 06_token_limits.py
 """
 
 import asyncio

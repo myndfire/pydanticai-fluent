@@ -22,7 +22,7 @@ Demonstrates:
   - Fallback response when tools are unavailable
 
 Usage:
-    python 04_tool_errors.py
+    uv run python 04_tool_errors.py
 """
 
 import asyncio

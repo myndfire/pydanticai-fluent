@@ -23,7 +23,7 @@ Demonstrates:
   - How to pass structured data (lists, dicts) as template variables
 
 Usage:
-    python 03_prompt_variables.py
+    uv run python 03_prompt_variables.py
 """
 
 import asyncio

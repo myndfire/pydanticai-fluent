@@ -22,7 +22,7 @@ Demonstrates:
   - Agent continues without persistence when memory is unavailable
 
 Usage:
-    python 07_memory_errors.py
+    uv run python 07_memory_errors.py
 """
 
 import asyncio

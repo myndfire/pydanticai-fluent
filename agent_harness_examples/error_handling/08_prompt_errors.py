@@ -22,7 +22,7 @@ Demonstrates:
   - Fallback to a default prompt when the template provider fails
 
 Usage:
-    python 08_prompt_errors.py
+    uv run python 08_prompt_errors.py
 """
 
 import asyncio

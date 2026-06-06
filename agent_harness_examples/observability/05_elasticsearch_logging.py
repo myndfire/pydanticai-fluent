@@ -25,7 +25,7 @@ Prerequisite:
     docker compose -f agent_harness_examples/observability/docker-compose.elastic.yml up -d
 
 Usage:
-    python 05_elasticsearch_logging.py
+    uv run python 05_elasticsearch_logging.py
 """
 
 import asyncio

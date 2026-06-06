@@ -33,7 +33,7 @@ Eight error sources tracked by agent.run():
   "output"     — usage parsing, turn construction, output extraction
 
 Usage:
-    python 02_source_routing.py
+    uv run python 02_source_routing.py
 """
 
 import asyncio

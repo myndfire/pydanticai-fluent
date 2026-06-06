@@ -22,7 +22,7 @@ Demonstrates:
   - last_turn property for direct access to the most recent turn
 
 Usage:
-    python 04_memory_operations.py
+    uv run python 04_memory_operations.py
 """
 
 import asyncio

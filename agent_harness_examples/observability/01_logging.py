@@ -21,7 +21,7 @@ Demonstrates:
   - Log levels: debug, info, warning, error across all loggers
 
 Usage:
-    python 01_logging.py
+    uv run python 01_logging.py
 """
 
 import asyncio

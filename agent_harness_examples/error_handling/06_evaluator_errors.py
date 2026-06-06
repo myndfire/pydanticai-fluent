@@ -26,7 +26,7 @@ Previously their failures were silently swallowed.
 Now they propagate to the error handler with source="evaluator".
 
 Usage:
-    python 06_evaluator_errors.py
+    uv run python 06_evaluator_errors.py
 """
 
 import asyncio

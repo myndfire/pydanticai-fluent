@@ -22,7 +22,7 @@ Demonstrates:
   - Fan-out in observe() context manager: all backends receive events
 
 Usage:
-    python 04_composite.py
+    uv run python 04_composite.py
 """
 
 import asyncio

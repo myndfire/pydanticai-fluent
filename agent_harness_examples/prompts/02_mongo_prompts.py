@@ -37,7 +37,7 @@ Prerequisite:
     docker compose -f agent_harness_examples/prompts/docker-compose.mongo.yml up -d
 
 Usage:
-    python 02_mongo_prompts.py
+    uv run python 02_mongo_prompts.py
 """
 
 import asyncio

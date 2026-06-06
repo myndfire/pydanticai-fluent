@@ -28,7 +28,7 @@ Requires a running MCP server (e.g., via mcp-server-sdk or
 an SSE-compatible MCP implementation).
 
 Usage:
-    python 03_mcp_server.py
+    uv run python 03_mcp_server.py
 """
 
 import asyncio

@@ -22,7 +22,7 @@ Demonstrates:
   - Using any logging/tracing/metrics library inside the evaluator
 
 Usage:
-    python 04_protocol_evaluator.py
+    uv run python 04_protocol_evaluator.py
 """
 
 import asyncio

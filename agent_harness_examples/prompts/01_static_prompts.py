@@ -21,7 +21,7 @@ Demonstrates:
   - Fluent chaining: with_prompts() in the builder pipeline
 
 Usage:
-    python 01_static_prompts.py
+    uv run python 01_static_prompts.py
 """
 
 import asyncio

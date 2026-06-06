@@ -26,7 +26,7 @@ Cost formula:
   total_cost  = input_cost + output_cost
 
 Usage:
-    python 07_cost_limits.py
+    uv run python 07_cost_limits.py
 """
 
 import asyncio

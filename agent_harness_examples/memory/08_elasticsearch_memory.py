@@ -27,7 +27,7 @@ Prerequisite:
     docker compose -f agent_harness_examples/memory/docker-compose.elastic.yml up -d
 
 Usage:
-    python 08_elasticsearch_memory.py
+    uv run python 08_elasticsearch_memory.py
 """
 
 import asyncio

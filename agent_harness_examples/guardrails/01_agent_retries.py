@@ -21,7 +21,7 @@ Demonstrates:
   - on_error callback for graceful failure handling
 
 Usage:
-    python 01_agent_retries.py
+    uv run python 01_agent_retries.py
 """
 
 import asyncio

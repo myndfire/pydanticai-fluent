@@ -24,7 +24,7 @@ Demonstrates:
   - All guardrails configured fluently on a single agent
 
 Usage:
-    python 09_all_guardrails.py
+    uv run python 09_all_guardrails.py
 """
 
 import asyncio

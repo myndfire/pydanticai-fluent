@@ -26,7 +26,7 @@ agent.tool_plain(), giving the tool access to the agent's
 dependency container and run context metadata.
 
 Usage:
-    python 02_context_tools.py
+    uv run python 02_context_tools.py
 """
 
 import asyncio

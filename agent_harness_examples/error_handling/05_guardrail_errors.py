@@ -22,7 +22,7 @@ Demonstrates:
   - Source="guardrail" set by GuardRunner.run_with_guards()
 
 Usage:
-    python 05_guardrail_errors.py
+    uv run python 05_guardrail_errors.py
 """
 
 import asyncio

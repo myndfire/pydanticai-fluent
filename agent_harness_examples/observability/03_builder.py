@@ -23,7 +23,7 @@ Demonstrates:
   - Multiple loggers/tracers/metrics in a single Observability instance
 
 Usage:
-    python 03_builder.py
+    uv run python 03_builder.py
 """
 
 import asyncio

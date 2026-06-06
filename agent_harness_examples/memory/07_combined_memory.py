@@ -26,7 +26,7 @@ Prerequisite:
     docker compose -f agent_harness_examples/memory/docker-compose.yml up -d
 
 Usage:
-    python 07_combined_memory.py
+    uv run python 07_combined_memory.py
 """
 
 import asyncio

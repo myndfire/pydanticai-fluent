@@ -20,7 +20,7 @@ Demonstrates:
   - on_error callback for graceful failure when the redactor raises
 
 Usage:
-    python 05_pii_detection.py
+    uv run python 05_pii_detection.py
 """
 
 import asyncio

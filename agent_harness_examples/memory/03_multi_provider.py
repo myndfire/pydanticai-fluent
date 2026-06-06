@@ -24,7 +24,7 @@ Demonstrates:
   - last_turn property after each run
 
 Usage:
-    python 03_multi_provider.py
+    uv run python 03_multi_provider.py
 """
 
 import asyncio

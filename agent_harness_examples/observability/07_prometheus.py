@@ -27,7 +27,7 @@ Prerequisite:
 Prometheus pushgateway: http://localhost:9091
 
 Usage:
-    python 07_prometheus.py
+    uv run python 07_prometheus.py
 """
 
 import asyncio

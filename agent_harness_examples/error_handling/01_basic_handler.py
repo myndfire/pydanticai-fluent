@@ -22,7 +22,7 @@ Demonstrates:
   - Catch-all on_error for unhandled sources
 
 Usage:
-    python 01_basic_handler.py
+    uv run python 01_basic_handler.py
 """
 
 import asyncio

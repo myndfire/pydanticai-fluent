@@ -23,7 +23,7 @@ Demonstrates:
   - Session isolation: each session_id has its own turn list
 
 Usage:
-    python 01_in_memory.py
+    uv run python 01_in_memory.py
 """
 
 import asyncio

@@ -22,7 +22,7 @@ Demonstrates:
   - Tools + structured output (tools populate a Pydantic model)
 
 Usage:
-    python 04_tool_combinations.py
+    uv run python 04_tool_combinations.py
 """
 
 import asyncio

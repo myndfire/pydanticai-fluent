@@ -22,7 +22,7 @@ Demonstrates:
 Tool retries correspond to PydanticAI's @agent.tool(retries=N) parameter.
 
 Usage:
-    python 02_tool_retries.py
+    uv run python 02_tool_retries.py
 """
 
 import asyncio

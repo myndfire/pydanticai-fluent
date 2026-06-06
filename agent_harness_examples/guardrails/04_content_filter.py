@@ -20,7 +20,7 @@ Demonstrates:
   - on_error callback for graceful failure when the filter raises
 
 Usage:
-    python 04_content_filter.py
+    uv run python 04_content_filter.py
 """
 
 import asyncio

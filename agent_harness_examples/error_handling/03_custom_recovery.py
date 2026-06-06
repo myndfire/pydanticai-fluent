@@ -21,7 +21,7 @@ Demonstrates:
   - Combined recovery strategy: suppress all, log, return degraded response
 
 Usage:
-    python 03_custom_recovery.py
+    uv run python 03_custom_recovery.py
 """
 
 import asyncio

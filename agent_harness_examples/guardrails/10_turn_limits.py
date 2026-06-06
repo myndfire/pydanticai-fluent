@@ -26,7 +26,7 @@ Useful for:
   - Limiting abuse in multi-turn agents
 
 Usage:
-    python 10_turn_limits.py
+    uv run python 10_turn_limits.py
 """
 
 import asyncio

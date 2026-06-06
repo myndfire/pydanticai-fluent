@@ -27,7 +27,7 @@ Prerequisite:
 Jaeger UI: http://localhost:16686
 
 Usage:
-    python 06_otel_jaeger.py
+    uv run python 06_otel_jaeger.py
 """
 
 import asyncio

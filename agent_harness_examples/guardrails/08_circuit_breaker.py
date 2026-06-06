@@ -27,7 +27,7 @@ period, a single trial request is allowed (half-open). If it succeeds,
 the circuit closes. If it fails, the circuit re-opens.
 
 Usage:
-    python 08_circuit_breaker.py
+    uv run python 08_circuit_breaker.py
 """
 
 import asyncio

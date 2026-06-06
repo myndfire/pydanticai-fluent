@@ -26,7 +26,7 @@ Prerequisite:
     docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d
 
 Usage:
-    python 05_mongo_memory.py
+    uv run python 05_mongo_memory.py
 """
 
 import asyncio

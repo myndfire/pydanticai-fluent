@@ -23,7 +23,7 @@ Demonstrates:
     (evaluator exceptions now route to on_evaluator_error)
 
 Usage:
-    python 05_combined_evaluators.py
+    uv run python 05_combined_evaluators.py
 """
 
 import asyncio

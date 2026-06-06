@@ -20,7 +20,7 @@ Demonstrates:
   - MetricNames constants: AGENT_RUNS, AGENT_DURATION, AGENT_ERRORS, etc.
 
 Usage:
-    python 02_tracing_metrics.py
+    uv run python 02_tracing_metrics.py
 """
 
 import asyncio

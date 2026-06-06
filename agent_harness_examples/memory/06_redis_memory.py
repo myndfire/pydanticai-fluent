@@ -26,7 +26,7 @@ Prerequisite:
     docker compose -f agent_harness_examples/memory/docker-compose.redis.yml up -d
 
 Usage:
-    python 06_redis_memory.py
+    uv run python 06_redis_memory.py
 """
 
 import asyncio

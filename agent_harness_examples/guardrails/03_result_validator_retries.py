@@ -23,7 +23,7 @@ Result validator retries correspond to PydanticAI's
 @agent.output_validator with ModelRetry exception.
 
 Usage:
-    python 03_result_validator_retries.py
+    uv run python 03_result_validator_retries.py
 """
 
 import asyncio

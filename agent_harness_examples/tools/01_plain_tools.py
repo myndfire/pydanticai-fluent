@@ -24,7 +24,7 @@ Plain tools are registered via pydantic_ai's agent.tool_plain().
 They do NOT receive RunContext or agent dependencies.
 
 Usage:
-    python 01_plain_tools.py
+    uv run python 01_plain_tools.py
 """
 
 import asyncio

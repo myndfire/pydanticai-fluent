@@ -22,7 +22,7 @@ Demonstrates:
   - Inspecting message count and content in loaded history
 
 Usage:
-    python 02_message_history.py
+    uv run python 02_message_history.py
 """
 
 import asyncio

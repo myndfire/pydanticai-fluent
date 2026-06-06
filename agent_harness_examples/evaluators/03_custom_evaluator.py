@@ -21,7 +21,7 @@ Demonstrates:
   - Multiple custom evaluators running together
 
 Usage:
-    python 03_custom_evaluator.py
+    uv run python 03_custom_evaluator.py
 """
 
 import asyncio

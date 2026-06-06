@@ -21,7 +21,7 @@ Demonstrates:
   - Gracefully handles missing OpenAI library
   - Runs after every turn — read-only, never modifies output
 
-Requires: pip install openai
+Requires: uv add openai
 Usage:    python 02_safety_check.py
 """
 
@@ -114,7 +114,7 @@ async def main():
         print("  openai package is installed")
     except ImportError:
         print("  openai package is NOT installed — safety checks will be skipped")
-        print("  Install: pip install openai")
+        print("  Install: uv add openai")
         print("  Set key: export OPENAI_API_KEY=sk-...")
 
 

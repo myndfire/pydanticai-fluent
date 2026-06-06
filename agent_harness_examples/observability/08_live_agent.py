@@ -26,7 +26,7 @@ Demonstrates:
 No external services required — all backends are in-memory/console.
 
 Usage:
-    python 08_live_agent.py
+    uv run python 08_live_agent.py
 """
 
 import asyncio

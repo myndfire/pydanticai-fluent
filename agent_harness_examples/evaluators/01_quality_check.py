@@ -22,7 +22,7 @@ Demonstrates:
   - Multiple QualityCheck instances with different thresholds
 
 Usage:
-    python 01_quality_check.py
+    uv run python 01_quality_check.py
 """
 
 import asyncio
