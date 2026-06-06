@@ -1,0 +1,19 @@
+# Elasticsearch for ElasticsearchLogger.
+# Start: docker compose -f docker-compose.elastic.yml up -d
+# Stop:  docker compose -f docker-compose.elastic.yml down -v
+
+services:
+  elasticsearch:
+    image: elasticsearch:8.17.0
+    container_name: agent-harness-elastic
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+volumes:
+  es_data:

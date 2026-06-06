@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-try:
-    from beanie import Document
-except ImportError:
-    Document = object
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 import uuid
 from collections import defaultdict
@@ -23,7 +19,7 @@ from dataclasses import field, asdict
 from datetime import datetime
 from typing import Protocol, Any, Optional, List
 
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -230,19 +226,8 @@ class InMemoryProvider:
 
 
 # ---------------------------------------------------------------------------
-# MongoDB implementation using Beanie – stores each turn as its own document.
+# MongoDB implementation — stores each turn as its own document.
 # ---------------------------------------------------------------------------
-
-
-class TurnDocument(Document):
-    session_id: str
-    turn: TurnData
-
-    class Settings:
-        name = "turns"
-
-    def to_turn(self) -> TurnData:
-        return self.turn
 
 
 class MongoMemory:

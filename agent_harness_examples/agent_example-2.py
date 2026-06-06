@@ -25,7 +25,7 @@ from agent_harness.logging import ConsoleLogger
 from agent_harness.tracing import LogfireTracer, OTELTracer
 from agent_harness.metrics import OTLPMetrics
 from agent_harness.prompts import StaticPrompts
-from agent_harness.errorhandling import ErrorHandlingConfig, AgentErrorContext
+from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
 from agent_harness.model_config import ModelConfig
 from pydantic_ai.settings import ModelSettings
 
@@ -55,9 +55,9 @@ class AgentErrorHandler:
     def __init__(self, obs: Observability):
         self._obs = obs
 
-    def __call__(self, ctx: AgentErrorContext, exc: Exception) -> bool:
+    def __call__(self, ctx: ErrorContext) -> str | None:
         print(
-            f"[ERROR] {ctx.source}: {ctx.error_context.error_type} - {ctx.error_context.error_message}"
+            f"[ERROR] {ctx.source}: {ctx.error_type} - {ctx.error_message}"
         )
         print(f"  Session: {ctx.session_id}")
         print(
@@ -68,14 +68,14 @@ class AgentErrorHandler:
 
         if hasattr(self._obs, "tracer"):
             self._obs.tracer.error(
-                f"{ctx.error_context.error_type}: {ctx.error_context.error_message}",
+                f"{ctx.error_type}: {ctx.error_message}",
                 source=ctx.source,
                 session_id=ctx.session_id or "unknown",
                 prompt=ctx.prompt or "unknown",
-                stack_trace=ctx.error_context.stack_trace or "",
+                stack_trace=ctx.stack_trace or "",
             )
 
-        return False
+        return None  # re-raise
 
 
 async def main():
@@ -118,7 +118,7 @@ async def main():
         .with_short_term_memory(short_term)
         .with_long_term_memory(long_term)
         .with_error_handling(
-            ErrorHandlingConfig().with_error_handler(AgentErrorHandler(obs))
+            ErrorHandlingConfig().on_error(AgentErrorHandler(obs))
         )
     )
 

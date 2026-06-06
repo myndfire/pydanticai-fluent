@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Error handling for agent runs with global error handler support."""
+"""Error handling for agent runs with per-source callbacks."""
 
 import traceback
 from dataclasses import dataclass, field
@@ -27,7 +27,7 @@ class ErrorContext:
 
     error_type: str
     error_message: str
-    source: str  # tool, memory, llm, unknown
+    source: str  # llm, tool, validation, guardrail, memory, prompt, evaluator, output
     session_id: Optional[str] = None
     prompt: Optional[str] = None
     stack_trace: Optional[str] = None
@@ -50,31 +50,67 @@ class AgentRunResult:
 
 
 @dataclass
-class AgentErrorContext:
-    """Pure context about the agent when error occurred."""
-
-    session_id: str
-    prompt: str
-    source: str
-    error_context: ErrorContext
-
-
-@dataclass
 class ErrorHandlingConfig:
-    """Configuration for error handling in agent runs."""
+    """Configuration for error handling with per-source callbacks.
 
-    on_error_handler: Optional[Callable[[AgentErrorContext, Exception], bool]] = None
+    Each source has a dedicated callback. The callback receives an
+    ErrorContext and returns:
+      - Some(value) → suppress the error, value becomes AgentRunResult.output
+      - None        → re-raise the exception
 
-    def with_error_handler(
-        self, handler: Callable[[AgentErrorContext, Exception], bool]
-    ) -> "ErrorHandlingConfig":
-        """Set global error handler for agent run errors."""
-        self.on_error_handler = handler
+    If no source-specific callback is set, on_error is used as a catch-all.
+    If neither is set, the exception propagates normally.
+    """
+
+    _on_llm_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+    _on_tool_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+    _on_validation_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+    _on_guardrail_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+    _on_memory_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+    _on_prompt_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+    _on_evaluator_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+    _on_output_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+    _on_error: Optional[Callable[[ErrorContext], Optional[Any]]] = None
+
+    def on_llm_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_llm_error = cb
+        return self
+
+    def on_tool_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_tool_error = cb
+        return self
+
+    def on_validation_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_validation_error = cb
+        return self
+
+    def on_guardrail_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_guardrail_error = cb
+        return self
+
+    def on_memory_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_memory_error = cb
+        return self
+
+    def on_prompt_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_prompt_error = cb
+        return self
+
+    def on_evaluator_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_evaluator_error = cb
+        return self
+
+    def on_output_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_output_error = cb
+        return self
+
+    def on_error(self, cb: Callable[[ErrorContext], Optional[Any]]) -> "ErrorHandlingConfig":
+        self._on_error = cb
         return self
 
 
 class ErrorHandler:
-    """Handles errors in agent runs with configurable callbacks."""
+    """Handles errors in agent runs with source-based callback routing."""
 
     def __init__(self, config: ErrorHandlingConfig):
         self.config = config
@@ -86,17 +122,22 @@ class ErrorHandler:
         session_id: str,
         prompt: str,
     ) -> Optional[AgentRunResult]:
-        """
-        Handle an error from agent run.
+        """Handle an error from agent run.
+
+        Routes to the source-specific callback (e.g. on_llm_error for "llm"),
+        then falls back to on_error. If the callback returns a value, the error
+        is suppressed and that value becomes the output. If it returns None,
+        the exception propagates.
 
         Args:
             exception: The exception that was raised
-            source: Error source (memory, llm, tool, unknown)
+            source: Error source (llm, tool, validation, guardrail, memory,
+                    prompt, evaluator, output)
             session_id: Session ID
             prompt: User prompt
 
         Returns:
-            AgentRunResult if handler returns True, None to rethrow
+            AgentRunResult if suppressed, None to re-raise
         """
         error_ctx = ErrorContext(
             error_type=type(exception).__name__,
@@ -105,52 +146,30 @@ class ErrorHandler:
             session_id=session_id,
             prompt=prompt,
             stack_trace=traceback.format_exc(),
-            partial_result=None,
         )
 
-        agent_ctx = AgentErrorContext(
-            session_id=session_id,
-            prompt=prompt,
-            source=source,
-            error_context=error_ctx,
-        )
+        source_map: dict[str, Optional[Callable[[ErrorContext], Optional[Any]]]] = {
+            "llm":        self.config._on_llm_error,
+            "tool":       self.config._on_tool_error,
+            "validation": self.config._on_validation_error,
+            "guardrail":  self.config._on_guardrail_error,
+            "memory":     self.config._on_memory_error,
+            "prompt":     self.config._on_prompt_error,
+            "evaluator":  self.config._on_evaluator_error,
+            "output":     self.config._on_output_error,
+        }
+        handler = source_map.get(source) or self.config._on_error
 
-        if self.config.on_error_handler:
+        if handler:
             try:
-                should_continue = self.config.on_error_handler(agent_ctx, exception)
-                if should_continue:
+                output = handler(error_ctx)
+                if output is not None:
                     return AgentRunResult(
-                        output=None,
+                        output=output,
                         success=False,
                         error_context=error_ctx,
-                        used_fallback=False,
-                        new_messages=[],
-                        usage=None,
                     )
             except Exception:
                 pass
 
         return None
-
-    @staticmethod
-    def determine_error_source(exception: Exception) -> str:
-        """Determine the error source based on exception type."""
-        error_type = type(exception).__name__.lower()
-        error_msg = str(exception).lower()
-
-        if any(
-            x in error_type or x in error_msg
-            for x in ["mongo", "redis", "elastic", "motor", "database", "connection"]
-        ):
-            return "memory"
-        elif any(
-            x in error_type or x in error_msg
-            for x in ["timeout", "model", "llm", "ollama", "openai", "api"]
-        ):
-            return "llm"
-        elif any(
-            x in error_type or x in error_msg for x in ["tool", "mcp", "function"]
-        ):
-            return "tool"
-        else:
-            return "unknown"

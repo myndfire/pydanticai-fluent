@@ -33,7 +33,7 @@ from agent_harness import (
 from agent_harness.errorhandling import (
     ErrorHandlingConfig,
     ErrorHandler,
-    AgentErrorContext,
+    ErrorContext,
 )
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -88,22 +88,22 @@ class DocumentErrorHandler:
     def __init__(self, obs: Observability):
         self._obs = obs
 
-    def __call__(self, ctx: AgentErrorContext, exc: Exception) -> bool:
+    def __call__(self, ctx: ErrorContext) -> str | None:
         print(
-            f"[ERROR] {ctx.source}: {ctx.error_context.error_type} - {ctx.error_context.error_message}"
+            f"[ERROR] {ctx.source}: {ctx.error_type} - {ctx.error_message}"
         )
         print(f"  Session: {ctx.session_id}")
 
         if hasattr(self._obs, "tracer"):
             self._obs.tracer.error(
-                f"{ctx.error_context.error_type}: {ctx.error_context.error_message}",
+                f"{ctx.error_type}: {ctx.error_message}",
                 source=ctx.source,
                 session_id=ctx.session_id or "unknown",
                 prompt=ctx.prompt or "unknown",
-                stack_trace=ctx.error_context.stack_trace or "",
+                stack_trace=ctx.stack_trace or "",
             )
 
-        return False
+        return None  # re-raise
 
 
 load_dotenv()
@@ -119,7 +119,7 @@ def create_agent(short_term, long_term, obs):
         .with_short_term_memory(short_term)
         .with_long_term_memory(long_term)
         .with_error_handling(
-            ErrorHandlingConfig().with_error_handler(DocumentErrorHandler(obs))
+            ErrorHandlingConfig().on_error(DocumentErrorHandler(obs))
         )
         .with_rabbitmq(
             host="localhost",

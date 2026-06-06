@@ -1,0 +1,14 @@
+# Prometheus pushgateway for PrometheusMetrics.
+# Start: docker compose -f docker-compose.prometheus.yml up -d
+# Stop:  docker compose -f docker-compose.prometheus.yml down -v
+#
+# Port: 9091 — Prometheus pushgateway → PrometheusMetrics(push_gateway="http://localhost:9091")
+
+services:
+  pushgateway:
+    image: prom/pushgateway:v1.9.0
+    container_name: agent-harness-pushgateway
+    ports:
+      - "9091:9091"
+
+volumes: {}

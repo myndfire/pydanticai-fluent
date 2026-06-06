@@ -42,8 +42,10 @@ from .guards import (
     ResultValidatorRetryConfig,
     ContentFilterConfig,
     PIIDetectionConfig,
+    TokenLimitsConfig,
     CostLimitsConfig,
     CircuitBreakerConfig,
+    TurnLimitsConfig,
 )
 from .model_config import ModelConfig, build_model
 from .errorhandling import ErrorHandlingConfig, ErrorHandler
@@ -149,6 +151,7 @@ class ManagedAgent:
         self._output_exchange: Optional[str] = None
         self._dead_letter_queue: Optional[str] = None
         self._dead_letter_exchange: Optional[str] = None
+        self._turn_counts: dict[str, int] = {}
 
         if self.tools.get_tools():
             self.tools.register_to_agent(self._agent)
@@ -262,28 +265,37 @@ class ManagedAgent:
 
     def with_content_filter(self, config: ContentFilterConfig) -> "ManagedAgent":
         """Set content filter configuration."""
-        self.guards.enable_content_filter = config.enabled
+        self.guards.content_filter = config
         self._guard_runner = GuardRunner(self.guards)
         return self
 
     def with_pii_detection(self, config: PIIDetectionConfig) -> "ManagedAgent":
         """Set PII detection configuration."""
-        self.guards.enable_pii_detection = config.enabled
+        self.guards.pii_detection = config
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_token_limits(self, config: TokenLimitsConfig) -> "ManagedAgent":
+        """Set token limits configuration."""
+        self.guards.token_limits = config
         self._guard_runner = GuardRunner(self.guards)
         return self
 
     def with_cost_limits(self, config: CostLimitsConfig) -> "ManagedAgent":
         """Set cost limits configuration."""
-        self.guards.enable_cost_limits = config.max_tokens_per_request is not None
-        self.guards.max_tokens_per_request = config.max_tokens_per_request
+        self.guards.cost_limits = config
         self._guard_runner = GuardRunner(self.guards)
         return self
 
     def with_circuit_breaker(self, config: CircuitBreakerConfig) -> "ManagedAgent":
         """Set circuit breaker configuration."""
-        self.guards.enable_circuit_breaker = config.enabled
-        self.guards.failure_threshold = config.failure_threshold
-        self.guards.circuit_timeout = config.circuit_timeout
+        self.guards.circuit_breaker = config
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_turn_limits(self, config: TurnLimitsConfig) -> "ManagedAgent":
+        """Set turn limits configuration."""
+        self.guards.turn_limits = config
         self._guard_runner = GuardRunner(self.guards)
         return self
 
@@ -291,16 +303,18 @@ class ManagedAgent:
         self,
         content_filter: Optional[ContentFilterConfig] = None,
         pii_detection: Optional[PIIDetectionConfig] = None,
+        token_limits: Optional[TokenLimitsConfig] = None,
         cost_limits: Optional[CostLimitsConfig] = None,
     ) -> "ManagedAgent":
         """Set multiple guardrail configurations at once."""
         if content_filter:
-            self.guards.enable_content_filter = content_filter.enabled
+            self.guards.content_filter = content_filter
         if pii_detection:
-            self.guards.enable_pii_detection = pii_detection.enabled
+            self.guards.pii_detection = pii_detection
+        if token_limits:
+            self.guards.token_limits = token_limits
         if cost_limits:
-            self.guards.enable_cost_limits = cost_limits.max_tokens_per_request is not None
-            self.guards.max_tokens_per_request = cost_limits.max_tokens_per_request
+            self.guards.cost_limits = cost_limits
         self._guard_runner = GuardRunner(self.guards)
         return self
 
@@ -408,18 +422,44 @@ class ManagedAgent:
 
         try:
             async with self.observability.observe("agent_run", **context):
-                if self._short_term_memory:
-                    await message_history.load(session_id, self._short_term_memory)
-                if self._long_term_memory:
-                    await message_history.load(session_id, self._long_term_memory)
+                try:
+                    if self._short_term_memory:
+                        await message_history.load(session_id, self._short_term_memory)
+                    if self._long_term_memory:
+                        await message_history.load(session_id, self._long_term_memory)
+                except Exception as e:
+                    e._error_source = "memory"
+                    raise
+
+                # ── Turn limits check ───────────────────────────
+                if self.guards.turn_limits:
+                    tl = self.guards.turn_limits
+                    count = self._turn_counts.get(session_id, 0) + 1
+                    self._turn_counts[session_id] = count
+                    if tl.max_turns is not None and count > tl.max_turns:
+                        error_ctx = ErrorContext(
+                            error_type="TurnLimitExceeded",
+                            error_message=(
+                                f"Turn {count} exceeds max {tl.max_turns}"
+                            ),
+                            source="guardrail",
+                            session_id=session_id,
+                        )
+                        if tl._on_turn_limit:
+                            return tl._on_turn_limit(error_ctx)
+                        raise RuntimeError(error_ctx.error_message)
 
                 history = message_history.messages
 
-                system_prompt = await self.prompts.get_system_prompt(
-                    prompt_id=prompt_id, **prompt_vars
-                )
-                if system_prompt:
-                    self._agent._system_prompts = (system_prompt,)
+                try:
+                    system_prompt = await self.prompts.get_system_prompt(
+                        prompt_id=prompt_id, **prompt_vars
+                    )
+                    if system_prompt:
+                        self._agent._system_prompts = (system_prompt,)
+                except Exception as e:
+                    e._error_source = "prompt"
+                    raise
 
                 result = await self._guard_runner.run_with_guards(
                     agent=self._agent,
@@ -440,113 +480,96 @@ class ManagedAgent:
 
                 serialized_messages = filter_thinking_parts(new_messages)
 
-            usage = None
-            if hasattr(result, "usage") and result.usage:
-                u = result.usage
-                if (
-                    hasattr(u, "requests")
-                    and isinstance(getattr(u, "requests", None), list)
-                    and u.requests
-                ):
-                    u = u.requests[0]
-                usage = UsageData(
-                    input_tokens=getattr(u, "input_tokens", 0) or 0,
-                    output_tokens=getattr(u, "output_tokens", 0) or 0,
-                    total_tokens=getattr(u, "total_tokens", 0) or 0,
-                    prompt_tokens=getattr(u, "input_tokens", 0) or 0,
-                    completion_tokens=getattr(u, "output_tokens", 0) or 0,
+            try:
+                usage = None
+                if hasattr(result, "usage") and result.usage:
+                    u = result.usage
+                    if (
+                        hasattr(u, "requests")
+                        and isinstance(getattr(u, "requests", None), list)
+                        and u.requests
+                    ):
+                        u = u.requests[0]
+                    usage = UsageData(
+                        input_tokens=getattr(u, "input_tokens", 0) or 0,
+                        output_tokens=getattr(u, "output_tokens", 0) or 0,
+                        total_tokens=getattr(u, "total_tokens", 0) or 0,
+                        prompt_tokens=getattr(u, "input_tokens", 0) or 0,
+                        completion_tokens=getattr(u, "output_tokens", 0) or 0,
+                    )
+                else:
+                    for msg in new_messages:
+                        if isinstance(msg, ModelResponse) and getattr(msg, "usage", None):
+                            u = msg.usage
+                            usage = UsageData(
+                                input_tokens=getattr(u, "input_tokens", 0) or 0,
+                                output_tokens=getattr(u, "output_tokens", 0) or 0,
+                                total_tokens=getattr(u, "total_tokens", 0) or 0,
+                                prompt_tokens=getattr(u, "input_tokens", 0) or 0,
+                                completion_tokens=getattr(u, "output_tokens", 0) or 0,
+                            )
+                            break
+
+                turn = TurnData(
+                    turn_id=str(uuid.uuid4()),
+                    timestamp=datetime.now(),
+                    completed_at=datetime.now(),
+                    messages=serialized_messages,
+                    usage=usage,
+                    duration_seconds=duration,
+                    model=self.model,
+                    status=status,
                 )
-            else:
-                for msg in new_messages:
-                    if isinstance(msg, ModelResponse) and getattr(msg, "usage", None):
-                        u = msg.usage
-                        usage = UsageData(
-                            input_tokens=getattr(u, "input_tokens", 0) or 0,
-                            output_tokens=getattr(u, "output_tokens", 0) or 0,
-                            total_tokens=getattr(u, "total_tokens", 0) or 0,
-                            prompt_tokens=getattr(u, "input_tokens", 0) or 0,
-                            completion_tokens=getattr(u, "output_tokens", 0) or 0,
-                        )
-                        break
 
-            turn = TurnData(
-                turn_id=str(uuid.uuid4()),
-                timestamp=datetime.now(),
-                completed_at=datetime.now(),
-                messages=serialized_messages,
-                usage=usage,
-                duration_seconds=duration,
-                model=self.model,
-                status=status,
-            )
+                self._last_turn = turn
 
-            self._last_turn = turn
+                if usage:
+                    self.observability.log_info(
+                        "token_usage",
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        total_tokens=usage.total_tokens,
+                        **context,
+                    )
+            except Exception as e:
+                e._error_source = "output"
+                raise
 
             if save_to:
                 providers = save_to if isinstance(save_to, list) else [save_to]
-                for provider in providers:
-                    await provider.save_turn(session_id, turn)
-
-            if usage:
-                self.observability.log_info(
-                    "token_usage",
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    total_tokens=usage.total_tokens,
-                    **context,
-                )
+                try:
+                    for provider in providers:
+                        await provider.save_turn(session_id, turn)
+                except Exception as e:
+                    e._error_source = "memory"
+                    raise
 
             for evaluator in self.evaluators:
                 try:
                     await evaluator.evaluate(prompt, result, context)
                 except Exception as e:
-                    self.observability.log_warning(
-                        f"Evaluator failed: {str(e)}",
-                        evaluator=type(evaluator).__name__,
-                    )
+                    e._error_source = "evaluator"
+                    raise
 
-            if self._agent._output_type is None:
-                result.output = extract_clean_output(result)
+            try:
+                if self._agent._output_type is None:
+                    result.output = extract_clean_output(result)
+            except Exception as e:
+                e._error_source = "output"
+                raise
+
             return result
 
         except Exception as e:
-            error_type = type(e).__name__.lower()
-            error_msg = str(e).lower()
-
-            if any(
-                x in error_type or x in error_msg
-                for x in [
-                    "mongo",
-                    "redis",
-                    "elastic",
-                    "motor",
-                    "database",
-                    "connection",
-                ]
-            ):
-                source = "memory"
-            elif any(
-                x in error_type or x in error_msg
-                for x in ["timeout", "model", "llm", "ollama", "openai", "anthropic", "google", "groq", "mistral", "cohere", "openrouter", "grok", "deepseek", "cerebras", "bedrock", "huggingface", "api"]
-            ):
-                source = "llm"
-            elif any(
-                x in error_type or x in error_msg for x in ["tool", "mcp", "function"]
-            ):
-                source = "tool"
-            else:
-                source = "unknown"
-
-            result = self._error_handler.handle_error(
+            source = getattr(e, "_error_source", "unknown")
+            error_result = self._error_handler.handle_error(
                 exception=e,
                 source=source,
                 session_id=session_id,
                 prompt=prompt,
             )
-
-            if result:
-                return result
-
+            if error_result:
+                return error_result
             raise
 
     async def run_sync(

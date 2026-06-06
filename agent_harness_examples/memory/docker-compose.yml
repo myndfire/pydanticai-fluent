@@ -1,0 +1,41 @@
+# MongoDB + Redis + Elasticsearch for agent_harness memory providers.
+# Start all:    docker compose up -d
+# Start one:    docker compose up -d mongo
+# Stop all:     docker compose down -v
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: agent-harness-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: agent_memory
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent-harness-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  elasticsearch:
+    image: elasticsearch:8.17.0
+    container_name: agent-harness-elastic
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+volumes:
+  mongo_data:
+  redis_data:
+  es_data:

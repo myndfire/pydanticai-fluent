@@ -1,0 +1,16 @@
+# Redis for RedisMemory provider.
+# Start: docker compose -f docker-compose.redis.yml up -d
+# Stop:  docker compose -f docker-compose.redis.yml down -v
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: agent-harness-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  redis_data:

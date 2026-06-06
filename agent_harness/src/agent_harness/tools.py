@@ -79,40 +79,7 @@ class ToolRegistry:
         if endpoint:
             print(f"[MCP Placeholder] Using endpoint: {endpoint}")
 
-        # TODO: Implement actual MCP integration when SDK is available
-        # Example pseudocode:
-        #
-        # from mcp import MCPClient
-        #
-        # client = MCPClient(endpoint or discover_endpoint(server))
-        # tools = await client.list_tools()
-        #
-        # for tool in tools:
-        #     wrapped_func = self._wrap_mcp_tool(tool, client)
-        #     self._tools.append(wrapped_func)
-
         return self
-
-    def _wrap_mcp_tool(self, tool_spec: dict, client: any) -> Callable:
-        """
-        Wrap an MCP tool as a PydanticAI-compatible function.
-
-        NOTE: Placeholder implementation.
-
-        Args:
-            tool_spec: MCP tool specification
-            client: MCP client instance
-
-        Returns:
-            Wrapped function
-        """
-
-        # Placeholder - would create a function that calls MCP tool
-        async def mcp_tool_wrapper(**kwargs):
-            # return await client.call_tool(tool_spec["name"], kwargs)
-            pass
-
-        return mcp_tool_wrapper
 
     def register_to_agent(self, agent: Agent):
         """
