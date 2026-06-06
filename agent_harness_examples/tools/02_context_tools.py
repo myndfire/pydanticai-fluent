@@ -27,6 +27,15 @@ dependency container and run context metadata.
 
 Usage:
     uv run python 02_context_tools.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python tools/02_context_tools.py
 """
 
 import asyncio

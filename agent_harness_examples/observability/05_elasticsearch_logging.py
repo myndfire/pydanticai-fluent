@@ -26,6 +26,17 @@ Prerequisite:
 
 Usage:
     uv run python 05_elasticsearch_logging.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. (Optional) Start Elasticsearch:
+        docker compose -f agent_harness_examples/observability/docker-compose.elastic.yml up -d
+    3. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python observability/05_elasticsearch_logging.py
 """
 
 import asyncio

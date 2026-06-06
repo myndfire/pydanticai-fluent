@@ -21,6 +21,15 @@ Demonstrates:
 
 Usage:
     uv run python 05_pii_detection.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python guardrails/05_pii_detection.py
 """
 
 import asyncio

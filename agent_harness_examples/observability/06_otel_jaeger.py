@@ -28,6 +28,17 @@ Jaeger UI: http://localhost:16686
 
 Usage:
     uv run python 06_otel_jaeger.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. (Optional) Start Jaeger:
+        docker compose -f agent_harness_examples/observability/docker-compose.jaeger.yml up -d
+    3. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python observability/06_otel_jaeger.py
 """
 
 import asyncio

@@ -28,6 +28,17 @@ Prerequisite:
 
 Usage:
     uv run python 08_elasticsearch_memory.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. (Optional) Start Elasticsearch:
+        docker compose -f agent_harness_examples/observability/docker-compose.elastic.yml up -d
+    3. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python memory/08_elasticsearch_memory.py
 """
 
 import asyncio

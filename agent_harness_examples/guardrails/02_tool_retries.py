@@ -23,6 +23,15 @@ Tool retries correspond to PydanticAI's @agent.tool(retries=N) parameter.
 
 Usage:
     uv run python 02_tool_retries.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python guardrails/02_tool_retries.py
 """
 
 import asyncio

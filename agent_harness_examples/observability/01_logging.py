@@ -22,6 +22,13 @@ Demonstrates:
 
 Usage:
     uv run python 01_logging.py
+
+Setup
+-----
+    1. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python observability/01_logging.py
 """
 
 import asyncio

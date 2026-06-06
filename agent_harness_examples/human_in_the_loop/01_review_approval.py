@@ -52,6 +52,15 @@ Key points
 Usage
 ─────
     uv run python 01_review_approval.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python human_in_the_loop/01_review_approval.py
 """
 
 import asyncio

@@ -38,6 +38,17 @@ Prerequisite:
 
 Usage:
     uv run python 02_mongo_prompts.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. (Optional) Start MongoDB:
+        docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d
+    3. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python prompts/02_mongo_prompts.py
 """
 
 import asyncio

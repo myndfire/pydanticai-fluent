@@ -23,6 +23,15 @@ Demonstrates:
 
 Usage:
     uv run python 05_guardrail_errors.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python error_handling/05_guardrail_errors.py
 """
 
 import asyncio

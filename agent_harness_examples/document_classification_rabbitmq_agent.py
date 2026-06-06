@@ -40,7 +40,22 @@ from typing import Literal
 
 
 class ClassificationData(BaseModel):
-    """Document classification data from LLM."""
+    """Document classification data from LLM.
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. (Optional) Start MongoDB:
+        docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d
+    3. (Optional) Start Jaeger:
+        docker compose -f agent_harness_examples/observability/docker-compose.jaeger.yml up -d
+    4. (Optional) Start RabbitMQ:
+        docker compose -f agent_harness_examples/messaging/rabbitmq/docker-compose.rabbitmq.yml up -d
+    5. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python document_classification_rabbitmq_agent.py
+"""
 
     document_type: Literal["medical", "finance", "resume", "unknown"] = Field(
         ...,

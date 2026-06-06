@@ -24,6 +24,15 @@ Result validator retries correspond to PydanticAI's
 
 Usage:
     uv run python 03_result_validator_retries.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python guardrails/03_result_validator_retries.py
 """
 
 import asyncio

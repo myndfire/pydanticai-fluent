@@ -28,6 +28,15 @@ the circuit closes. If it fails, the circuit re-opens.
 
 Usage:
     uv run python 08_circuit_breaker.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python guardrails/08_circuit_breaker.py
 """
 
 import asyncio

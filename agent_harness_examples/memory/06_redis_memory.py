@@ -27,6 +27,17 @@ Prerequisite:
 
 Usage:
     uv run python 06_redis_memory.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. (Optional) Start Redis:
+        docker compose -f agent_harness_examples/memory/docker-compose.redis.yml up -d
+    3. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python memory/06_redis_memory.py
 """
 
 import asyncio

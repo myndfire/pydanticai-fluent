@@ -25,7 +25,16 @@ from agent_harness.evaluators import Evaluator
 
 
 def repeat(text: str) -> str:
-    """Simple repeat tool that returns the provided text unchanged."""
+    """Simple repeat tool that returns the provided text unchanged.
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python agent_example-1.py
+"""
     print("[tool:repeat] params:", text)
     return text
 

@@ -34,6 +34,15 @@ on result.new_messages still contain everything. This example shows both.
 
 Usage:
     uv run python 09_think_parts.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python memory/09_reasoning_traces.py
 """
 
 import asyncio

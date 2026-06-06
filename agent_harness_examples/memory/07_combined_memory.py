@@ -27,6 +27,19 @@ Prerequisite:
 
 Usage:
     uv run python 07_combined_memory.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. (Optional) Start MongoDB:
+        docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d
+    3. (Optional) Start Redis:
+        docker compose -f agent_harness_examples/memory/docker-compose.redis.yml up -d
+    4. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python memory/07_combined_memory.py
 """
 
 import asyncio

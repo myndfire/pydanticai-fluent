@@ -25,6 +25,15 @@ Demonstrates:
 
 Usage:
     uv run python 09_all_guardrails.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python guardrails/09_all_guardrails.py
 """
 
 import asyncio

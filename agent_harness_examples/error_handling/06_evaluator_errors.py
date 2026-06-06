@@ -27,6 +27,15 @@ Now they propagate to the error handler with source="evaluator".
 
 Usage:
     uv run python 06_evaluator_errors.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python error_handling/06_evaluator_errors.py
 """
 
 import asyncio

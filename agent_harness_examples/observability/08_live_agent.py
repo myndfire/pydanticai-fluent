@@ -27,6 +27,15 @@ No external services required — all backends are in-memory/console.
 
 Usage:
     uv run python 08_live_agent.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python observability/08_live_agent.py
 """
 
 import asyncio

@@ -29,6 +29,15 @@ an SSE-compatible MCP implementation).
 
 Usage:
     uv run python 03_mcp_server.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python tools/03_mcp_server.py
 """
 
 import asyncio

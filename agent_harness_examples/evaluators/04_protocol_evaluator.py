@@ -23,6 +23,15 @@ Demonstrates:
 
 Usage:
     uv run python 04_protocol_evaluator.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python evaluators/04_protocol_evaluator.py
 """
 
 import asyncio
