@@ -561,23 +561,79 @@ agent.with_agent_retries(
 
 ### Built-in guardrails
 
-```python
-agent.with_content_filter(ContentFilterConfig(enabled=True))
-agent.with_pii_detection(PIIDetectionConfig(enabled=True))
-agent.with_cost_limits(CostLimitsConfig(max_tokens_per_request=4096))
-agent.with_circuit_breaker(CircuitBreakerConfig(
-    enabled=True, failure_threshold=5, circuit_timeout=60,
-))
-```
+Guardrails are callback-driven. Set a config to enable it; omit the config (or pass `None`) to disable. Config presence IS the toggle — no `enabled` booleans.
 
-Bulk guardrail setter:
 ```python
-agent.with_guardrails(
-    content_filter=ContentFilterConfig(),
-    pii_detection=PIIDetectionConfig(),
-    cost_limits=CostLimitsConfig(max_tokens_per_request=4096),
+# Content filter: transform output via callback
+agent.with_content_filter(
+    ContentFilterConfig()
+    .on_filter(lambda text: text.replace("badword", "***"))
+    .on_error(lambda ctx: f"Filter failed: {ctx.error_message}")
+)
+
+# PII detection: redact via callback
+agent.with_pii_detection(
+    PIIDetectionConfig()
+    .on_redact(redact_pii_fn)
+    .on_error(lambda ctx: f"PII redaction failed: {ctx.error_message}")
+)
+
+# Token limits: separate input/output/total caps
+agent.with_token_limits(
+    TokenLimitsConfig()
+    .with_max_input_tokens(2000)
+    .with_max_output_tokens(1000)
+    .with_max_total_tokens(3000)
+    .on_token_limit(lambda ctx: f"Token limit hit: {ctx.error_message}")
+)
+
+# Cost limits: dollar-based with per-token pricing
+agent.with_cost_limits(
+    CostLimitsConfig()
+    .with_cost_per_input_token(0.000003)    # GPT-4o rate
+    .with_cost_per_output_token(0.000015)
+    .with_max_total_cost(0.01)
+    .on_cost_limit(lambda ctx: f"Budget exceeded: {ctx.error_message}")
+)
+
+# Circuit breaker: block after N consecutive failures
+agent.with_circuit_breaker(
+    CircuitBreakerConfig()
+    .with_threshold(5)
+    .with_timeout(60)
+    .on_error(lambda ctx: f"Circuit open: {ctx.error_message}")
+)
+
+# Turn limits: cap agent invocations per session
+agent.with_turn_limits(
+    TurnLimitsConfig()
+    .with_max_turns(50)
+    .on_turn_limit(lambda ctx: f"Session limit: {ctx.error_message}")
 )
 ```
+
+### Bulk guardrail setter
+
+```python
+agent.with_guardrails(
+    content_filter=ContentFilterConfig().on_filter(my_filter),
+    pii_detection=PIIDetectionConfig().on_redact(my_redactor),
+    token_limits=TokenLimitsConfig().with_max_total_tokens(4096),
+    cost_limits=CostLimitsConfig()
+        .with_cost_per_input_token(0.000003)
+        .with_cost_per_output_token(0.000015)
+        .with_max_total_cost(0.01),
+)
+```
+
+### Callback return contract
+
+All guardrail callbacks follow the same pattern as `AgentRetryConfig`:
+
+| Callback type | Signature | Returns |
+|--------------|-----------|---------|
+| Named callback (e.g. `on_filter`, `on_redact`, `on_token_limit`, `on_cost_limit`, `on_turn_limit`) | `(ErrorContext) -> Any` | Return a value → suppress. `None` would re-raise but the guardrail raises first anyway. |
+| `on_error` (on every config) | `(ErrorContext) -> Any` | Return a value → suppress with that value as output. `None` → re-raise the exception. |
 
 ### Configuration class reference
 
@@ -612,112 +668,168 @@ Fluent setters: `.with_max_retries(n)`, `.with_backoff(m)`.
 
 Fluent setters: `.with_max_retries(n)`, `.with_backoff(m)`.
 
-**`GuardConfig`** — combines all retry configs and guardrail toggles:
+**`GuardConfig`** — combines retry configs and optional guardrail configs:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `agent` | `AgentRetryConfig` | `AgentRetryConfig()` | Agent-level retry settings |
 | `tool` | `ToolRetryConfig` | `ToolRetryConfig()` | Tool-level retry settings |
 | `result_validator` | `ResultValidatorRetryConfig` | `ResultValidatorRetryConfig()` | Output validation retry settings |
-| `enable_content_filter` | `bool` | `False` | Enable content filtering guardrail |
-| `enable_pii_detection` | `bool` | `False` | Enable PII detection guardrail |
-| `enable_cost_limits` | `bool` | `False` | Enable cost/token limiting |
-| `max_tokens_per_request` | `int \| None` | `None` | Token cap when cost limits enabled |
-| `enable_circuit_breaker` | `bool` | `False` | Enable circuit breaker |
-| `failure_threshold` | `int` | `5` | Consecutive failures before circuit opens |
-| `circuit_timeout` | `int` | `60` | Seconds before circuit half-opens for a trial request |
+| `content_filter` | `ContentFilterConfig \| None` | `None` | Content filtering (None = off, set = on) |
+| `pii_detection` | `PIIDetectionConfig \| None` | `None` | PII detection (None = off, set = on) |
+| `token_limits` | `TokenLimitsConfig \| None` | `None` | Token usage limits (None = off, set = on) |
+| `cost_limits` | `CostLimitsConfig \| None` | `None` | Dollar cost limits (None = off, set = on) |
+| `circuit_breaker` | `CircuitBreakerConfig \| None` | `None` | Circuit breaker (None = off, set = on) |
+| `turn_limits` | `TurnLimitsConfig \| None` | `None` | Session turn cap (None = off, set = on) |
 
-**`ContentFilterConfig`** — toggles content filtering:
-
-| Field | Type | Default |
-|---|---|---|
-| `enabled` | `bool` | `True` |
-
-Fluent setter: `.with_enabled(bool)`.
-
-**`PIIDetectionConfig`** — toggles PII detection:
-
-| Field | Type | Default |
-|---|---|---|
-| `enabled` | `bool` | `True` |
-
-Fluent setter: `.with_enabled(bool)`.
-
-**`CostLimitsConfig`** — caps token usage:
+**`ContentFilterConfig`** — callback-driven content filtering:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `max_tokens_per_request` | `int \| None` | `None` | Hard token limit; `None` = unlimited |
+| `on_filter` | `Callable[[str], str] \| None` | `None` | Transform the response text (e.g. profanity filter) |
+| `on_error` | `Callable[[ErrorContext], Any] \| None` | `None` | Fallback when the filter callback raises |
 
-Fluent setter: `.with_max_tokens(n)`.
+Fluent setters: `.on_filter(callback)`, `.on_error(callback)`.
+
+**`PIIDetectionConfig`** — callback-driven PII redaction:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `on_redact` | `Callable[[str], str] \| None` | `None` | Redact PII from the response text |
+| `on_error` | `Callable[[ErrorContext], Any] \| None` | `None` | Fallback when the redaction callback raises |
+
+Fluent setters: `.on_redact(callback)`, `.on_error(callback)`.
+
+**`TokenLimitsConfig`** — caps token usage per request:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `max_input_tokens` | `int \| None` | `None` | Cap on input token count |
+| `max_output_tokens` | `int \| None` | `None` | Cap on output token count |
+| `max_total_tokens` | `int \| None` | `None` | Cap on total token count |
+| `on_token_limit` | `Callable[[ErrorContext], Any] \| None` | `None` | Callback when any limit is exceeded |
+| `on_error` | `Callable[[ErrorContext], Any] \| None` | `None` | Fallback for unexpected errors |
+
+Fluent setters: `.with_max_input_tokens(n)`, `.with_max_output_tokens(n)`, `.with_max_total_tokens(n)`, `.on_token_limit(callback)`, `.on_error(callback)`.
+
+**`CostLimitsConfig`** — dollar cost caps using per-token pricing:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `max_input_cost` | `float \| None` | `None` | Max dollar cost for input tokens |
+| `max_output_cost` | `float \| None` | `None` | Max dollar cost for output tokens |
+| `max_total_cost` | `float \| None` | `None` | Max total dollar cost |
+| `cost_per_input_token` | `float \| None` | `None` | Pricing per input token (e.g. `0.000003` for GPT-4o) |
+| `cost_per_output_token` | `float \| None` | `None` | Pricing per output token (e.g. `0.000015` for GPT-4o) |
+| `on_cost_limit` | `Callable[[ErrorContext], Any] \| None` | `None` | Callback when cost exceeds a limit |
+| `on_error` | `Callable[[ErrorContext], Any] \| None` | `None` | Fallback for unexpected errors |
+
+Fluent setters: `.with_max_input_cost(n)`, `.with_max_output_cost(n)`, `.with_max_total_cost(n)`, `.with_cost_per_input_token(n)`, `.with_cost_per_output_token(n)`, `.on_cost_limit(callback)`, `.on_error(callback)`.
 
 **`CircuitBreakerConfig`** — failure-aware circuit breaker:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | `bool` | `True` | Whether the circuit breaker is active |
 | `failure_threshold` | `int` | `5` | Consecutive failures before the circuit opens |
-| `circuit_timeout` | `int` | `60` | Seconds to wait before testing with a half-open request |
+| `circuit_timeout` | `int` | `60` | Seconds before testing with a half-open request |
+| `on_error` | `Callable[[ErrorContext], Any] \| None` | `None` | Fallback when circuit is open |
 
-Fluent setters: `.with_enabled(bool)`, `.with_threshold(n)`, `.with_timeout(n)`.
+Fluent setters: `.with_threshold(n)`, `.with_timeout(n)`, `.on_error(callback)`.
+
+**`TurnLimitsConfig`** — session turn cap:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `max_turns` | `int \| None` | `None` | Maximum agent invocations per session |
+| `on_turn_limit` | `Callable[[ErrorContext], Any] \| None` | `None` | Callback when turn limit is exceeded |
+| `on_error` | `Callable[[ErrorContext], Any] \| None` | `None` | Fallback for unexpected errors |
+
+Fluent setters: `.with_max_turns(n)`, `.on_turn_limit(callback)`, `.on_error(callback)`.
 
 ### GuardRunner flow
 
 Inside `run()`, `GuardRunner.run_with_guards()`:
-1. Executes `agent.run()` inside `asyncio.wait_for(timeout)`
-2. On timeout/error: backs off exponentially, retries up to `max_retries`
-3. Calls `on_retry` callback on each retry
-4. After exhaustion: tries `fallback_model` if configured
-5. If fallback also fails: calls `on_error` callback, returns `AgentRunResult(success=False)`
+1. Checks circuit breaker — if open and timeout hasn't elapsed, blocks the request
+2. Executes `agent.run()` inside `asyncio.wait_for(timeout)`
+3. On timeout/error: backs off exponentially, retries up to `max_retries`, tracks consecutive failures for circuit breaker
+4. After success: checks token limits → cost limits → content filter → PII redaction
+5. Calls `on_retry` callback on each retry; `on_error` callback on exhaustion
+6. After exhaustion: tries `fallback_model` if configured
 
 ---
 
 ## 10. Error Handling
 
-### Custom error handler
+### Per-source error callbacks
+
+Errors are classified into 8 sources at the point of origin. Each source has a dedicated callback:
 
 ```python
 from agent_harness.errorhandling import (
-    ErrorHandlingConfig, AgentErrorContext,
+    ErrorHandlingConfig, ErrorContext,
 )
 
-class AgentErrorHandler:
-    def __init__(self, obs):
-        self.obs = obs
+config = (
+    ErrorHandlingConfig()
+    .on_llm_error(lambda ctx: f"LLM failed: {ctx.error_message}")     # network, auth, rate limit, model not found
+    .on_tool_error(lambda ctx: f"Tool failed: {ctx.error_message}")    # tool function raises
+    .on_validation_error(lambda ctx: None)                              # output validator ModelRetry exhausted (re-raise)
+    .on_guardrail_error(lambda ctx: f"Blocked: {ctx.error_message}")   # circuit breaker, token/cost/turn limits
+    .on_memory_error(lambda ctx: None)                                  # persistence failure (suppress, continue)
+    .on_prompt_error(lambda ctx: None)                                  # template/render failure (re-raise)
+    .on_evaluator_error(lambda ctx: None)                               # post-turn evaluator failure (suppress)
+    .on_output_error(lambda ctx: f"Output error: {ctx.error_message}")  # usage parsing, extraction
+    .on_error(lambda ctx: f"Unhandled [{ctx.source}]: {ctx.error_message}")  # catch-all
+)
 
-    def __call__(self, ctx: AgentErrorContext, exc: Exception) -> bool:
-        # ctx.session_id, ctx.prompt, ctx.source, ctx.error_context
-        self.obs.log_error("Agent failed", error=str(exc), session_id=ctx.session_id)
-        return False  # False = re-raise, True = suppress and return failed result
-
-error_config = ErrorHandlingConfig().with_error_handler(AgentErrorHandler(obs))
-agent.with_error_handling(error_config)
+agent.with_error_handling(config)
 ```
+
+### Callback return contract
+
+All error callbacks share one signature:
+
+```python
+def handler(ctx: ErrorContext) -> Any | None:
+    ...
+```
+
+| Return value | Effect |
+|-------------|--------|
+| `any_value` | Suppress the error — `any_value` becomes `AgentRunResult.output`. Returns `AgentRunResult(success=False, output=any_value)`. |
+| `None` | Re-raise the exception — it propagates as normal. |
+
+### Error source taxonomy
+
+Eight sources, set explicitly at each origination point in `agent.run()`:
+
+| Source | Origination point |
+|--------|------------------|
+| `llm` | `agent.run()` inside `asyncio.wait_for` — network, auth, rate limit, model not found, timeout |
+| `tool` | Tool function execution inside pydantic_ai tool loop |
+| `validation` | Output validator `ModelRetry` exhausted |
+| `guardrail` | Circuit breaker open, token/cost/turn limits, content filter/PII callback exception |
+| `memory` | `message_history.load()` or `provider.save_turn()` failures |
+| `prompt` | `get_system_prompt()` Jinja2 render or MongoPrompts query failure |
+| `evaluator` | `evaluator.evaluate()` raises (no longer silently swallowed) |
+| `output` | Usage parsing, `TurnData` construction, `extract_clean_output()` failures |
 
 ### ErrorContext data
 
 ```python
 @dataclass
 class ErrorContext:
-    error_type: str
-    error_message: str
-    source: str          # "tool", "memory", "llm", "unknown"
+    error_type: str           # Python exception class name
+    error_message: str        # Exception message
+    source: str               # llm, tool, validation, guardrail, memory,
+                              # prompt, evaluator, output
     session_id: str | None
     prompt: str | None
-    stack_trace: str | None
-    partial_result: AgentRunResult | None
+    stack_trace: str | None   # Full traceback for debugging
     attempt: int
     max_attempts: int
     will_retry: bool
 ```
-
-### Error source detection
-
-`ErrorHandler.determine_error_source(exception)` classifies exceptions into:
-- `"memory"` — database/connection errors
-- `"llm"` — API errors, rate limits, model errors
-- `"tool"` — tool execution failures
-- `"unknown"` — everything else
 
 ---
 
@@ -987,15 +1099,17 @@ All parameters are optional. Omitted parameters fall back to sensible defaults (
 | `with_mcp_server` | `(url: str, **kwargs) -> ManagedAgent` | Add a single MCP SSE server. `tool_prefix` strips a prefix from tool names. |
 | `with_mcp_servers` | `(*urls: str, tool_prefix: str \| None = None) -> ManagedAgent` | Add multiple MCP servers. Calls `with_mcp_server` for each URL. |
 | `with_evaluators` | `(*evaluators: Evaluator) -> ManagedAgent` | Append evaluators to the list that runs after each turn. |
-| `with_error_handling` | `(config: ErrorHandlingConfig) -> ManagedAgent` | Replace the error handling config and rebuild the error handler. |
+| `with_error_handling` | `(config: ErrorHandlingConfig) -> ManagedAgent` | Replace the error handling config with per-source callbacks. |
 | `with_agent_retries` | `(config: AgentRetryConfig) -> ManagedAgent` | Set agent-level retry behaviour (max retries, timeout, backoff, fallback). |
 | `with_tool_retries` | `(config: ToolRetryConfig) -> ManagedAgent` | Set per-tool retry behaviour. |
 | `with_result_validator_retries` | `(config: ResultValidatorRetryConfig) -> ManagedAgent` | Set structured output validation retry behaviour. |
-| `with_content_filter` | `(config: ContentFilterConfig) -> ManagedAgent` | Enable or disable content filtering guardrail. |
-| `with_pii_detection` | `(config: PIIDetectionConfig) -> ManagedAgent` | Enable or disable PII detection guardrail. |
-| `with_cost_limits` | `(config: CostLimitsConfig) -> ManagedAgent` | Set the max tokens per request guardrail. |
+| `with_content_filter` | `(config: ContentFilterConfig) -> ManagedAgent` | Set content filter config — omit or pass `None` to disable. |
+| `with_pii_detection` | `(config: PIIDetectionConfig) -> ManagedAgent` | Set PII detection config — omit or pass `None` to disable. |
+| `with_token_limits` | `(config: TokenLimitsConfig) -> ManagedAgent` | Set token usage limits (input/output/total caps). |
+| `with_cost_limits` | `(config: CostLimitsConfig) -> ManagedAgent` | Set dollar-based cost limits with per-token pricing. |
 | `with_circuit_breaker` | `(config: CircuitBreakerConfig) -> ManagedAgent` | Configure the circuit breaker (failure threshold + timeout). |
-| `with_guardrails` | `(content_filter: ContentFilterConfig, pii_detection: PIIDetectionConfig, cost_limits: CostLimitsConfig) -> ManagedAgent` | Set all three guardrail configs at once. |
+| `with_turn_limits` | `(config: TurnLimitsConfig) -> ManagedAgent` | Set a cap on agent invocations per session. |
+| `with_guardrails` | `(content_filter: ContentFilterConfig, pii_detection: PIIDetectionConfig, token_limits: TokenLimitsConfig, cost_limits: CostLimitsConfig) -> ManagedAgent` | Set multiple guardrail configs in one call. |
 | `with_output` | `(output_type: type, output_retries: int = 3) -> ManagedAgent` | Set a Pydantic model as the structured output type. The agent will retry up to `output_retries` times to produce valid output. |
 | `with_rabbitmq` | `(host: str, port: int, username: str, password: str, virtual_host: str = "/") -> ManagedAgent` | Store RabbitMQ connection parameters (not connected until `run()` is called with queue config). |
 | `with_input_queue` | `(queue_name: str) -> ManagedAgent` | Set the RabbitMQ input queue name. |
@@ -1056,14 +1170,16 @@ agent.run(prompt, message_history, session_id)
   │
   ├─ prompts.get_system_prompt(prompt_id, **kwargs)
   │
-  ├─ GuardRunner.run_with_guards(agent, prompt, messages, deps)
-  │    ├─ for attempt in range(max_retries):
-  │    │    asyncio.wait_for(agent.run(), timeout)
-  │    │    ✓ success → return AgentRunResult(success=True)
-  │    │    ✗ timeout/error → backoff, on_retry callback, retry
-  │    ├─ exhaust retries + fallback_model → run fallback
-  │    └─ fallback fail + on_error → return AgentRunResult(success=False)
-  │       or re-raise
+   ├─ GuardRunner.run_with_guards(agent, prompt, messages, deps)
+   │    ├─ Circuit breaker gateway check
+   │    ├─ for attempt in range(max_retries):
+   │    │    asyncio.wait_for(agent.run(), timeout)
+   │    │    ✓ success → token limits → cost limits → content filter → PII redaction
+   │    │               → return AgentRunResult(success=True)
+   │    │    ✗ timeout/error → backoff, on_retry callback, track failure, retry
+   │    ├─ exhaust retries + fallback_model → run fallback
+   │    └─ guardrail/fallback fail + on_error → return AgentRunResult(success=False)
+   │       or re-raise
   │
   ├─ extract_clean_output(result)  [if no structured output type]
   ├─ TurnData(messages, usage, duration, model, status)
@@ -1071,7 +1187,9 @@ agent.run(prompt, message_history, session_id)
   ├─ observability → log token usage
   ├─ evaluators → for each evaluator: evaluate(prompt, result, context)
   │
-  └─ [on exception] ErrorHandler.handle_error(exception, source, session_id, prompt)
-       ├─ handler returns True  → return AgentRunResult(success=False)
-       └─ handler returns False → re-raise
+   └─ [on exception] ErrorHandler.handle_error(exception, source, session_id, prompt)
+        ├─ routes to source-specific callback (on_llm_error / on_tool_error / ...)
+        ├─ fallback to on_error (catch-all)
+        ├─ handler returns a value → return AgentRunResult(success=False, output=value)
+        └─ handler returns None → re-raise
 ```
