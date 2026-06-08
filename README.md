@@ -9,7 +9,8 @@ A fluent, builder-style API for configuring [pydantic-ai](https://github.com/pyd
 - **Memory** — short-term and long-term conversation persistence via a pluggable `MemoryProvider` protocol (in-memory, MongoDB, Redis, Elasticsearch).
 - **Observability** — unified facade combining logging (structlog, file, Elasticsearch, Logfire), tracing (OTEL, Logfire, Jaeger), and metrics (Prometheus, StatsD, OTEL, InMemory).
 - **Guards** — retry logic with exponential backoff, fallback models, callbacks; circuit breaker; guardrails for content filtering, PII detection, and cost limits.
-- **Error handling** — custom error handlers with source classification (LLM, tool, memory, unknown).
+- **Error handling** — custom error handlers with source classification (LLM, tool, memory, unknown); pipeline error recovery.
+- **Orchestration** — multi-agent patterns: tool-driven delegation, sequential pipelines, classify-and-route, parallel fan-out/fan-in.
 - **Tools** — plain-function and context-aware tool registration with automatic `RunContext` detection.
 - **Prompts** — static strings or Jinja2 templates from MongoDB.
 - **Evaluators** — post-turn evaluation hooks with built-in LLM-as-judge (`QualityCheck`) and OpenAI moderation (`SafetyCheck`).
@@ -51,6 +52,10 @@ pydanticai-fluent/
 │       ├── rabbitmq.py         # MessagingService
 │       └── file_storage.py     # MongoDB GridFS FileStorage
 ├── agent_harness_examples/     # Runnable examples
+│   ├── orchestration/          # Multi-agent orchestration examples
+│   ├── error_handling/         # Error handling examples
+│   ├── tools/ memory/ guards/  # etc.
+│   └── ...
 ├── agentic_rag/                # RAG agent example
 └── USAGE.md                    # Full usage guide
 ```

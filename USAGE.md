@@ -831,9 +831,178 @@ class ErrorContext:
     will_retry: bool
 ```
 
+### Pipeline error recovery example
+
+See `error_handling/09_pipeline_error_recovery.py` for a complete three-agent pipeline where the middle agent deliberately fails via `FailingPromptProvider`, the error handler suppresses it, and the pipeline continues to the final agent. A shared `PipelineContext` tracks every stage's status and prints a full trace at the end.
+
 ---
 
-## 11. Evaluators
+## 11. Orchestration Patterns
+
+Multi-agent orchestration patterns for composing pipelines. Each pattern is self-contained in `agent_harness_examples/orchestration/`.
+
+### 11.1 Tool-Driven Delegation (`01_delegation.py`)
+
+A coordinator agent delegates tasks to a specialist agent via a tool. A shared `PipelineContext` tracks all delegations across turns.
+
+```
+Coordinator Agent (tool: delegate_to_specialist)
+    │
+    │ tool call: "analyze Q3 revenue"
+    ▼
+Specialist Agent (finance)
+    │
+    ▼
+SharedContext ←── delegation log updated
+    │
+    ▼
+Coordinator returns final answer
+```
+
+```python
+@dataclass
+class SharedContext:
+    delegation_log: list[dict] = field(default_factory=list)
+
+# Specialist agent
+specialist = ManagedAgent().with_model(model)
+
+# Delegation tool — runs the specialist inside the tool
+async def delegate_to_specialist(ctx: RunContext[SharedContext], task: str) -> str:
+    sub_history = MessageHistory()
+    result = await specialist.run(f"Task: {task}", sub_history, f"sub-{uuid4().hex[:8]}")
+    ctx.deps.record(task, str(result.output))
+    return f"[Specialist Report]\n{result.output}"
+
+# Coordinator with the delegation tool
+coordinator = (
+    ManagedAgent(deps_type=SharedContext)
+    .with_model(model)
+    .with_tools(ToolRegistry().add(delegate_to_specialist))
+)
+
+ctx = SharedContext()
+result = await coordinator.run(prompt, history, session_id, deps=ctx)
+```
+
+### 11.2 Sequential Pipeline (`02_sequential_pipeline.py`)
+
+Three agents run in sequence — each agent's output feeds into the next agent as its prompt. No tools involved; orchestration is fully programmatic.
+
+```
+Researcher Agent ──(facts)──▶ Writer Agent ──(draft)──▶ Editor Agent
+```
+
+```python
+# Build three agents
+researcher = ManagedAgent().with_model(model)
+writer = ManagedAgent().with_model(model)
+editor = ManagedAgent().with_model(model)
+
+# Run pipeline
+r1 = await researcher.run(question, h1, session_id)
+r2 = await writer.run(f"Write using: {r1.output}", h2, session_id)
+r3 = await editor.run(f"Edit: {r2.output}", h3, session_id)
+```
+
+### 11.3 Classify and Route (`03_routing.py`)
+
+A router agent classifies the user's request via a tool, then the program routes to the appropriate specialist agent.
+
+```
+User query ──▶ Router Agent (tool: classify_request)
+                     │
+               "billing" / "tech-support" / "general"
+                     │
+                     ▼
+          BillingAgent / TechAgent / GeneralAgent
+```
+
+```python
+# Router with classify tool
+def classify_request(ctx: RunContext[SharedContext], text: str) -> str:
+    """Classify a user request into a category."""
+    if "bill" in text.lower(): return "billing"
+    if "error" in text.lower(): return "tech-support"
+    return "general"
+
+router = (
+    ManagedAgent(deps_type=SharedContext)
+    .with_model(model)
+    .with_tools(ToolRegistry().add(classify_request))
+)
+
+specialists = {"billing": billing_agent, "tech-support": tech_agent, "general": general_agent}
+
+# Classify, then route
+await router.run(query, h1, session_id, deps=ctx)
+specialist = specialists[ctx.classification]
+result = await specialist.run(query, h2, session_id)
+```
+
+### 11.4 Parallel Fan-Out / Fan-In (`04_parallel_fanout.py`)
+
+A coordinator agent fans out a question to multiple specialist agents concurrently via `asyncio.gather`, then aggregates their perspectives.
+
+```
+Coordinator (tool: gather_perspectives)
+    │
+    ├──▶ Legal Analyst   ──┐
+    ├──▶ Tech Analyst    ──┤── asyncio.gather ──▶ aggregate
+    ├──▶ Business Analyst ──┘
+```
+
+```python
+async def gather_perspectives(ctx: RunContext[SharedContext], question: str) -> str:
+    async def ask_legal():
+        r = await legal_agent.run(question, ...)
+        return ("Legal", str(r.output))
+    async def ask_tech():
+        r = await tech_agent.run(question, ...)
+        return ("Technical", str(r.output))
+    async def ask_business():
+        r = await business_agent.run(question, ...)
+        return ("Business", str(r.output))
+
+    results = await asyncio.gather(ask_legal(), ask_tech(), ask_business())
+    return "\n\n".join(f"### {label}\n{out}" for label, out in results)
+```
+
+### 11.5 Pipeline Error Recovery (`error_handling/09_pipeline_error_recovery.py`)
+
+A three-agent pipeline where the middle agent deliberately fails, the error handler suppresses it, and the pipeline continues. A shared `PipelineContext` tracks every stage and prints a full trace at the end.
+
+```python
+@dataclass
+class PipelineContext:
+    stages: list[dict] = field(default_factory=list)
+
+    def post(self, name: str, success: bool, output: str, error: str = ""):
+        self.stages.append({...})
+
+    def display_trace(self):
+        for s in self.stages:
+            print(f"  {'✓' if s['success'] else '✗'} {s['name']}: {s['output'][:100]}")
+
+# Agent 2 fails deterministically (prompt provider always raises)
+agent2 = (
+    ManagedAgent()
+    .with_prompts(FailingPromptProvider())
+    .with_error_handling(
+        ErrorHandlingConfig().on_prompt_error(lambda ctx: f"[Recovered] {ctx.error_message}")
+    )
+)
+
+# Pipeline continues despite Agent 2 failure
+ctx.post("Research", r1.success, r1.output)
+ctx.post("Analysis", r2.success, r2.output, r2.error_context.error_message if not r2.success else "")
+ctx.post("Summary", r3.success, r3.output)
+ctx.display_trace()
+```
+
+---
+
+## 12. Evaluators
 
 Evaluators run **after every turn** and can inspect or score the agent's output.
 
@@ -888,7 +1057,7 @@ class MyEvaluator(CustomEvaluator, name="toxicity"):
 
 ---
 
-## 12. Structured Output
+## 13. Structured Output
 
 Use `.with_output()` to constrain the agent's response to a Pydantic model:
 
@@ -926,7 +1095,7 @@ The agent will retry up to `output_retries` (default 3) times if it fails to pro
 
 ---
 
-## 13. RabbitMQ Integration
+## 14. RabbitMQ Integration
 
 For message-driven agent workflows (see `document_classification_rabbitmq_agent.py`).
 
@@ -996,7 +1165,7 @@ mq = MessagingService(
 
 ---
 
-## 14. Environment Variables
+## 15. Environment Variables
 
 The `AgentConfig` class (in `config.py`) is a `pydantic.BaseSettings` class that reads from a `.env` file. It's **not used internally** by `ManagedAgent` — it's offered as a convenience for centralising configuration:
 
@@ -1039,7 +1208,7 @@ print(config.model_name)  # "ollama:gpt-oss:20b"
 
 ---
 
-## 15. Running the Examples
+## 16. Running the Examples
 
 All examples are in `agent_harness_examples/`. Run with `uv run`:
 
@@ -1057,6 +1226,15 @@ uv run agent_example-3.py
 
 # Document Classification — Full RabbitMQ pipeline
 uv run document_classification_rabbitmq_agent.py
+
+# Orchestration patterns
+uv run orchestration/01_delegation.py       # Tool-driven delegation
+uv run orchestration/02_sequential_pipeline.py  # Sequential pipeline chain
+uv run orchestration/03_routing.py           # Classify and route
+uv run orchestration/04_parallel_fanout.py   # Parallel fan-out / fan-in
+
+# Error handling — pipeline error recovery
+uv run error_handling/09_pipeline_error_recovery.py
 ```
 
 **Prerequisites:**
@@ -1067,7 +1245,7 @@ uv run document_classification_rabbitmq_agent.py
 
 ---
 
-## 16. Full Fluent API Reference
+## 17. Full Fluent API Reference
 
 ### ManagedAgent constructor
 
@@ -1155,7 +1333,7 @@ class AgentRunResult:
 
 ---
 
-## 17. Architecture & Data Flow
+## 18. Architecture & Data Flow
 
 ```
 agent.run(prompt, message_history, session_id)
