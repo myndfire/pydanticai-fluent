@@ -40,45 +40,11 @@ Setup
 """
 
 import asyncio
-from dataclasses import dataclass, field
 
-from agent_harness.agent import ManagedAgent
+from agent_harness import ManagedAgent, PipelineContext
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
-
-
-# ── Shared pipeline context ──────────────────────────────────────────
-
-@dataclass
-class PipelineContext:
-    """Tracks every stage in the pipeline. Each stage posts its result."""
-
-    stages: list[dict] = field(default_factory=list)
-
-    def post(self, name: str, success: bool, output: str, error: str = ""):
-        self.stages.append({
-            "name": name,
-            "success": success,
-            "output": output[:200],
-            "error": error,
-        })
-
-    def display_trace(self):
-        print(f"\n{'='*60}")
-        print("Pipeline Trace")
-        print("=" * 60)
-        success_count = 0
-        for i, s in enumerate(self.stages):
-            mark = "✓" if s["success"] else "✗"
-            print(f"\n  Stage {i+1}. {s['name']}  {mark}")
-            print(f"     Output: {s['output'][:150]}")
-            if s["error"]:
-                print(f"     Error:  {s['error'][:120]}")
-            if s["success"]:
-                success_count += 1
-        print(f"\n{'─'*60}")
-        print(f"  {success_count}/{len(self.stages)} stages succeeded")
 
 
 # ── Failing prompt provider (deterministic failure) ──────────────────

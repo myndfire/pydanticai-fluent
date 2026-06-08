@@ -117,91 +117,99 @@ class Observability:
         Observe an operation with logging, tracing, and metrics.
 
         Fires all loggers, all tracers, and all metrics backends.
+        Structlog contextvars are bound/unbound automatically so any
+        structlog call within the span inherits the enrichment keys.
         """
-        start_time = datetime.now()
+        import structlog as _structlog
 
-        # Log start on all loggers
-        for lg in self._loggers:
-            lg.info(f"{operation}_started", **context)
+        _structlog.contextvars.bind_contextvars(**context)
+        try:
+            start_time = datetime.now()
 
-        # Increment counter on all metrics
-        for m in self._metrics:
-            m.counter(
-                MetricNames.AGENT_RUNS
-                if operation == "agent_run"
-                else f"{operation}_total",
-                **{
-                    k: str(v)
-                    for k, v in context.items()
-                    if k in ["model", "session_id"]
-                },
-            )
+            # Log start on all loggers
+            for lg in self._loggers:
+                lg.info(f"{operation}_started", **context)
 
-        # Chain all tracers
-        async with self._chain_tracers(operation, **context) as trace_contexts:
-            try:
-                trace_context = {}
-                if trace_contexts:
-                    primary_ctx = trace_contexts[0]
-                    if primary_ctx:
-                        try:
-                            trace_context = {
-                                "trace_id": format(
-                                    primary_ctx.context.trace_id, "032x"
-                                ),
-                                "span_id": format(primary_ctx.context.span_id, "016x"),
-                            }
-                        except (AttributeError, TypeError):
-                            pass
+            # Increment counter on all metrics
+            for m in self._metrics:
+                m.counter(
+                    MetricNames.AGENT_RUNS
+                    if operation == "agent_run"
+                    else f"{operation}_total",
+                    **{
+                        k: str(v)
+                        for k, v in context.items()
+                        if k in ["model", "session_id"]
+                    },
+                )
 
-                yield {**context, **trace_context}
+            # Chain all tracers
+            async with self._chain_tracers(operation, **context) as trace_contexts:
+                try:
+                    trace_context = {}
+                    if trace_contexts:
+                        primary_ctx = trace_contexts[0]
+                        if primary_ctx:
+                            try:
+                                trace_context = {
+                                    "trace_id": format(
+                                        primary_ctx.context.trace_id, "032x"
+                                    ),
+                                    "span_id": format(primary_ctx.context.span_id, "016x"),
+                                }
+                            except (AttributeError, TypeError):
+                                pass
 
-                duration = (datetime.now() - start_time).total_seconds()
+                    yield {**context, **trace_context}
 
-                for lg in self._loggers:
-                    lg.info(
-                        f"{operation}_completed",
-                        duration_seconds=duration,
-                        **context,
-                        **trace_context,
-                    )
+                    duration = (datetime.now() - start_time).total_seconds()
 
-                for m in self._metrics:
-                    m.histogram(
-                        MetricNames.AGENT_DURATION
-                        if operation == "agent_run"
-                        else f"{operation}_duration_seconds",
-                        duration,
-                        **{
-                            k: str(v)
-                            for k, v in context.items()
-                            if k in ["model", "status"]
-                        },
-                    )
+                    for lg in self._loggers:
+                        lg.info(
+                            f"{operation}_completed",
+                            duration_seconds=duration,
+                            **context,
+                            **trace_context,
+                        )
 
-            except Exception as e:
-                duration = (datetime.now() - start_time).total_seconds()
+                    for m in self._metrics:
+                        m.histogram(
+                            MetricNames.AGENT_DURATION
+                            if operation == "agent_run"
+                            else f"{operation}_duration_seconds",
+                            duration,
+                            **{
+                                k: str(v)
+                                for k, v in context.items()
+                                if k in ["model", "status"]
+                            },
+                        )
 
-                for lg in self._loggers:
-                    lg.error(
-                        f"{operation}_failed",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        duration_seconds=duration,
-                        **context,
-                    )
+                except Exception as e:
+                    duration = (datetime.now() - start_time).total_seconds()
 
-                for m in self._metrics:
-                    m.counter(
-                        MetricNames.AGENT_ERRORS,
-                        error_type=type(e).__name__,
-                        operation=operation,
-                    )
-                    m.histogram(
-                        f"{operation}_duration_seconds", duration, status="error"
-                    )
+                    for lg in self._loggers:
+                        lg.error(
+                            f"{operation}_failed",
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            duration_seconds=duration,
+                            **context,
+                        )
 
-                raise
+                    for m in self._metrics:
+                        m.counter(
+                            MetricNames.AGENT_ERRORS,
+                            error_type=type(e).__name__,
+                            operation=operation,
+                        )
+                        m.histogram(
+                            f"{operation}_duration_seconds", duration, status="error"
+                        )
+
+                    raise
+        finally:
+            _structlog.contextvars.clear_contextvars()
 
     @asynccontextmanager
     async def _chain_tracers(self, operation: str, **context):

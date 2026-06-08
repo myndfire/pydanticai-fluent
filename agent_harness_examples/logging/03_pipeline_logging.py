@@ -1,0 +1,124 @@
+# Copyright 2025
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Log enrichment — PipelineContext with run_stage() and auto-logging.
+
+Demonstrates:
+  - PipelineContext.with_observability() — auto-logs each post()
+  - PipelineContext.with_memory() — auto-creates MessageHistory per stage
+  - ctx.run_stage() — simplified pipeline orchestration
+  - pipeline_stage_completed log events
+  - ctx.display_trace() — formatted trace table
+  - Agent-level enrichment flowing through the pipeline
+
+Usage:
+    uv run python logging/03_pipeline_logging.py
+
+Setup
+-----
+    1. Start Ollama (if using local models):
+        ollama serve
+    2. Install dependencies and run:
+        cd agent_harness_examples
+        uv sync
+        uv run python logging/03_pipeline_logging.py
+"""
+
+import asyncio
+
+from agent_harness import (
+    ManagedAgent,
+    LogContext,
+    EnvEnricher,
+    PipelineContext,
+)
+from agent_harness.memory import InMemoryProvider
+from agent_harness.model_config import ModelConfig
+from agent_harness.observability import Observability
+
+
+async def main():
+    print("=" * 60)
+    print("Log Enrichment — Pipeline with Auto-Logging")
+    print("=" * 60)
+
+    model = ModelConfig(provider="ollama", model_name="gpt-oss:20b")
+    obs = Observability()
+
+    # ── Agents with persistent enrichment ───────────────────────
+    base = LogContext().with_("pipeline", "content-qa")
+
+    researcher = (
+        ManagedAgent()
+        .with_model(model)
+        .with_log_enrichment(
+            base.with_("agent_role", "researcher"),
+            EnvEnricher(),
+        )
+    )
+
+    writer = (
+        ManagedAgent()
+        .with_model(model)
+        .with_log_enrichment(
+            base.with_("agent_role", "writer"),
+            EnvEnricher(),
+        )
+    )
+
+    editor = (
+        ManagedAgent()
+        .with_model(model)
+        .with_log_enrichment(
+            base.with_("agent_role", "editor"),
+            EnvEnricher(),
+        )
+    )
+
+    # ── Pipeline context — handles history, enrichment, logging ─
+    ctx = (
+        PipelineContext()
+        .with_observability(obs)
+        .with_memory(InMemoryProvider())
+    )
+
+    # ── Run the pipeline ────────────────────────────────────────
+    print("\n── Stage 1: Research ──")
+    r1 = await ctx.run_stage(
+        researcher, "Research",
+        "What are embeddings in machine learning? Give 2 key facts.",
+    )
+
+    print("\n── Stage 2: Write ──")
+    r2 = await ctx.run_stage(
+        writer, "Write",
+        f"Write one sentence about: {r1.output}",
+    )
+
+    print("\n── Stage 3: Edit ──")
+    r3 = await ctx.run_stage(
+        editor, "Edit",
+        f"Polish this sentence: {r2.output}",
+    )
+
+    # ── Display trace ───────────────────────────────────────────
+    ctx.display_trace()
+
+    print(f"\n✓ Each log entry carries: pipeline, agent_role, stage, host, env, pid")
+    print(f"✓ Auto-logged events: agent_run_started, token_usage, agent_run_completed")
+    print(f"✓ Pipeline events: pipeline_stage_completed for each stage")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

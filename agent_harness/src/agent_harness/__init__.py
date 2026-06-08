@@ -39,6 +39,12 @@ from .logging import (
     FileLogger,
     CompositeLogger,
 )
+from .log_enrichment import (
+    LogEnrichmentProvider,
+    LogContext,
+    EnvEnricher,
+)
+from .pipeline import PipelineContext
 from .tracing import (
     Tracer,
     NoOpTracer,
@@ -103,6 +109,12 @@ __all__ = [
     "ElasticsearchLogger",
     "FileLogger",
     "CompositeLogger",
+    # Log Enrichment
+    "LogEnrichmentProvider",
+    "LogContext",
+    "EnvEnricher",
+    # Pipeline
+    "PipelineContext",
     # Tracing
     "Tracer",
     "NoOpTracer",

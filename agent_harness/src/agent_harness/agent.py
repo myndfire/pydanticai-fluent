@@ -17,7 +17,9 @@
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Optional, TypeVar
+from typing import Any, Optional, TypeVar, Union
+
+from .log_enrichment import LogContext, LogEnrichmentProvider
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse
@@ -138,6 +140,7 @@ class ManagedAgent:
         self.evaluators = evaluators or []
         self.guards = guards or GuardConfig()
         self.error_handling = ErrorHandlingConfig()
+        self._enrichment: list[LogEnrichmentProvider] = []
 
         self._guard_runner = GuardRunner(self.guards)
         self._error_handler = ErrorHandler(self.error_handling)
@@ -167,6 +170,23 @@ class ManagedAgent:
         """
         self._agent = Agent(model=build_model(model))
         self.model = f"{model.provider}:{model.model_name}"
+        return self
+
+    def with_log_enrichment(self, *providers: LogEnrichmentProvider) -> "ManagedAgent":
+        """Add log enrichment providers for this agent.
+
+        Each provider's enrich() output is merged into the log context
+        on every run() call, automatically appearing in all log entries,
+        trace spans, and metric labels.
+
+        Args:
+            *providers: One or more LogEnrichmentProvider instances
+                (LogContext, EnvEnricher, custom implementations, etc.)
+
+        Returns:
+            Self for chaining
+        """
+        self._enrichment.extend(providers)
         return self
 
     def with_short_term_memory(self, provider: MemoryProvider) -> "ManagedAgent":
@@ -393,6 +413,7 @@ class ManagedAgent:
         session_id: str,
         save_to: Optional[list[MemoryProvider]] = None,
         deps: Any = None,
+        enrichment: Optional[LogContext] = None,
         **kwargs,
     ) -> Any:
         """
@@ -404,6 +425,10 @@ class ManagedAgent:
             session_id: Session ID (required - key for saving turns)
             save_to: Optional list of memory providers to save the turn to
             deps: Dependencies for dependency injection
+            enrichment: Optional LogContext with per-run enrichment keys.
+                Merged with agent-level enrichment providers set via
+                with_log_enrichment(). All keys appear in log entries,
+                trace spans, and metric labels.
             **kwargs: Additional context for prompt rendering
 
         Returns:
@@ -419,6 +444,14 @@ class ManagedAgent:
             "prompt_id": prompt_id,
             "model": self.model,
         }
+
+        # Merge agent-level enrichment providers
+        for provider in self._enrichment:
+            context.update(provider.enrich())
+
+        # Merge per-run enrichment (wins over agent-level on conflicts)
+        if enrichment:
+            context.update(enrichment.enrich())
 
         try:
             async with self.observability.observe("agent_run", **context):
@@ -480,85 +513,85 @@ class ManagedAgent:
 
                 serialized_messages = filter_thinking_parts(new_messages)
 
-            try:
-                usage = None
-                if hasattr(result, "usage") and result.usage:
-                    u = result.usage
-                    if (
-                        hasattr(u, "requests")
-                        and isinstance(getattr(u, "requests", None), list)
-                        and u.requests
-                    ):
-                        u = u.requests[0]
-                    usage = UsageData(
-                        input_tokens=getattr(u, "input_tokens", 0) or 0,
-                        output_tokens=getattr(u, "output_tokens", 0) or 0,
-                        total_tokens=getattr(u, "total_tokens", 0) or 0,
-                        prompt_tokens=getattr(u, "input_tokens", 0) or 0,
-                        completion_tokens=getattr(u, "output_tokens", 0) or 0,
-                    )
-                else:
-                    for msg in new_messages:
-                        if isinstance(msg, ModelResponse) and getattr(msg, "usage", None):
-                            u = msg.usage
-                            usage = UsageData(
-                                input_tokens=getattr(u, "input_tokens", 0) or 0,
-                                output_tokens=getattr(u, "output_tokens", 0) or 0,
-                                total_tokens=getattr(u, "total_tokens", 0) or 0,
-                                prompt_tokens=getattr(u, "input_tokens", 0) or 0,
-                                completion_tokens=getattr(u, "output_tokens", 0) or 0,
-                            )
-                            break
-
-                turn = TurnData(
-                    turn_id=str(uuid.uuid4()),
-                    timestamp=datetime.now(),
-                    completed_at=datetime.now(),
-                    messages=serialized_messages,
-                    usage=usage,
-                    duration_seconds=duration,
-                    model=self.model,
-                    status=status,
-                )
-
-                self._last_turn = turn
-
-                if usage:
-                    self.observability.log_info(
-                        "token_usage",
-                        input_tokens=usage.input_tokens,
-                        output_tokens=usage.output_tokens,
-                        total_tokens=usage.total_tokens,
-                        **context,
-                    )
-            except Exception as e:
-                e._error_source = "output"
-                raise
-
-            if save_to:
-                providers = save_to if isinstance(save_to, list) else [save_to]
                 try:
-                    for provider in providers:
-                        await provider.save_turn(session_id, turn)
+                    usage = None
+                    if hasattr(result, "usage") and result.usage:
+                        u = result.usage
+                        if (
+                            hasattr(u, "requests")
+                            and isinstance(getattr(u, "requests", None), list)
+                            and u.requests
+                        ):
+                            u = u.requests[0]
+                        usage = UsageData(
+                            input_tokens=getattr(u, "input_tokens", 0) or 0,
+                            output_tokens=getattr(u, "output_tokens", 0) or 0,
+                            total_tokens=getattr(u, "total_tokens", 0) or 0,
+                            prompt_tokens=getattr(u, "input_tokens", 0) or 0,
+                            completion_tokens=getattr(u, "output_tokens", 0) or 0,
+                        )
+                    else:
+                        for msg in new_messages:
+                            if isinstance(msg, ModelResponse) and getattr(msg, "usage", None):
+                                u = msg.usage
+                                usage = UsageData(
+                                    input_tokens=getattr(u, "input_tokens", 0) or 0,
+                                    output_tokens=getattr(u, "output_tokens", 0) or 0,
+                                    total_tokens=getattr(u, "total_tokens", 0) or 0,
+                                    prompt_tokens=getattr(u, "input_tokens", 0) or 0,
+                                    completion_tokens=getattr(u, "output_tokens", 0) or 0,
+                                )
+                                break
+
+                    turn = TurnData(
+                        turn_id=str(uuid.uuid4()),
+                        timestamp=datetime.now(),
+                        completed_at=datetime.now(),
+                        messages=serialized_messages,
+                        usage=usage,
+                        duration_seconds=duration,
+                        model=self.model,
+                        status=status,
+                    )
+
+                    self._last_turn = turn
+
+                    if usage:
+                        self.observability.log_info(
+                            "token_usage",
+                            input_tokens=usage.input_tokens,
+                            output_tokens=usage.output_tokens,
+                            total_tokens=usage.total_tokens,
+                            **context,
+                        )
                 except Exception as e:
-                    e._error_source = "memory"
+                    e._error_source = "output"
                     raise
 
-            for evaluator in self.evaluators:
+                if save_to:
+                    providers = save_to if isinstance(save_to, list) else [save_to]
+                    try:
+                        for provider in providers:
+                            await provider.save_turn(session_id, turn)
+                    except Exception as e:
+                        e._error_source = "memory"
+                        raise
+
+                for evaluator in self.evaluators:
+                    try:
+                        await evaluator.evaluate(prompt, result, context)
+                    except Exception as e:
+                        e._error_source = "evaluator"
+                        raise
+
                 try:
-                    await evaluator.evaluate(prompt, result, context)
+                    if self._agent._output_type is None:
+                        result.output = extract_clean_output(result)
                 except Exception as e:
-                    e._error_source = "evaluator"
+                    e._error_source = "output"
                     raise
 
-            try:
-                if self._agent._output_type is None:
-                    result.output = extract_clean_output(result)
-            except Exception as e:
-                e._error_source = "output"
-                raise
-
-            return result
+                return result
 
         except Exception as e:
             source = getattr(e, "_error_source", "unknown")
