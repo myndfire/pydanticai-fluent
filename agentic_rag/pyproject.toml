@@ -12,7 +12,7 @@ dependencies = [
     "structlog",
     "jinja2",
     "pydantic-settings",
-    "agent-harness",
+    "pydanticai-fluent",
 ]
 
 [project.urls]
@@ -22,6 +22,6 @@ Repository = "https://github.com/myndfire/pydanticai-fluent"
 requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.uv.sources.agent-harness]
+[tool.uv.sources.pydanticai-fluent]
 path = "../agent_harness"
 editable = true

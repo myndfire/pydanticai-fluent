@@ -2,17 +2,39 @@
 
 ## 1. Installation & Setup
 
+### Install from a tagged release (recommended for stability)
+
+**With pip:**
+```bash
+pip install "git+https://github.com/myndfire/pydanticai-fluent.git@v0.1.0"
+```
+
+**With uv:**
+```bash
+uv add "git+https://github.com/myndfire/pydanticai-fluent.git@v0.1.0"
+```
+
+**In your `pyproject.toml`:**
+```toml
+[project]
+dependencies = [
+    "pydanticai-fluent @ git+https://github.com/myndfire/pydanticai-fluent.git@v0.1.0",
+]
+```
+
+### Install for local development
+
 The project uses [uv](https://docs.astral.sh/uv/) for package management. There are two workspaces:
 
-- **`agent_harness/`** — the core library (`agent-harness` package, src-layout)
-- **`agent_harness_examples/`** — example scripts that depend on `agent_harness` via a local path source
+- **`agent_harness/`** — the core library (`pydanticai-fluent` package, src-layout)
+- **`agent_harness_examples/`** — example scripts that depend on `pydanticai-fluent` via a local path source
 
 ```bash
 # 1. Install core library dependencies
 cd agent_harness
 uv sync
 
-# 2. Install examples dependencies (pulls in agent_harness as an editable dependency)
+# 2. Install examples dependencies (pulls in pydanticai-fluent as an editable dependency)
 cd ../agent_harness_examples
 uv sync
 ```
@@ -21,7 +43,7 @@ The examples project declares the dependency in `pyproject.toml`:
 
 ```toml
 [tool.uv.sources]
-agent-harness = { path = "../agent_harness" }
+pydanticai-fluent = { path = "../agent_harness" }
 ```
 
 After syncing, run any example:

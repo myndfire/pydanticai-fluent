@@ -59,6 +59,58 @@ agent = (
 
 See [`USAGE.md` Section 4](USAGE.md#4-model-configuration) for the complete reference on all `ModelSettings` fields (16+ options including `thinking`, `max_tokens`, `temperature`, `top_p`, `timeout`, `tool_choice`, `seed`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `stop_sequences`, `extra_headers`, `service_tier`, `extra_body`), provider-specific environment variables, JSON-string `.env` patterns, and model selection strategy.
 
+## Using as a Library
+
+Install `pydanticai-fluent` from a tagged GitHub release into your own project.
+
+### With pip
+
+```bash
+pip install "git+https://github.com/myndfire/pydanticai-fluent.git@v0.1.0"
+```
+
+### With uv
+
+```bash
+uv add "git+https://github.com/myndfire/pydanticai-fluent.git@v0.1.0"
+```
+
+### In your `pyproject.toml`
+
+```toml
+[project]
+dependencies = [
+    "pydanticai-fluent @ git+https://github.com/myndfire/pydanticai-fluent.git@v0.1.0",
+]
+```
+
+### Quick Start
+
+```python
+import asyncio
+from agent_harness import ManagedAgent
+from agent_harness.model_config import ModelConfig
+from agent_harness.memory import InMemoryProvider, MessageHistory
+from agent_harness.prompts import StaticPrompts
+
+async def main():
+    agent = (
+        ManagedAgent()
+        .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
+        .with_short_term_memory(InMemoryProvider())
+        .with_prompts(StaticPrompts("You are a helpful assistant"))
+    )
+    
+    history = await MessageHistory().load("session-1", agent._short_term_memory)
+    result = await agent.run("Hello!", history, "session-1")
+    print(result.output)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+See [`USAGE.md`](USAGE.md) for the complete API reference.
+
 ## Project structure
 
 ```

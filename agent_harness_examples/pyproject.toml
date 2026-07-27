@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Examples for the agent-harness package"
 requires-python = ">=3.11"
 dependencies = [
-    "agent-harness",
+    "pydanticai-fluent",
     "pydantic-ai",
     "beanie",
     "colorama"
@@ -21,6 +21,6 @@ build-backend = "setuptools.build_meta"
 packages = []
 py-modules = []
 
-[tool.uv.sources.agent-harness]
+[tool.uv.sources.pydanticai-fluent]
 path = "../agent_harness"
 editable = true
