@@ -41,7 +41,7 @@ from agent_harness.evaluators import Evaluator
 from agent_harness.model_config import ModelConfig
 
 
-def get_labs(category: str) -> str:
+def get_labs(category: str) -> list[str]:
     """get_labs tool that returns retrived labs for the specified category."""
     print("[tool:get_labs] params:", category)
     result = [
@@ -55,7 +55,7 @@ def get_labs(category: str) -> str:
     return result
 
 
-def get_diagnosis(category: str) -> str:
+def get_diagnosis(category: str) -> list[str]:
     """get_diagnosis tool that returns retrived diagnosis for the specified category."""
     print("[tool:get_diagnosis] params:", category)
     result = [
@@ -67,7 +67,7 @@ def get_diagnosis(category: str) -> str:
     ]
     return result
 
-def get_findings(category: str) -> str:
+def get_findings(category: str) -> list[str]:
     """get_findings tool that returns retrived findings for the specified category."""
     print("[tool:get_findings] params:", category)
     result = [

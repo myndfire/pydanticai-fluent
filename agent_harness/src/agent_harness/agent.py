@@ -114,6 +114,7 @@ class ManagedAgent:
         evaluators: Optional[list[Evaluator]] = None,
         guards: Optional[GuardConfig] = None,
         deps_type: Optional[type] = None,
+        model_settings: Optional[Any] = None,
     ):
         """
         Initialize managed agent with optional components.
@@ -126,10 +127,15 @@ class ManagedAgent:
             evaluators: List of evaluators (default: empty list)
             guards: Guard configuration (default: GuardConfig with defaults)
             deps_type: Type for dependency injection
+            model_settings: Optional model settings (pydantic_ai ModelSettings dict)
         """
+        self._model_settings = model_settings
+        self._output_type: Optional[Any] = None
+        self._output_retries: int = 3
         model_config = model or ModelConfig(provider="ollama", model_name="gpt-oss:20b")
         self._agent: Agent[Any, Any] = Agent(
-            model=build_model(model_config), deps_type=deps_type
+            model=build_model(model_config), deps_type=deps_type,
+            model_settings=model_settings,
         )
         self.model = f"{model_config.provider}:{model_config.model_name}"
         self._deps_type = deps_type
@@ -168,8 +174,33 @@ class ManagedAgent:
         Args:
             model: ModelConfig specifying provider, model_name, api_key, base_url.
         """
-        self._agent = Agent(model=build_model(model))
+        kwargs: dict[str, Any] = {}
+        if self._model_settings is not None:
+            kwargs["model_settings"] = self._model_settings
+        if self._output_type is not None:
+            kwargs["output_type"] = self._output_type
+            kwargs["output_retries"] = self._output_retries
+        self._agent = Agent(model=build_model(model), **kwargs)
         self.model = f"{model.provider}:{model.model_name}"
+        return self
+
+    def with_model_settings(self, model_settings: Any) -> "ManagedAgent":
+        """Set model settings (e.g. thinking, temperature, max_tokens).
+
+        Args:
+            model_settings: pydantic_ai ModelSettings dict or callable.
+        """
+        self._model_settings = model_settings
+        kwargs: dict[str, Any] = {
+            "model": self._agent._model,
+            "toolsets": list(self._agent.toolsets),
+        }
+        if model_settings is not None:
+            kwargs["model_settings"] = model_settings
+        if self._output_type is not None:
+            kwargs["output_type"] = self._output_type
+            kwargs["output_retries"] = self._output_retries
+        self._agent = Agent(**kwargs)
         return self
 
     def with_log_enrichment(self, *providers: LogEnrichmentProvider) -> "ManagedAgent":
@@ -240,10 +271,16 @@ class ManagedAgent:
         )
 
         current_toolsets = list(self._agent.toolsets)
-        self._agent = Agent(
-            model=self._agent._model,
-            toolsets=current_toolsets + [mcp_server],
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._agent._model,
+            "toolsets": current_toolsets + [mcp_server],
+        }
+        if self._model_settings is not None:
+            kwargs["model_settings"] = self._model_settings
+        if self._output_type is not None:
+            kwargs["output_type"] = self._output_type
+            kwargs["output_retries"] = self._output_retries
+        self._agent = Agent(**kwargs)
         return self
 
     def with_mcp_servers(
@@ -346,11 +383,16 @@ class ManagedAgent:
             output_type: The Pydantic model for structured output
             output_retries: Number of retries for output validation (default: 3)
         """
-        self._agent = Agent(
-            model=self._agent._model,
-            output_type=output_type,
-            output_retries=output_retries,
-        )
+        self._output_type = output_type
+        self._output_retries = output_retries
+        kwargs: dict[str, Any] = {
+            "model": self._agent._model,
+            "output_type": output_type,
+            "output_retries": output_retries,
+        }
+        if self._model_settings is not None:
+            kwargs["model_settings"] = self._model_settings
+        self._agent = Agent(**kwargs)
         return self
 
     def with_rabbitmq(
@@ -443,6 +485,7 @@ class ManagedAgent:
             "session_id": session_id,
             "prompt_id": prompt_id,
             "model": self.model,
+            "model_settings": self._model_settings,
         }
 
         # Merge agent-level enrichment providers

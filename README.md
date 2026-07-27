@@ -31,6 +31,34 @@ agent = (
 )
 ```
 
+### Model Configuration
+
+`ManagedAgent` supports **20 LLM providers** (Ollama, OpenAI, Anthropic, Groq, Cohere, Mistral, Bedrock, HuggingFace, OpenRouter, xAI, DeepSeek, Cerebras, Fireworks, Together, Azure, Vercel, MoonshotAI, GitHub, Heroku) via `ModelConfig`. You can configure models programmatically or entirely through environment variables.
+
+```python
+from agent_harness.model_config import ModelConfig
+from pydantic_ai.settings import ModelSettings
+
+# Programmatic
+agent = (
+    ManagedAgent()
+    .with_model(ModelConfig(provider="ollama", model_name="gemma4:4b-mlx"))
+    .with_model_settings(
+        ModelSettings(
+            thinking=False,        # disable hidden reasoning — 2-5x faster
+            max_tokens=512,        # cap output length
+            temperature=0.1,       # low = faster, more deterministic
+        )
+    )
+)
+
+# Or via .env — no code changes
+#   MODEL_NAME=ollama:gemma4:4b-mlx
+#   OPENAI_API_KEY=sk-...
+```
+
+See [`USAGE.md` Section 4](USAGE.md#4-model-configuration) for the complete reference on all `ModelSettings` fields (16+ options including `thinking`, `max_tokens`, `temperature`, `top_p`, `timeout`, `tool_choice`, `seed`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `stop_sequences`, `extra_headers`, `service_tier`, `extra_body`), provider-specific environment variables, JSON-string `.env` patterns, and model selection strategy.
+
 ## Project structure
 
 ```

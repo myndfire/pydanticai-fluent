@@ -148,20 +148,29 @@ if __name__ == "__main__":
 
 ## 4. Model Configuration
 
-### `ModelConfig`
+### 4.1 `ModelConfig`
+
+`ModelConfig` selects the LLM provider and model. It is a typed dataclass with four fields:
 
 ```python
 from agent_harness.model_config import ModelConfig
 
 ModelConfig(
     provider="openai",        # ProviderType literal (20 supported providers)
-    model_name="gpt-4o",      # Model name
-    api_key="sk-...",         # Optional — omit for auto-inference
+    model_name="gpt-4o",      # Model name (without provider prefix)
+    api_key="sk-...",         # Optional — omit for auto-inference from env
     base_url=None,            # Optional — custom endpoint URL
 )
 ```
 
-### Supported Providers
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `provider` | `ProviderType` | Yes | `"ollama"` | One of 20 supported providers (see table below) |
+| `model_name` | `str` | Yes | `""` | Model identifier without provider prefix |
+| `api_key` | `str \| None` | No | `None` | Explicit API key. Overrides the provider's env var. |
+| `base_url` | `str \| None` | No | `None` | Custom endpoint URL (e.g., local Ollama) |
+
+#### Supported Providers
 
 | Provider | Model class | Provider class | Auth | Env var |
 |---|---|---|---|---|
@@ -171,7 +180,7 @@ ModelConfig(
 | `google` | `GoogleModel` | `GoogleProvider` | API key | `GOOGLE_API_KEY` |
 | `groq` | `GroqModel` | `GroqProvider` | API key | `GROQ_API_KEY` |
 | `mistral` | `MistralModel` | `MistralProvider` | API key | `MISTRAL_API_KEY` |
-| `bedrock` | `BedrockConverseModel` | `BedrockProvider` | AWS credentials | `AWS_ACCESS_KEY_ID` |
+| `bedrock` | `BedrockConverseModel` | `BedrockProvider` | AWS credentials | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
 | `cohere` | `CohereModel` | `CohereProvider` | API key | `COHERE_API_KEY` |
 | `huggingface` | `HuggingFaceModel` | `HuggingFaceProvider` | API key | `HUGGINGFACE_API_KEY` |
 | `openrouter` | `OpenAIChatModel` | `OpenRouterProvider` | API key | `OPENROUTER_API_KEY` |
@@ -186,7 +195,7 @@ ModelConfig(
 | `github` | `OpenAIChatModel` | `GitHubProvider` | API key | `GITHUB_API_KEY` |
 | `heroku` | `OpenAIChatModel` | `HerokuProvider` | API key | `HEROKU_API_KEY` |
 
-### Two resolution paths
+#### Two resolution paths
 
 **Auto-infer** (no `api_key` and no `base_url`):
 ```python
@@ -204,9 +213,57 @@ ModelConfig(
 # → Constructs OllamaModel + OpenAIProvider explicitly
 ```
 
-### Custom model settings on `run()`
+---
 
-Pass `model_settings` (a `pydantic_ai.settings.ModelSettings` dict) as kwargs to `run()`:
+### 4.2 `ModelSettings`
+
+`ModelSettings` (from `pydantic_ai.settings`) controls generation behavior on every inference call. Pass it to `.with_model_settings()` for agent-wide defaults, or to `agent.run()` for per-call overrides.
+
+#### All `ModelSettings` fields
+
+| Field | Type | Description | Supported By |
+|---|---|---|---|
+| `max_tokens` | `int` | Maximum tokens to generate before stopping | Gemini, Anthropic, OpenAI, Groq, Cohere, Mistral, Bedrock, MCP, xAI |
+| `temperature` | `float` | Response randomness (0.0 = deterministic) | Gemini, Anthropic, OpenAI, Groq, Cohere, Mistral, Bedrock, xAI |
+| `top_p` | `float` | Nucleus sampling cutoff (alternative to temperature) | Same as `temperature` |
+| `top_k` | `int` | Sample only from the top K options for each token | Gemini, Anthropic, Cohere, Bedrock (Anthropic & Amazon Nova) |
+| `timeout` | `int \| float \| Timeout` | Per-request timeout override (seconds) | Gemini, Anthropic, OpenAI, Groq, Mistral, xAI |
+| `parallel_tool_calls` | `bool` | Allow the model to call multiple tools in parallel | OpenAI, Groq, Anthropic, xAI |
+| `tool_choice` | `ToolChoice` | Control which function tools the model can use. Values: `None` (default), `'auto'`, `'none'`, `'required'`, `list[str]`, `ToolOrOutput` | OpenAI, Anthropic, Google, Groq, Mistral, HuggingFace, Bedrock, xAI |
+| `seed` | `int` | Random seed for (near-)deterministic results | OpenAI, Groq, Cohere, Mistral, Gemini, xAI |
+| `presence_penalty` | `float` | Penalize tokens that have already appeared | OpenAI, Groq, Cohere, Gemini, Mistral, xAI |
+| `frequency_penalty` | `float` | Penalize tokens based on their frequency so far | Same as `presence_penalty` |
+| `logit_bias` | `dict[str, int]` | Modify likelihood of specific tokens | OpenAI, Groq |
+| `stop_sequences` | `list[str]` | Sequences that cause generation to stop | OpenAI, Anthropic, Bedrock, Mistral, Groq, Cohere, Google, xAI |
+| `extra_headers` | `dict[str, str]` | Extra HTTP headers to send to the model | OpenAI, Anthropic, Gemini, Groq, xAI |
+| `thinking` | `bool \| str` | Enable or configure reasoning/thinking. See dedicated section below. | Anthropic, OpenAI, Gemini, Groq, Bedrock, OpenRouter, Cerebras, xAI, Mistral |
+| `service_tier` | `ServiceTier` | Cross-provider service tier (`'auto'`, `'default'`, `'flex'`, `'priority'`) | OpenAI, Anthropic, Bedrock, Google |
+| `extra_body` | `object` | Extra fields to include in the request body | OpenAI, Anthropic, Groq |
+
+> **Note:** Not all fields are supported by all providers. Unsupported fields are silently ignored by the provider. When both a unified field (e.g., `service_tier`) and a provider-specific field (e.g., `openai_service_tier`) are set, the provider-specific field takes precedence.
+
+#### Setting `ModelSettings` on the agent
+
+```python
+from pydantic_ai.settings import ModelSettings
+from agent_harness import ManagedAgent
+
+agent = (
+    ManagedAgent()
+    .with_model(ModelConfig(provider="ollama", model_name="gemma4:4b-mlx"))
+    .with_model_settings(
+        ModelSettings(
+            thinking=False,        # disable hidden reasoning
+            max_tokens=512,        # cap output length
+            temperature=0.1,       # low = faster, more deterministic
+            timeout=30.0,
+        )
+    )
+)
+```
+
+#### Overriding `ModelSettings` per `run()` call
+
 ```python
 result = await agent.run(
     prompt, history, session_id,
@@ -218,6 +275,105 @@ result = await agent.run(
     },
 )
 ```
+
+#### The `thinking` field — performance impact
+
+The `thinking` field enables hidden chain-of-thought reasoning. It can dramatically increase inference time (2-5x for local models) because the model generates reasoning tokens internally before producing the visible output.
+
+| Value | Behavior |
+|---|---|
+| `True` | Enable thinking with the provider's default effort level |
+| `False` | Disable thinking (silently ignored if the model always thinks) |
+| `"minimal"` / `"low"` / `"medium"` / `"high"` / `"xhigh"` | Enable thinking at a specific effort level |
+
+> **Performance tip:** For simple tasks like document classification, set `thinking=False` and cap `max_tokens` to the minimum needed for your output schema. This is the single biggest win for reducing latency on local models.
+
+---
+
+### 4.3 Environment Variable Configuration
+
+You can configure models entirely through environment variables — no code changes required.
+
+#### Provider API keys
+
+Set only the keys for the providers you use. pydantic-ai reads them automatically when you use auto-infer mode (no explicit `api_key` in `ModelConfig`).
+
+```bash
+# Cloud providers
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GROQ_API_KEY=gsk_...
+GROK_API_KEY=xai-...
+DEEPSEEK_API_KEY=sk-...
+FIREWORKS_API_KEY=fw-...
+TOGETHER_API_KEY=...
+COHERE_API_KEY=...
+MISTRAL_API_KEY=...
+CEREBRAS_API_KEY=...
+HUGGINGFACE_API_KEY=hf_...
+OPENROUTER_API_KEY=sk-or-...
+AZURE_API_KEY=...
+VERCEL_API_KEY=...
+MOONSHOTAI_API_KEY=...
+GITHUB_API_KEY=ghp_...
+HEROKU_API_KEY=...
+
+# AWS Bedrock (uses boto3 credential chain)
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+```
+
+#### Ollama (local models)
+
+```bash
+OLLAMA_BASE_URL=http://localhost:11434/v1
+```
+
+#### Application-level model config
+
+The `AgentConfig` class (see [Section 15](#15-environment-variables)) reads these variables:
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `MODEL_NAME` | `str` | `"ollama:gpt-oss:20b"` | Full `provider:model_name` string |
+
+#### Per-application env vars
+
+Individual applications and examples may define their own env vars. See the README in each example directory for application-specific variables (e.g., `messaging/rabbitmq/README.md`).
+
+#### JSON-string pattern for `ModelSettings` in `.env`
+
+Any application that wants env-driven model settings can use the JSON-string pattern:
+
+```python
+# In your Python code
+import os, json
+from pydantic_ai.settings import ModelSettings
+
+raw = os.getenv("MYAPP_MODEL_SETTINGS", '{"thinking": false}')
+try:
+    settings = ModelSettings(**json.loads(raw))
+except (json.JSONDecodeError, TypeError):
+    settings = ModelSettings(thinking=False)
+```
+
+```bash
+# In your .env file
+MYAPP_MODEL_SETTINGS={"thinking": false, "max_tokens": 512, "temperature": 0.1}
+```
+
+> **Tip:** Keep the JSON compact (no newlines) so `.env` parsers handle it correctly.
+
+---
+
+### 4.4 Model Selection Strategy
+
+| Use case | Recommended providers | Notes |
+|---|---|---|
+| **Local development / testing** | `ollama` | Free, runs on your hardware. Latency depends on your machine (Apple Silicon via MLX, NVIDIA via CUDA). |
+| **Fast cloud inference** | `groq`, `cerebras`, `fireworks` | Sub-second response times. Good for high-throughput applications. |
+| **High-quality reasoning** | `openai`, `anthropic` | Best output quality. Higher cost and latency. |
+| **Cost-sensitive** | `ollama`, `groq`, `together` | Local is free; Groq and Together offer competitive per-token pricing. |
 
 ---
 
