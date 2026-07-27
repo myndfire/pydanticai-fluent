@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Examples for the pydanticai-fluent package"
 requires-python = ">=3.11"
 dependencies = [
-    "pydanticai-fluent @ git+https://github.com/myndfire/pydanticai-fluent.git@main",
+    "pydanticai-fluent @ git+https://github.com/myndfire/pydanticai-fluent.git@master",
     "pydantic-ai",
     "beanie",
     "colorama"
@@ -22,4 +22,4 @@ packages = []
 py-modules = []
 
 [tool.uv.sources]
-pydanticai-fluent = { git = "https://github.com/myndfire/pydanticai-fluent.git", branch = "main" }
+pydanticai-fluent = { git = "https://github.com/myndfire/pydanticai-fluent.git", branch = "master" }

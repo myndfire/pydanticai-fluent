@@ -52,7 +52,7 @@ uv init
 ### Step 2: Add pydanticai-fluent
 
 ```bash
-uv add "git+https://github.com/myndfire/pydanticai-fluent.git@main"
+uv add "git+https://github.com/myndfire/pydanticai-fluent.git@master"
 ```
 
 Or in `pyproject.toml`:
@@ -60,7 +60,7 @@ Or in `pyproject.toml`:
 ```toml
 [project]
 dependencies = [
-    "pydanticai-fluent @ git+https://github.com/myndfire/pydanticai-fluent.git@main",
+    "pydanticai-fluent @ git+https://github.com/myndfire/pydanticai-fluent.git@master",
 ]
 ```
 
