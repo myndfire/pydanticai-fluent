@@ -16,13 +16,14 @@
 
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Optional, TypeVar, Union
 
 from .log_enrichment import LogContext, LogEnrichmentProvider
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelResponse
+from pydantic_ai.messages import ModelResponse, UserContent
 
 from .memory import (
     MemoryProvider,
@@ -55,6 +56,52 @@ from .evaluators import Evaluator
 
 
 AgentDepsT = TypeVar("AgentDepsT")
+
+
+def prompt_to_text(prompt: Union[str, Sequence[UserContent]]) -> str:
+    """Reduce a possibly-multimodal prompt to a plain text summary.
+
+    ``run()`` accepts either a plain string or a sequence of pydantic_ai
+    ``UserContent`` (text plus images/audio/documents). The multimodal form is
+    passed through to the model untouched, but crosscutting consumers —
+    evaluators, error contexts, logs — are text-only. This produces a readable
+    stand-in for those, substituting a short placeholder for binary parts
+    rather than dumping base64 into logs.
+
+    Args:
+        prompt: String prompt, or sequence of UserContent parts.
+
+    Returns:
+        str: Text representation. Non-text parts appear as "[image]",
+             "[audio]", "[document]", "[video]" or "[binary <media_type>]".
+    """
+    if isinstance(prompt, str):
+        return prompt
+
+    kind_by_suffix = {
+        "ImageUrl": "[image]",
+        "AudioUrl": "[audio]",
+        "DocumentUrl": "[document]",
+        "VideoUrl": "[video]",
+    }
+
+    parts: list[str] = []
+    for item in prompt:
+        if isinstance(item, str):
+            parts.append(item)
+            continue
+
+        type_name = type(item).__name__
+        if type_name in kind_by_suffix:
+            parts.append(kind_by_suffix[type_name])
+        elif type_name == "BinaryContent":
+            parts.append(f"[binary {getattr(item, 'media_type', 'unknown')}]")
+        elif hasattr(item, "content"):
+            parts.append(str(item.content))
+        else:
+            parts.append(f"[{type_name}]")
+
+    return " ".join(parts)
 
 
 def extract_clean_output(result) -> str:
@@ -450,7 +497,7 @@ class ManagedAgent:
 
     async def run(
         self,
-        prompt: str,
+        prompt: Union[str, Sequence[UserContent]],
         message_history: MessageHistory,
         session_id: str,
         save_to: Optional[list[MemoryProvider]] = None,
@@ -462,7 +509,10 @@ class ManagedAgent:
         Run agent with explicit message history and save options.
 
         Args:
-            prompt: User prompt
+            prompt: User prompt. Either a plain string, or a sequence of
+                pydantic_ai UserContent parts for multimodal input, e.g.
+                ``["What is this?", ImageUrl(url="data:image/jpeg;base64,...")]``.
+                Multimodal prompts require a model that accepts that media type.
             message_history: MessageHistory object with loaded history (required)
             session_id: Session ID (required - key for saving turns)
             save_to: Optional list of memory providers to save the turn to
@@ -480,6 +530,10 @@ class ManagedAgent:
 
         prompt_id = kwargs.pop("prompt_id", "default")
         prompt_vars = {k: v for k, v in kwargs.items() if not k.startswith("_")}
+
+        # Text-only view of the prompt for evaluators, error contexts and logs.
+        # The original prompt is what reaches the model.
+        prompt_text = prompt_to_text(prompt)
 
         context = {
             "session_id": session_id,
@@ -622,7 +676,7 @@ class ManagedAgent:
 
                 for evaluator in self.evaluators:
                     try:
-                        await evaluator.evaluate(prompt, result, context)
+                        await evaluator.evaluate(prompt_text, result, context)
                     except Exception as e:
                         e._error_source = "evaluator"
                         raise
@@ -642,7 +696,7 @@ class ManagedAgent:
                 exception=e,
                 source=source,
                 session_id=session_id,
-                prompt=prompt,
+                prompt=prompt_text,
             )
             if error_result:
                 return error_result
@@ -650,7 +704,7 @@ class ManagedAgent:
 
     async def run_sync(
         self,
-        prompt: str,
+        prompt: Union[str, Sequence[UserContent]],
         message_history: MessageHistory,
         session_id: str,
         save_to: Optional[list[MemoryProvider]] = None,

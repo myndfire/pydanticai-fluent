@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, UserContent
 
 from .errorhandling import ErrorContext, AgentRunResult
 
@@ -380,7 +381,7 @@ class GuardRunner:
     async def run_with_guards(
         self,
         agent: "Agent",
-        prompt: str,
+        prompt: Union[str, Sequence[UserContent]],
         message_history: "list[ModelMessage]",
         **kwargs,
     ) -> AgentRunResult:
@@ -388,6 +389,10 @@ class GuardRunner:
 
         Guardrails applied in order: circuit breaker (gateway), retries,
         token limits, cost limits, content filter, PII detection.
+
+        ``prompt`` is forwarded to the model unchanged, so it may be a plain
+        string or a sequence of pydantic_ai UserContent parts for multimodal
+        input.
         """
         # ── Circuit breaker gateway check ──────────────────────────
         if self.config.circuit_breaker and self._circuit_open:

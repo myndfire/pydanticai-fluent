@@ -1,6 +1,6 @@
 [project]
-name = "pydanticai-fluent"
-dynamic = ["version"]
+name = "agent-harness"
+version = "0.1.0"
 description = "Managed Agent framework with fluent API"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -41,5 +41,3 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 include = ["agent_harness*"]
 
-[tool.setuptools.dynamic]
-version = {file = "../VERSION"}

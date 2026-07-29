@@ -14,8 +14,11 @@
 
 """PipelineContext — track multi-agent pipeline stages with auto-logging."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING, Union
+
+from pydantic_ai.messages import UserContent
 
 if TYPE_CHECKING:
     from .agent import ManagedAgent
@@ -87,7 +90,7 @@ class PipelineContext:
         self,
         agent: Any,  # ManagedAgent
         name: str,
-        prompt: str,
+        prompt: Union[str, Sequence[UserContent]],
         **kwargs: Any,
     ) -> Any:  # AgentRunResult
         """Run an agent as a pipeline stage.
@@ -98,7 +101,8 @@ class PipelineContext:
         Args:
             agent: ManagedAgent instance
             name: Stage name (e.g., "Research")
-            prompt: Prompt for the agent
+            prompt: Prompt for the agent. String, or a sequence of pydantic_ai
+                UserContent parts for multimodal input.
             **kwargs: Passed through to agent.run()
         """
         from .log_enrichment import LogContext
