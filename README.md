@@ -111,6 +111,22 @@ if __name__ == "__main__":
 
 See [`USAGE.md`](USAGE.md) for the complete API reference.
 
+### Multimodal Prompts
+
+`ManagedAgent.run()` accepts either a plain string or a sequence of pydantic_ai `UserContent` parts for multimodal input (images, audio, documents, video):
+
+```python
+from pydantic_ai.messages import ImageUrl
+
+result = await agent.run(
+    ["Describe this image", ImageUrl(url="data:image/jpeg;base64,...")],
+    history,
+    session_id,
+)
+```
+
+Non-text parts are converted to placeholders (`[image]`, `[audio]`, etc.) for evaluators and error contexts.
+
 ## Project structure
 
 ```
