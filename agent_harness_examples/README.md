@@ -25,7 +25,7 @@ uv sync
 # Or: pip install -e .
 ```
 
-This installs `pydanticai-fluent` directly from the `main` branch.
+This installs `pydanticai-fluent` as an editable install from the local `../` project root.
 
 ### 3. Run any example
 
@@ -34,6 +34,46 @@ uv run agent_example-1.py
 uv run loops/01_interactive_loop.py
 uv run messaging/rabbitmq/rabbitmq_agent.py
 ```
+
+---
+
+## Start Infrastructure
+
+All example services come from the root compose file. From the repo root:
+
+```bash
+docker compose -f docker-compose.yml up -d            # all services
+docker compose -f docker-compose.yml up -d mongo      # just what an example needs
+```
+
+Services:
+
+| Service | Port(s) | Used by |
+|---|---|---|
+| `mongo` | `27017` | MongoMemory, MongoPrompts |
+| `redis` | `6379` | RedisMemory |
+| `elasticsearch` | `9200` | ElasticsearchMemory, ElasticsearchLogger |
+| `kibana` | `5601` | Visualize OTel logs/metrics/traces (Discover + Dashboards) |
+| `grafana` | `3000` | Visualize OTel logs/metrics from ES + trace waterfall from Tempo (Explore) |
+| `tempo` | `3200` | Trace backend for Grafana (collector fans traces out to it) |
+| `jaeger` | `16686`, `4317`, `4318` | OTELTracer tracing |
+| `otel-collector` | `14317`, `14318` | OTel → Elasticsearch pipelines; traces also fan out to Tempo (OTELLogger, OTELTracer, OTELMetrics) |
+| `pushgateway` | `9091` | PrometheusMetrics |
+| `rabbitmq` | `5672`, `15672` | Messaging examples |
+
+Stop everything with `docker compose -f docker-compose.yml down -v`.
+
+### Visualize OTel signals
+
+Start the observability stack, then run the all-in-one example:
+
+```bash
+docker compose -f docker-compose.yml up -d elasticsearch otel-collector kibana grafana tempo
+uv run python observability/09_otel_logs_traces_metrics_elasticsearch.py
+```
+
+- **Kibana** (http://localhost:5601) — create data views for `logs/metrics/traces-generic.otel-default-*`, then Discover and filter `service.name: all-in-one-es-demo`.
+- **Grafana** (http://localhost:3000, admin/admin) — Elasticsearch datasource for logs (Explore → Logs) and metrics (ES aggregations); Tempo datasource for the native trace waterfall. Select a span → *View in logs* jumps to the correlated ES log records by `trace_id`.
 
 ---
 
@@ -118,10 +158,15 @@ if __name__ == "__main__":
 | | `memory/02_mongo_memory.py` | MongoDB persistent memory |
 | | `memory/03_redis_memory.py` | Redis memory |
 | | `memory/04_elasticsearch_memory.py` | Elasticsearch memory |
-| **Observability** | `observability/01_logging.py` | Structured logging |
-| | `observability/02_tracing.py` | OpenTelemetry tracing |
-| | `observability/03_metrics.py` | Prometheus/StatsD metrics |
-| | `observability/04_composite.py` | Multiple backends together |
+| **Observability** | `observability/01_logging.py` | Structured logging (console/file) |
+| | `observability/02_tracing_metrics.py` | In-memory spans & metrics inspection |
+| | `observability/03_builder_logs_metrics.py` | Fluent ObservabilityBuilder (logs + metrics) |
+| | `observability/04_composite_logs.py` | Multiple logging backends together |
+| | `observability/05_elasticsearch_logging.py` | Direct ES structured logging (daily indices) |
+| | `observability/06_otel_jaeger_logs_traces_metrics.py` | OTel logs+traces+metrics → Jaeger |
+| | `observability/07_prometheus_logs_metrics.py` | Prometheus logs + metrics with push gateway |
+| | `observability/08_live_agent_logs_metrics.py` | Live agent with composed logs + metrics |
+| | `observability/09_otel_logs_traces_metrics_elasticsearch.py` | OTel logs+traces+metrics → Elasticsearch + Tempo (Grafana) |
 | **Prompts** | `prompts/01_static_prompts.py` | Fixed system prompt |
 | | `prompts/02_mongo_prompts.py` | Jinja2 templates from MongoDB |
 | | `prompts/03_prompt_variables.py` | Dynamic prompt rendering |

@@ -22,23 +22,23 @@ Demonstrates:
   - Agent run with Prometheus metrics auto-collection via observe()
 
 Prerequisite:
-    docker compose -f agent_harness_examples/observability/docker-compose.prometheus.yml up -d
+    docker compose -f docker-compose.yml up -d pushgateway
 
 Prometheus pushgateway: http://localhost:9091
 
 Usage:
-    uv run python 07_prometheus.py
+    uv run python 07_prometheus_logs_metrics.py
 
 Setup
 -----
     1. Start Ollama (if using local models):
         ollama serve
     2. (Optional) Start Prometheus pushgateway:
-        docker compose -f agent_harness_examples/observability/docker-compose.prometheus.yml up -d
+        docker compose -f docker-compose.yml up -d pushgateway
     3. Install dependencies and run:
         cd agent_harness_examples
         uv sync
-        uv run python observability/07_prometheus.py
+        uv run python observability/07_prometheus_logs_metrics.py
 """
 
 import asyncio

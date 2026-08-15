@@ -26,7 +26,7 @@ Demonstrates:
 No external services required — all backends are in-memory/console.
 
 Usage:
-    uv run python 08_live_agent.py
+    uv run python 08_live_agent_logs_metrics.py
 
 Setup
 -----
@@ -35,7 +35,7 @@ Setup
     2. Install dependencies and run:
         cd agent_harness_examples
         uv sync
-        uv run python observability/08_live_agent.py
+        uv run python observability/08_live_agent_logs_metrics.py
 """
 
 import asyncio

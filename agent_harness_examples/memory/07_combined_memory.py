@@ -23,7 +23,7 @@ Demonstrates:
   - Provider comparison: identical turn counts across both stores
 
 Prerequisite:
-    docker compose -f agent_harness_examples/memory/docker-compose.yml up -d
+    docker compose -f docker-compose.yml up -d mongo redis
 
 Usage:
     uv run python 07_combined_memory.py
@@ -33,9 +33,9 @@ Setup
     1. Start Ollama (if using local models):
         ollama serve
     2. (Optional) Start MongoDB:
-        docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d
+        docker compose -f docker-compose.yml up -d mongo
     3. (Optional) Start Redis:
-        docker compose -f agent_harness_examples/memory/docker-compose.redis.yml up -d
+        docker compose -f docker-compose.yml up -d redis
     4. Install dependencies and run:
         cd agent_harness_examples
         uv sync
@@ -98,7 +98,7 @@ async def main():
 
     if not (mongo_ok and redis_ok):
         print("\n  Both services required. Start with:")
-        print("    docker compose -f agent_harness_examples/memory/docker-compose.yml up -d")
+        print("    docker compose -f docker-compose.yml up -d mongo redis")
         return
 
     # ── Setup providers ─────────────────────────────────────────

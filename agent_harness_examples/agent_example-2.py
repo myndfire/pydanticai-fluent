@@ -23,7 +23,7 @@ from agent_harness.memory import MessageHistory, InMemoryProvider, MongoMemory
 from agent_harness.observability import Observability
 from agent_harness.logging import ConsoleLogger
 from agent_harness.tracing import LogfireTracer, OTELTracer
-from agent_harness.metrics import OTLPMetrics
+from agent_harness.metrics import OTELMetrics
 from agent_harness.prompts import StaticPrompts
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
 from agent_harness.model_config import ModelConfig
@@ -102,7 +102,7 @@ async def main():
             ),
         ],
         metrics_list=[
-            OTLPMetrics(
+            OTELMetrics(
                 service_name="agent_example-2_service",
                 otlp_endpoint="http://localhost:4319",
             ),

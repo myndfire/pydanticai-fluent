@@ -46,11 +46,11 @@ Setup
     1. Start Ollama (if using local models):
         ollama serve
     2. (Optional) Start MongoDB:
-        docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d
+        docker compose -f docker-compose.yml up -d mongo
     3. (Optional) Start Jaeger:
-        docker compose -f agent_harness_examples/observability/docker-compose.jaeger.yml up -d
+        docker compose -f docker-compose.yml up -d jaeger
     4. (Optional) Start RabbitMQ:
-        docker compose -f agent_harness_examples/messaging/rabbitmq/docker-compose.rabbitmq.yml up -d
+        docker compose -f docker-compose.yml up -d rabbitmq
     5. Install dependencies and run:
         cd agent_harness_examples
         uv sync

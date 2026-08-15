@@ -198,7 +198,7 @@ class InMemoryMetrics:
         return f"{name}{{{label_str}}}"
 
 
-class OTLPMetrics:
+class OTELMetrics:
     """OTLP metrics exporter - sends metrics to an OTel Collector via OTLP gRPC."""
 
     def __init__(
@@ -207,7 +207,7 @@ class OTLPMetrics:
         otlp_endpoint: str = "localhost:4319",
     ):
         """
-        Initialize OTLP metrics.
+        Initialize OTEL metrics.
 
         Args:
             service_name: Service name for metrics

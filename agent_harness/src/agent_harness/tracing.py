@@ -382,9 +382,11 @@ class OTELTracer:
             yield None
             return
 
+        from opentelemetry import trace as otel_trace
         from opentelemetry.trace import Status, StatusCode
 
-        # Start span
+        # Start span and make it the current span so nested spans and
+        # OTel log records inherit its trace context.
         span = self.tracer.start_span(f"{self.service_name}.{name}")
         span_context = span.get_span_context()
 
@@ -393,8 +395,9 @@ class OTELTracer:
             span.set_attribute(key, str(value))
 
         try:
-            yield span_context
-            span.set_status(Status(StatusCode.OK))
+            with otel_trace.use_span(span, end_on_exit=False):
+                yield span_context
+                span.set_status(Status(StatusCode.OK))
 
         except Exception as e:
             span.record_exception(e)

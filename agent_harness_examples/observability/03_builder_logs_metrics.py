@@ -23,7 +23,7 @@ Demonstrates:
   - Multiple loggers/tracers/metrics in a single Observability instance
 
 Usage:
-    uv run python 03_builder.py
+    uv run python 03_builder_logs_metrics.py
 
 Setup
 -----
@@ -32,7 +32,7 @@ Setup
     2. Install dependencies and run:
         cd agent_harness_examples
         uv sync
-        uv run python observability/03_builder.py
+        uv run python observability/03_builder_logs_metrics.py
 """
 
 import asyncio

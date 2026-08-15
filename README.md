@@ -7,7 +7,7 @@ A fluent, builder-style API for configuring [pydantic-ai](https://github.com/pyd
 `ManagedAgent` is the central orchestrator. It wraps a pydantic-ai `Agent` and layers on top:
 
 - **Memory** — short-term and long-term conversation persistence via a pluggable `MemoryProvider` protocol (in-memory, MongoDB, Redis, Elasticsearch).
-- **Observability** — unified facade combining logging (structlog, file, Elasticsearch, Logfire), tracing (OTEL, Logfire, Jaeger), and metrics (Prometheus, StatsD, OTEL, InMemory).
+- **Observability** — unified facade combining logging (structlog, file, Elasticsearch, Logfire, OTEL), tracing (OTEL, Logfire, Jaeger, InMemory), and metrics (Prometheus, StatsD, OTEL, InMemory).
 - **Guards** — retry logic with exponential backoff, fallback models, callbacks; circuit breaker; guardrails for content filtering, PII detection, and cost limits.
 - **Error handling** — custom error handlers with source classification (LLM, tool, memory, unknown); pipeline error recovery.
 - **Orchestration** — multi-agent patterns: tool-driven delegation, sequential pipelines, classify-and-route, parallel fan-out/fan-in.
@@ -139,9 +139,9 @@ pydanticai-fluent/
 │       ├── tools.py            # ToolRegistry
 │       ├── prompts.py          # StaticPrompts, MongoPrompts
 │       ├── observability.py    # Observability facade + builder
-│       ├── logging.py          # ConsoleLogger, FileLogger, ElasticsearchLogger, etc.
-│       ├── tracing.py          # OTelTracer, LogfireTracer, JaegerTracer, etc.
-│       ├── metrics.py          # PrometheusMetrics, StatsdMetrics, OTLPMetrics, etc.
+│       ├── logging.py          # ConsoleLogger, FileLogger, ElasticsearchLogger, OTELLogger, etc.
+│       ├── tracing.py          # OTELTracer, InMemoryTracer, LogfireTracer, JaegerTracer, etc.
+│       ├── metrics.py          # PrometheusMetrics, StatsdMetrics, InMemoryMetrics, OTELMetrics, etc.
 │       ├── guards.py           # GuardConfig, retry configs, guardrail configs
 │       ├── errorhandling.py    # ErrorHandlingConfig, ErrorHandler
 │       ├── evaluators.py       # Evaluator, QualityCheck, SafetyCheck
@@ -153,6 +153,10 @@ pydanticai-fluent/
 │   ├── tools/ memory/ guards/  # etc.
 │   └── ...
 ├── agentic_rag/                # RAG agent example
+├── docker-compose.yml          # Infra services (mongo, redis, elasticsearch, kibana, grafana, tempo, jaeger, otel-collector, pushgateway, rabbitmq)
+├── otel-collector-config.yml   # OTel Collector → Elasticsearch + Tempo pipelines (logs/metrics/traces)
+├── tempo.yml                   # Tempo trace backend config (OTLP ingest, local storage)
+├── grafana/                    # Grafana provisioning (Elasticsearch + Tempo datasources)
 └── USAGE.md                    # Full usage guide
 ```
 

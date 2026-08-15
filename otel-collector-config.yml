@@ -1,0 +1,29 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  elasticsearch:
+    endpoints: [http://elasticsearch:9200]
+    mapping:
+      mode: otel
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [elasticsearch, otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      exporters: [elasticsearch]
+    logs:
+      receivers: [otlp]
+      exporters: [elasticsearch]

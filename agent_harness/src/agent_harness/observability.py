@@ -35,7 +35,7 @@ class Observability:
         obs = Observability(
             loggers=[ConsoleLogger(), ElasticsearchLogger(...)],
             tracers=[LogfireTracer(...), OTELTracer(...)],
-            metrics=[InMemoryMetrics(), OTLPMetrics(...)],
+            metrics=[InMemoryMetrics(), OTELMetrics(...)],
         )
     """
 
@@ -151,11 +151,13 @@ class Observability:
                         primary_ctx = trace_contexts[0]
                         if primary_ctx:
                             try:
+                                if hasattr(primary_ctx, "trace_id"):
+                                    ctx = primary_ctx
+                                else:
+                                    ctx = primary_ctx.context
                                 trace_context = {
-                                    "trace_id": format(
-                                        primary_ctx.context.trace_id, "032x"
-                                    ),
-                                    "span_id": format(primary_ctx.context.span_id, "016x"),
+                                    "trace_id": format(ctx.trace_id, "032x"),
+                                    "span_id": format(ctx.span_id, "016x"),
                                 }
                             except (AttributeError, TypeError):
                                 pass
@@ -312,6 +314,16 @@ class ObservabilityBuilder:
         from .logging import LogfireLogger
 
         self._loggers.append(LogfireLogger(service_name=self.service_name))
+        return self
+
+    def with_otel_logging(
+        self, otlp_endpoint: str = "localhost:4317"
+    ) -> "ObservabilityBuilder":
+        from .logging import OTELLogger
+
+        self._loggers.append(
+            OTELLogger(service_name=self.service_name, otlp_endpoint=otlp_endpoint)
+        )
         return self
 
     def with_logfire_tracing(

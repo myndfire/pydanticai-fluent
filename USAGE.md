@@ -628,6 +628,7 @@ All builder methods return `self` for chaining. Call `.build()` at the end to pr
 | `.with_file_logging()` | `(log_file: str = "agent.log") -> ObservabilityBuilder` | `FileLogger` | Writes logs to a rotating file. Rotation defaults to daily; use `"size"` for 10 MB rollover. Keeps 7 days / files by default. Ideal for production when no log aggregator is available. |
 | `.with_elasticsearch_logging()` | `(endpoint: str, index_prefix: str = "agent-logs") -> ObservabilityBuilder` | `ElasticsearchLogger` | Ships logs to Elasticsearch with daily indices (`<index_prefix>-YYYY.MM.DD`). Auto-creates indices. Best for production when you use the ELK stack. |
 | `.with_logfire_logging()` | `() -> ObservabilityBuilder` | `LogfireLogger` | Sends structured logs to [Logfire](https://logfire.pydantic.dev). Configures structlog with JSON renderer, timestamps, and caller info. Falls back to console if Logfire is unavailable. |
+| `.with_otel_logging()` | `(otlp_endpoint: str = "localhost:4317") -> ObservabilityBuilder` | `OTELLogger` | Exports structured logs via OTLP gRPC to an OpenTelemetry collector. Log records emitted inside a span automatically carry `trace_id`/`span_id` for log-trace correlation. |
 | `.with_logfire_tracing()` | `(send_to_logfire: bool = True, instrument_pydantic_ai: bool = True) -> ObservabilityBuilder` | `LogfireTracer` | Creates Logfire spans for every agent run. When `instrument_pydantic_ai=True`, automatically instruments the underlying PydanticAI agent for detailed LLM call tracing. The Logfire equivalent of OpenTelemetry distributed tracing. |
 | `.with_otel_tracing()` | `(otlp_endpoint: str = "localhost:4317", sample_rate: float = 1.0) -> ObservabilityBuilder` | `OTELTracer` | Exports spans via OTLP gRPC to an OpenTelemetry collector (e.g. Grafana, Jaeger, Datadog). `sample_rate` controls trace sampling (1.0 = all traces). Requires `opentelemetry-api`, `opentelemetry-sdk`, and `opentelemetry-exporter-otlp-proto-grpc` packages. |
 | `.with_jaeger_tracing()` | `(jaeger_host: str = "localhost", jaeger_port: int = 6831) -> ObservabilityBuilder` | `JaegerTracer` | Sends spans to a Jaeger agent via UDP over the compact Thrift protocol. Lightweight alternative to OTLP when you use Jaeger directly. |
@@ -648,6 +649,7 @@ Use these when constructing `Observability(logger=...)` or `Observability(logger
 | `FileLogger` | `(log_file: str = "agent.log", rotation: str = "daily", retention: int = 7)` | Rotating file logger. `rotation`: `"daily"` uses `TimedRotatingFileHandler`, `"size"` uses `RotatingFileHandler` (10 MB). `retention`: number of backups to keep. |
 | `ElasticsearchLogger` | `(endpoint: str, index_prefix: str = "agent-logs", service_name: str = "agent")` | Async Elasticsearch client. Writes to daily indices. Also mirrors logs locally via structlog. Close with `await logger.close()`. |
 | `LogfireLogger` | `(service_name: str = "agent")` | Configures Logfire and structlog together. JSON-formatted output with timestamps, caller info, and stack traces. Gracefully falls back to console. |
+| `OTELLogger` | `(service_name: str = "agent", otlp_endpoint: str = "localhost:4317")` | OpenTelemetry structured logging via OTLP gRPC. Emits records with `Logger.emit()`; attributes come from `**context`. Records emitted inside an active span inherit `trace_id`/`span_id`. Flush with `close()`. |
 | `CompositeLogger` | `(*loggers: Logger)` | Fans out all log calls to every logger in the list. Use when you need logs in multiple destinations simultaneously (e.g. console + file + ES). |
 
 ### Tracing backends (standalone)
@@ -671,7 +673,7 @@ Use these when constructing `Observability(metrics=...)` or `Observability(metri
 | `NoOpMetrics` | `()` | All counter/gauge/histogram/summary calls are no-ops. Default when no metrics backend is configured. |
 | `InMemoryMetrics` | `()` | Stores metrics in Python dicts: `_counters`, `_gauges`, `_histograms`, `_summaries`. Access with `get_metrics()`, clear with `reset()`. Perfect for testing. |
 | `LogfireMetrics` | `(service_name: str = "agent")` | Sends metric events to Logfire as info-level log entries. No dedicated metric protocol — uses Logfire's structured event system. |
-| `OTLPMetrics` | `(service_name: str = "agent", otlp_endpoint: str = "localhost:4319")` | OpenTelemetry metrics via OTLP gRPC. Creates real OTel counters, gauges, and histograms with a `PeriodicExportingMetricReader`. Note: metrics use port 4319 (separate from tracing at 4317). |
+| `OTELMetrics` | `(service_name: str = "agent", otlp_endpoint: str = "localhost:4319")` | OpenTelemetry metrics via OTLP gRPC. Creates real OTel counters, gauges, and histograms with a `PeriodicExportingMetricReader`. Note: metrics use port 4319 (separate from tracing at 4317). |
 | `PrometheusMetrics` | `(namespace: str = "agent", push_gateway: str \| None = None)` | Prometheus client library metrics. Supports `push_to_gateway(job_name)` for push-based workflows. Metric names follow Prometheus naming conventions. |
 | `StatsdMetrics` | `(host: str = "localhost", port: int = 8125, prefix: str = "agent")` | Standard StatsD client. `summary()` maps to StatsD `timing()`. Compatible with Datadog Agent, Telegraf, and other StatsD-compatible collectors. |
 
@@ -686,6 +688,37 @@ Use these when constructing `Observability(metrics=...)` or `Observability(metri
 | `agent_duration_seconds` | Histogram | `model`, `status` | Runtime of successful runs |
 | `{operation}_total` | Counter | `model`, `session_id` | Generic counter for custom operations |
 | `{operation}_duration_seconds` | Histogram | `model`, `status` | Generic histogram for custom operations |
+
+### Visualizing OTel telemetry (Elasticsearch + Grafana + Tempo)
+
+The OTEL backends (`OTELLogger`, `OTELTracer`, `OTELMetrics`) export over OTLP gRPC to the OpenTelemetry Collector, which routes signals to Elasticsearch and (for traces) to Tempo:
+
+```
+agent_harness  --OTLP gRPC:14317-->  otel-collector  --elasticsearch-->  Elasticsearch (logs/metrics/traces)
+                                              \--otlp/tempo-->  Tempo (traces only)
+```
+
+Start the observability stack from the repo root:
+
+```bash
+docker compose -f docker-compose.yml up -d elasticsearch otel-collector kibana grafana tempo
+```
+
+| Service | Port | Role |
+|---|---|---|
+| `elasticsearch` | `9200` | Stores logs, metrics, and traces as OTel-mapped data streams (`logs/metrics/traces-generic.otel-default-*`) |
+| `kibana` | `5601` | Discover + dashboards over the ES data streams |
+| `grafana` | `3000` | ES datasource (logs/metrics) + Tempo datasource (trace waterfall) |
+| `tempo` | `3200` | Trace backend; collector fans traces out to it (OTLP ingest is internal-only) |
+| `otel-collector` | `14317`, `14318` | OTLP gRPC/HTTP ingest; traces → ES + Tempo, metrics/logs → ES |
+
+Visualization:
+
+- **Kibana** — Stack Management → Data Views → create views for `logs-generic.otel-default-*`, `metrics-generic.otel-default-*`, `traces-generic.otel-default-*` (time field `@timestamp`), then Discover and filter `service.name`.
+- **Grafana** (login `admin`/`admin`, datasources auto-provisioned) — Explore → Logs against the ES datasource; ES aggregations (sum/count) over `metrics.*` fields; Explore → Tempo for the native trace waterfall.
+- **Correlation** — logs and traces share `trace_id`/`span_id`, so Grafana's Tempo datasource links each span to its ES log records (select a span → *View in logs*). Metrics correlate by `service.name` + timestamp rather than `trace_id` (standard OTel behavior).
+
+Example: run the all-in-one demo, then open Grafana → Explore → Tempo → search `service.name: all-in-one-es-demo`.
 
 ---
 
@@ -1413,6 +1446,9 @@ uv run orchestration/04_parallel_fanout.py   # Parallel fan-out / fan-in
 
 # Error handling — pipeline error recovery
 uv run error_handling/09_pipeline_error_recovery.py
+
+# Observability — OTel logs+traces+metrics → Elasticsearch + Tempo
+uv run observability/09_otel_logs_traces_metrics_elasticsearch.py
 ```
 
 **Prerequisites:**
@@ -1420,6 +1456,7 @@ uv run error_handling/09_pipeline_error_recovery.py
 - [Ollama](https://ollama.ai/) running locally (for Ollama models) or API keys for cloud providers
 - MongoDB (optional, for persistent memory in examples 2/3)
 - RabbitMQ (optional, for the document classification example)
+- Elasticsearch + OTel Collector (+ Kibana/Grafana/Tempo for the OTEL observability examples) — `docker compose -f docker-compose.yml up -d` from the repo root
 
 ---
 

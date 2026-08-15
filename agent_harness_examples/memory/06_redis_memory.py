@@ -23,7 +23,7 @@ Demonstrates:
   - Cleanup prompt
 
 Prerequisite:
-    docker compose -f agent_harness_examples/memory/docker-compose.redis.yml up -d
+    docker compose -f docker-compose.yml up -d redis
 
 Usage:
     uv run python 06_redis_memory.py
@@ -33,7 +33,7 @@ Setup
     1. Start Ollama (if using local models):
         ollama serve
     2. (Optional) Start Redis:
-        docker compose -f agent_harness_examples/memory/docker-compose.redis.yml up -d
+        docker compose -f docker-compose.yml up -d redis
     3. Install dependencies and run:
         cd agent_harness_examples
         uv sync
@@ -74,7 +74,7 @@ async def main():
     if not await check_redis(REDIS_HOST, REDIS_PORT):
         print(f"  Redis not reachable at {REDIS_HOST}:{REDIS_PORT}")
         print("  Start with:")
-        print("    docker compose -f agent_harness_examples/memory/docker-compose.redis.yml up -d")
+        print("    docker compose -f docker-compose.yml up -d redis")
         return
     print("  Redis is reachable.")
 

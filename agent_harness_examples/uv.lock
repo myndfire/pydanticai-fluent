@@ -35,7 +35,7 @@ requires-dist = [
     { name = "beanie" },
     { name = "colorama" },
     { name = "pydantic-ai" },
-    { name = "pydanticai-fluent", git = "https://github.com/myndfire/pydanticai-fluent.git?branch=master" },
+    { name = "pydanticai-fluent", editable = "../" },
 ]
 
 [[package]]
@@ -2436,9 +2436,21 @@ wheels = [
 
 [[package]]
 name = "pydanticai-fluent"
-version = "0.1.0"
-source = { git = "https://github.com/myndfire/pydanticai-fluent.git?branch=master#ec44e035996c6408bd130c73cd44acf118093a2d" }
+source = { editable = "../" }
 dependencies = [
+    { name = "aio-pika" },
+    { name = "jinja2" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-sdk" },
+    { name = "pydantic-ai" },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "aio-pika" },
     { name = "jinja2" },
     { name = "opentelemetry-api" },

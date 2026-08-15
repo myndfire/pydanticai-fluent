@@ -22,14 +22,14 @@ Demonstrates:
   - Fan-out in observe() context manager: all backends receive events
 
 Usage:
-    uv run python 04_composite.py
+    uv run python 04_composite_logs.py
 
 Setup
 -----
     1. Install dependencies and run:
         cd agent_harness_examples
         uv sync
-        uv run python observability/04_composite.py
+        uv run python observability/04_composite_logs.py
 """
 
 import asyncio
@@ -88,7 +88,7 @@ async def main():
     print(f"  Tracers: {[type(t).__name__ for t in obs2._tracers]}")
 
     # observe() chains ALL tracers, logs to ALL loggers, emits to ALL metrics
-    async with obs2.observe("multi_tracer_test", operation="demo", run=1):
+    async with obs2.observe("multi_tracer_test", op="demo", run=1):
         obs2.info("inside_observe", step="setup")
         await asyncio.sleep(0.01)
 

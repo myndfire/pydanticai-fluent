@@ -363,6 +363,104 @@ class FileLogger:
         self.logger.error(message, **context)
 
 
+class OTELLogger:
+    """OpenTelemetry structured logging via OTLP gRPC export.
+
+    Sends log records to an OTel Collector (or any OTLP endpoint). Records
+    emitted inside an active span automatically carry trace_id/span_id for
+    log-trace correlation.
+    """
+
+    def __init__(
+        self,
+        service_name: str = "agent",
+        otlp_endpoint: str = "localhost:4317",
+    ):
+        """
+        Initialize OTEL logging.
+
+        Args:
+            service_name: Service name for log records
+            otlp_endpoint: OTel Collector OTLP gRPC endpoint (default: localhost:4317)
+        """
+        self.service_name = service_name
+        self.otlp_endpoint = otlp_endpoint
+        self._provider = None
+        self._logger = None
+
+        self._setup_otlp()
+
+    def _setup_otlp(self):
+        """Setup OTLP log exporter."""
+        try:
+            from opentelemetry._logs import SeverityNumber
+            from opentelemetry.sdk._logs import LoggerProvider
+            from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+            from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+                OTLPLogExporter,
+            )
+            from opentelemetry.sdk.resources import Resource
+
+            resource = Resource.create({"service.name": self.service_name})
+
+            exporter = OTLPLogExporter(endpoint=self.otlp_endpoint, insecure=True)
+            self._provider = LoggerProvider(resource=resource)
+            self._provider.add_log_record_processor(
+                BatchLogRecordProcessor(exporter)
+            )
+
+            self._logger = self._provider.get_logger(self.service_name)
+            self._severity_map = {
+                "debug": SeverityNumber.DEBUG,
+                "info": SeverityNumber.INFO,
+                "warning": SeverityNumber.WARN,
+                "error": SeverityNumber.ERROR,
+            }
+
+            print(f"✅ OTEL logging initialized: {self.otlp_endpoint}")
+
+        except Exception as e:
+            print(f"⚠️  Failed to setup OTEL logging: {str(e)}")
+            self._provider = None
+            self._logger = None
+
+    def _emit(self, message: str, severity: str, **context):
+        """Emit a structured log record via OTLP."""
+        if not self._logger:
+            return
+
+        severity_number = self._severity_map.get(severity)
+        self._logger.emit(
+            severity_number=severity_number,
+            severity_text=severity.upper(),
+            body=message,
+            attributes={k: str(v) for k, v in context.items()} or None,
+        )
+
+    def debug(self, message: str, **context):
+        """Log debug message."""
+        self._emit(message, "debug", **context)
+
+    def info(self, message: str, **context):
+        """Log info message."""
+        self._emit(message, "info", **context)
+
+    def warning(self, message: str, **context):
+        """Log warning message."""
+        self._emit(message, "warning", **context)
+
+    def error(self, message: str, **context):
+        """Log error message."""
+        self._emit(message, "error", **context)
+
+    def close(self):
+        """Flush and shut down the OTLP log provider."""
+        if self._provider:
+            self._provider.shutdown()
+            self._provider = None
+            self._logger = None
+
+
 class CompositeLogger:
     """Composite logger that writes to multiple backends."""
 

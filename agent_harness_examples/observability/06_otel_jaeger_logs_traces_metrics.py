@@ -12,49 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OTEL & Jaeger — OpenTelemetry and Jaeger distributed tracing.
+"""OTEL — OpenTelemetry and Jaeger v2 distributed tracing via OTLP.
 
 Demonstrates:
   - OTELTracer: OTLP gRPC export (→ Jaeger collector at localhost:4317)
-  - JaegerTracer: native Jaeger UDP agent (localhost:6831)
   - InMemoryTracer: chained alongside for local span inspection
   - Span attributes, span context (trace_id, span_id) captured in observe()
   - Observability with multiple tracers chained together
 
 Prerequisite:
-    docker compose -f agent_harness_examples/observability/docker-compose.jaeger.yml up -d
+    docker compose -f docker-compose.yml up -d jaeger
 
 Jaeger UI: http://localhost:16686
 
 Usage:
-    uv run python 06_otel_jaeger.py
+    uv run python 06_otel_jaeger_logs_traces_metrics.py
 
 Setup
 -----
     1. Start Ollama (if using local models):
         ollama serve
     2. (Optional) Start Jaeger:
-        docker compose -f agent_harness_examples/observability/docker-compose.jaeger.yml up -d
+        docker compose -f docker-compose.yml up -d jaeger
     3. Install dependencies and run:
         cd agent_harness_examples
         uv sync
-        uv run python observability/06_otel_jaeger.py
+        uv run python observability/06_otel_jaeger_logs_traces_metrics.py
 """
 
 import asyncio
-import socket
 
 from agent_harness.observability import Observability, ObservabilityBuilder
 from agent_harness.logging import ConsoleLogger
-from agent_harness.tracing import OTELTracer, JaegerTracer, InMemoryTracer, NoOpTracer
+from agent_harness.tracing import OTELTracer, InMemoryTracer, NoOpTracer
 from agent_harness.metrics import InMemoryMetrics
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 JAEGER_OTLP = "localhost:4317"
-JAEGER_UDP_HOST = "localhost"
-JAEGER_UDP_PORT = 6831
 
 
 async def check_port(host: str, port: int) -> bool:
@@ -76,17 +72,13 @@ async def main():
     print("=" * 60)
 
     # ── Connection check ────────────────────────────────────────
-    print(f"\nChecking Jaeger OTLP at {JAEGER_OTLP} ...")
+    print(f"Checking Jaeger OTLP at {JAEGER_OTLP} ...")
     otlp_ok = await check_port("localhost", 4317)
     print(f"  {'Reachable' if otlp_ok else 'NOT reachable'}")
 
-    print(f"Checking Jaeger UDP at {JAEGER_UDP_HOST}:{JAEGER_UDP_PORT} ...")
-    udp_ok = await check_port("localhost", 6831)
-    print(f"  {'Reachable' if udp_ok else 'NOT reachable'}")
-
-    if not (otlp_ok or udp_ok):
+    if not otlp_ok:
         print("\n  Jaeger not reachable. Start with:")
-        print("    docker compose -f agent_harness_examples/observability/docker-compose.jaeger.yml up -d")
+        print("    docker compose -f docker-compose.yml up -d jaeger")
         print("  Then open http://localhost:16686 to view traces.")
         return
 
@@ -113,8 +105,8 @@ async def main():
         print(f"  Tracers: {[type(t).__name__ for t in obs_otel._tracers]}")
 
         # Create spans manually
-        async with obs_otel.observe("manual_span", operation="test", value=42):
-            obs_otel.info("inside_span", message="This appears in the trace")
+        async with obs_otel.observe("manual_span", op="test", value=42):
+            obs_otel.info("inside_span", detail="This appears in the trace")
             obs_otel.add_span_event("checkpoint_reached", step=1)
             obs_otel.set_span_attribute("custom_key", "custom_value")
             await asyncio.sleep(0.05)
@@ -146,38 +138,10 @@ async def main():
         all_spans = mem_tracer.get_spans()
         print(f"  Total InMemory spans: {len(all_spans)}")
 
-    # ── Example 2: JaegerTracer (UDP agent) ─────────────────────
-    if udp_ok:
-        print("\n--- Example 2: JaegerTracer (UDP agent) ---")
-
-        mem_tracer2 = InMemoryTracer()
-
-        obs_jaeger = Observability(
-            service_name="jaeger-native-demo",
-            loggers=[ConsoleLogger()],
-            tracers=[
-                JaegerTracer(
-                    service_name="jaeger-native-demo",
-                    jaeger_host=JAEGER_UDP_HOST,
-                    jaeger_port=JAEGER_UDP_PORT,
-                ),
-                mem_tracer2,
-            ],
-            metrics_list=[InMemoryMetrics()],
-        )
-
-        print(f"  Tracers: {[type(t).__name__ for t in obs_jaeger._tracers]}")
-
-        async with obs_jaeger.observe("jaeger_native_span", source="example", run=1):
-            obs_jaeger.info("inside_jaeger_span", tracer="JaegerTracer")
-            await asyncio.sleep(0.05)
-
-        print(f"  InMemory spans: {len(mem_tracer2.get_spans())}")
-
     # ── Summary ─────────────────────────────────────────────────
     print("\n" + "=" * 60)
     print("View traces at: http://localhost:16686")
-    print("  Service filter: otel-jaeger-demo or jaeger-native-demo")
+    print("  Service filter: otel-jaeger-demo")
     print("=" * 60)
 
 

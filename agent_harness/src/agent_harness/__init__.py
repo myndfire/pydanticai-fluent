@@ -38,6 +38,7 @@ from .logging import (
     ElasticsearchLogger,
     FileLogger,
     CompositeLogger,
+    OTELLogger,
 )
 from .log_enrichment import (
     LogEnrichmentProvider,
@@ -57,7 +58,7 @@ from .metrics import (
     MetricsCollector,
     NoOpMetrics,
     InMemoryMetrics,
-    OTLPMetrics,
+    OTELMetrics,
     PrometheusMetrics,
     StatsdMetrics,
     MetricNames,
@@ -109,6 +110,7 @@ __all__ = [
     "ElasticsearchLogger",
     "FileLogger",
     "CompositeLogger",
+    "OTELLogger",
     # Log Enrichment
     "LogEnrichmentProvider",
     "LogContext",
@@ -126,7 +128,7 @@ __all__ = [
     "MetricsCollector",
     "NoOpMetrics",
     "InMemoryMetrics",
-    "OTLPMetrics",
+    "OTELMetrics",
     "PrometheusMetrics",
     "StatsdMetrics",
     "MetricNames",

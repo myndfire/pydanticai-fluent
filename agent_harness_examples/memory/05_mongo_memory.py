@@ -23,7 +23,7 @@ Demonstrates:
   - Cleanup prompt
 
 Prerequisite:
-    docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d
+    docker compose -f docker-compose.yml up -d mongo
 
 Usage:
     uv run python 05_mongo_memory.py
@@ -33,7 +33,7 @@ Setup
     1. Start Ollama (if using local models):
         ollama serve
     2. (Optional) Start MongoDB:
-        docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d
+        docker compose -f docker-compose.yml up -d mongo
     3. Install dependencies and run:
         cd agent_harness_examples
         uv sync
@@ -73,7 +73,7 @@ async def main():
     if not await check_mongo(MONGO_URI):
         print(f"  MongoDB not reachable at {MONGO_URI}")
         print("  Start with:")
-        print("    docker compose -f agent_harness_examples/memory/docker-compose.mongo.yml up -d")
+        print("    docker compose -f docker-compose.yml up -d mongo")
         return
     print("  MongoDB is reachable.")
 
