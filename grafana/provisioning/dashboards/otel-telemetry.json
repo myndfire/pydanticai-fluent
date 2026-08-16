@@ -1,0 +1,106 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["otel"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Agent Harness — OTel Telemetry",
+  "uid": "agent-harness-otel",
+  "version": 1,
+  "panels": [
+    {
+      "type": "text",
+      "title": "Quick access",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Single pane for all signals:**\n\n- [Logs Drilldown](http://localhost:3000/a/explore-logs) — browse logs like Kibana (Elasticsearch)\n- [Metrics Drilldown](http://localhost:3000/a/explore-metrics) — explore metrics (Prometheus)\n- [Explore → Jaeger](http://localhost:3000/explore?left=%7B%22datasource%22%3A%22jaeger%22%7D) — trace waterfall\n- [Explore → Elasticsearch logs](http://localhost:3000/explore?left=%7B%22datasource%22%3A%22elasticsearch%22%7D)"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent runs",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum({__name__=\"all_in_one_observability_demo_agent_runs_total\"})",
+          "legendFormat": "agent runs",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent errors",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum({__name__=\"all_in_one_observability_demo_agent_errors_total\"})",
+          "legendFormat": "agent errors",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent response latency (avg)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 13 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum({__name__=\"all_in_one_observability_demo_agent_duration_seconds_sum\"}) / sum({__name__=\"all_in_one_observability_demo_agent_duration_seconds_count\"})",
+          "legendFormat": "avg latency",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Span volume by span name (Jaeger)",
+      "datasource": { "type": "jaeger", "uid": "jaeger" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "targets": [
+        {
+          "datasource": { "type": "jaeger", "uid": "jaeger" },
+          "queryType": "search",
+          "service": "all-in-one-observability-demo",
+          "operation": "",
+          "limit": 10,
+          "query": "all-in-one-observability-demo",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "title": "Logs (Elasticsearch)",
+      "datasource": { "type": "elasticsearch", "uid": "elasticsearch" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "targets": [
+        {
+          "datasource": { "type": "elasticsearch", "uid": "elasticsearch" },
+          "metrics": [{ "id": "1", "type": "logs" }],
+          "timeField": "@timestamp",
+          "query": "*",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

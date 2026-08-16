@@ -27,7 +27,7 @@ services:
     command: redis-server --appendonly yes
 
   elasticsearch:
-    image: elasticsearch:8.17.0
+    image: elasticsearch:9.5.1
     container_name: agent-harness-elastic
     ports:
       - "9200:9200"
@@ -39,7 +39,7 @@ services:
       - es_data:/usr/share/elasticsearch/data
 
   kibana:
-    image: kibana:8.17.0
+    image: kibana:9.5.1
     container_name: agent-harness-kibana
     ports:
       - "5601:5601"
@@ -62,6 +62,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - elasticsearch
+      - jaeger
     restart: unless-stopped
 
   jaeger:
@@ -84,23 +85,28 @@ services:
       - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
     depends_on:
       - elasticsearch
-
-  tempo:
-    image: grafana/tempo:2.7.1
-    container_name: agent-harness-tempo
-    ports:
-      - "3200:3200"   # query API only (Grafana Tempo datasource; OTLP ingest is internal)
-    volumes:
-      - ./tempo.yml:/etc/tempo.yml
-      - tempo_data:/var/tempo
-    command: ["-config.file=/etc/tempo.yml"]
-    restart: unless-stopped
+      - prometheus
+      - jaeger
 
   pushgateway:
     image: prom/pushgateway:v1.9.0
     container_name: agent-harness-pushgateway
     ports:
       - "9091:9091"
+
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    container_name: agent-harness-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-otlp-receiver"
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3-management
@@ -120,6 +126,6 @@ volumes:
   mongo_configdb:
   redis_data:
   es_data:
-  tempo_data:
   jaeger_data:
+  prometheus_data:
   rabbitmq_data:

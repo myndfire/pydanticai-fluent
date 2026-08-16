@@ -52,28 +52,42 @@ Services:
 |---|---|---|
 | `mongo` | `27017` | MongoMemory, MongoPrompts |
 | `redis` | `6379` | RedisMemory |
-| `elasticsearch` | `9200` | ElasticsearchMemory, ElasticsearchLogger |
-| `kibana` | `5601` | Visualize OTel logs/metrics/traces (Discover + Dashboards) |
-| `grafana` | `3000` | Visualize OTel logs/metrics from ES + trace waterfall from Tempo (Explore) |
-| `tempo` | `3200` | Trace backend for Grafana (collector fans traces out to it) |
-| `jaeger` | `16686`, `4317`, `4318` | OTELTracer tracing |
-| `otel-collector` | `14317`, `14318` | OTel → Elasticsearch pipelines; traces also fan out to Tempo (OTELLogger, OTELTracer, OTELMetrics) |
+| `elasticsearch` | `9200` | ElasticsearchMemory, ElasticsearchLogger, OTel logs backend |
+| `kibana` | `5601` | Optional specialist — Kibana log browser (Grafana Logs Drilldown covers this) |
+| `grafana` | `3000` | Single pane: logs from ES, metrics from Prometheus, trace waterfall from Jaeger |
+| `prometheus` | `9090` | Metrics backend — native OTLP receiver (ingests the collector's OTLP metrics) |
+| `jaeger` | `16686`, `4317`, `4318` | Trace backend — native OTLP gRPC ingest, UI at :16686 |
+| `otel-collector` | `14317`, `14318` | Single OTLP receiver → ES logs + Prometheus metrics + Jaeger traces (OTELLogger, OTELTracer, OTELMetrics) |
 | `pushgateway` | `9091` | PrometheusMetrics |
 | `rabbitmq` | `5672`, `15672` | Messaging examples |
 
 Stop everything with `docker compose -f docker-compose.yml down -v`.
 
-### Visualize OTel signals
+### Visualize OTel signals (Grafana single pane)
 
 Start the observability stack, then run the all-in-one example:
 
 ```bash
-docker compose -f docker-compose.yml up -d elasticsearch otel-collector kibana grafana tempo
-uv run python observability/09_otel_logs_traces_metrics_elasticsearch.py
+docker compose -f docker-compose.yml up -d elasticsearch otel-collector kibana grafana jaeger prometheus
+uv run python observability/09_otel_oltp_logs_traces_metrics.py
 ```
 
-- **Kibana** (http://localhost:5601) — create data views for `logs/metrics/traces-generic.otel-default-*`, then Discover and filter `service.name: all-in-one-es-demo`.
-- **Grafana** (http://localhost:3000, admin/admin) — Elasticsearch datasource for logs (Explore → Logs) and metrics (ES aggregations); Tempo datasource for the native trace waterfall. Select a span → *View in logs* jumps to the correlated ES log records by `trace_id`.
+Open **Grafana** (http://localhost:3000, admin/admin) — datasources (Elasticsearch, Prometheus, Jaeger) and the **"Agent Harness — OTel Telemetry"** dashboard are auto-provisioned (Dashboards → OTel → Agent Harness — OTel Telemetry):
+
+- **Logs like Kibana** — Logs Drilldown (`/a/explore-logs`) on the Elasticsearch datasource.
+- **Metrics like Grafana** — Prometheus datasource (`/a/explore-metrics`) or the dashboard's run/error/latency panels (PromQL).
+- **Traces like Jaeger** — Jaeger UI (http://localhost:16686) or Grafana Explore → Jaeger for the native waterfall; select a span → *View in logs* jumps to the correlated ES log records by `trace_id`.
+
+### Kibana log-levels dashboard
+
+Provision a purpose-built **severity dashboard** in Kibana (bar by severity, volume-over-time by severity, donut share, recent-logs table). Kibana only file-provisions data views (not Lens panels), so this pushes pre-built saved objects via the import API — idempotent, re-run anytime:
+
+```bash
+docker compose -f docker-compose.yml up -d kibana
+./kibana/provision-log-levels-dashboard.sh
+```
+
+Opens at `http://localhost:5601/app/dashboards#/view/log-levels-dashboard` ("Agent Harness — Log Levels"). See `USAGE.md §8` for the panel table and data-stream gotcha.
 
 ---
 
@@ -166,7 +180,7 @@ if __name__ == "__main__":
 | | `observability/06_otel_jaeger_logs_traces_metrics.py` | OTel logs+traces+metrics → Jaeger |
 | | `observability/07_prometheus_logs_metrics.py` | Prometheus logs + metrics with push gateway |
 | | `observability/08_live_agent_logs_metrics.py` | Live agent with composed logs + metrics |
-| | `observability/09_otel_logs_traces_metrics_elasticsearch.py` | OTel logs+traces+metrics → Elasticsearch + Tempo (Grafana) |
+| | `observability/09_otel_oltp_logs_traces_metrics.py` | OTel logs+traces+metrics → ES logs + Prometheus metrics + Jaeger traces (via one OTLP collector) |
 | **Prompts** | `prompts/01_static_prompts.py` | Fixed system prompt |
 | | `prompts/02_mongo_prompts.py` | Jinja2 templates from MongoDB |
 | | `prompts/03_prompt_variables.py` | Dynamic prompt rendering |

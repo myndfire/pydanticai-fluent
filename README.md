@@ -153,10 +153,11 @@ pydanticai-fluent/
 │   ├── tools/ memory/ guards/  # etc.
 │   └── ...
 ├── agentic_rag/                # RAG agent example
-├── docker-compose.yml          # Infra services (mongo, redis, elasticsearch, kibana, grafana, tempo, jaeger, otel-collector, pushgateway, rabbitmq)
-├── otel-collector-config.yml   # OTel Collector → Elasticsearch + Tempo pipelines (logs/metrics/traces)
-├── tempo.yml                   # Tempo trace backend config (OTLP ingest, local storage)
-├── grafana/                    # Grafana provisioning (Elasticsearch + Tempo datasources)
+├── docker-compose.yml          # Infra services (mongo, redis, elasticsearch, kibana, grafana, jaeger, otel-collector, prometheus, pushgateway, rabbitmq)
+├── otel-collector-config.yml   # OTel Collector single OTLP receiver → ES logs + Prometheus metrics + Jaeger traces
+├── prometheus.yml              # Prometheus scrape config (pushgateway; metrics ingested via OTLP receiver)
+├── grafana/                    # Grafana provisioning (Elasticsearch + Prometheus + Jaeger datasources, dashboards)
+├── kibana/                     # Kibana log-levels dashboard provisioning (script + saved-object NDJSON)
 └── USAGE.md                    # Full usage guide
 ```
 

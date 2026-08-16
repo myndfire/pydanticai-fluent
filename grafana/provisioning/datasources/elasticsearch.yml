@@ -9,7 +9,7 @@ datasources:
     isDefault: true
     editable: true
     jsonData:
-      esVersion: "8.17.0"
+      esVersion: "9.5.1"
       timeField: "@timestamp"
       maxConcurrentShardRequests: 5
       logMessageField: "body.text"
