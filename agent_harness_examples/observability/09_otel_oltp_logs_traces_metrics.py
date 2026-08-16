@@ -24,6 +24,11 @@ Demonstrates:
       traces → Jaeger (OTLP gRPC :4317)
   - Log-trace correlation: log records emitted inside a span carry trace_id/span_id
   - Agent run instrumented end-to-end with a single Observability facade
+  - Tool calls (RunContext so they can log to ES) with the trace stream being
+    PydanticAI's native spans only (invoke_agent / execute_tool <tool> / chat <model>);
+    the default ``create_spans=False`` keeps the harness from adding its own
+    agent_run/manual_span spans, so querying on PydanticAI's canonical span names
+    and gen_ai.* attributes is stable
 
 Architecture:
     agent_harness  --OTLP gRPC:14317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
@@ -70,6 +75,9 @@ Visualize (single pane: Grafana)
 """
 
 import asyncio
+from dataclasses import dataclass
+
+from pydantic_ai import RunContext
 
 from agent_harness.observability import Observability
 from agent_harness.logging import ConsoleLogger, OTELLogger
@@ -78,6 +86,8 @@ from agent_harness.metrics import OTELMetrics
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
+from agent_harness.prompts import StaticPrompts
+from agent_harness.tools import ToolRegistry
 
 ES_ENDPOINT = "http://localhost:9200"
 OTEL_ENDPOINT = "localhost:14317"
@@ -108,6 +118,65 @@ async def check_elasticsearch(endpoint: str) -> bool:
             return resp.status_code == 200
     except Exception:
         return False
+
+
+@dataclass
+class ToolDeps:
+    """Dependency container injected into context-aware tools via RunContext."""
+
+    observability: Observability
+    session_id: str
+
+
+def get_weather(ctx: RunContext[ToolDeps], city: str) -> str:
+    """Get current weather conditions for a city.
+
+    Args:
+        city: Name of the city to check weather for.
+    """
+    ctx.deps.observability.info(
+        "tool_call", tool="get_weather", city=city, session_id=ctx.deps.session_id
+    )
+    conditions = {
+        "tokyo": "Clear skies, 22°C",
+        "london": "Light rain, 15°C",
+        "new york": "Partly cloudy, 18°C",
+    }
+    payload = conditions.get(city.lower(), f"Unknown city: {city}")
+    ctx.deps.observability.info(
+        "tool_result",
+        tool="get_weather",
+        city=city,
+        result=payload,
+        session_id=ctx.deps.session_id,
+    )
+    return payload
+
+
+def calculator(ctx: RunContext[ToolDeps], expression: str) -> str:
+    """Evaluate a mathematical expression.
+
+    Args:
+        expression: A mathematical expression like '(22 + 15 + 18) / 3'.
+    """
+    ctx.deps.observability.info(
+        "tool_call",
+        tool="calculator",
+        expression=expression,
+        session_id=ctx.deps.session_id,
+    )
+    try:
+        result = eval(expression, {"__builtins__": {}}, {})
+    except Exception as e:
+        result = f"Error: {e}"
+    ctx.deps.observability.info(
+        "tool_result",
+        tool="calculator",
+        expression=expression,
+        result=result,
+        session_id=ctx.deps.session_id,
+    )
+    return f"Result: {result}"
 
 
 async def main():
@@ -141,6 +210,7 @@ async def main():
                 service_name=SERVICE_NAME,
                 otlp_endpoint=OTEL_TRACER_ENDPOINT,
                 sample_rate=1.0,
+                create_spans=False,  # canonical — no harness spans; native PydanticAI spans only
             ),
         ],
         metrics_list=[
@@ -160,29 +230,36 @@ async def main():
     obs.error("token_limit_exceeded", actual=5000, max_tokens=4096)
     await asyncio.sleep(1)
 
-    # ── Manual span with log-trace correlation ──────────────────
-    print("\n--- Manual span (log records inherit trace context) ---")
-
-    async with obs.observe("manual_span", op="test", value=42):
-        obs.info("inside_span", detail="This log is correlated with the span")
-        obs.add_span_event("checkpoint_reached", step=1)
-        await asyncio.sleep(0.5)
-
     # ── Agent run ───────────────────────────────────────────────
     print("\n--- Agent run (logs + spans + metrics) ---")
+
+    session_id = "all-in-one-observability-session"
 
     agent = (
         ManagedAgent()
         .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
+        .with_prompts(
+            StaticPrompts(
+                "You are a helpful assistant with weather and calculator tools. "
+                "You MUST use the tools to answer questions. "
+                "Call get_weather for each city, then calculator to compute the average. "
+                "Never provide answers from memory."
+            )
+        )
+        .with_deps_type(ToolDeps)
         .with_observability(obs)
+        .with_tools(ToolRegistry().add_many(get_weather, calculator))
     )
 
     memory = InMemoryProvider()
-    history = await MessageHistory().load("all-in-one-observability-session", memory)
+    history = await MessageHistory().load(session_id, memory)
+    deps = ToolDeps(observability=obs, session_id=session_id)
     result = await agent.run(
-        "What is 10 divided by 2?",
+        "What is the average temperature (in °C) of Tokyo, London, and New York? "
+        "Use get_weather for each city, then calculator.",
         history,
-        "all-in-one-observability-session",
+        session_id,
+        deps=deps,
         save_to=[memory],
     )
     print(f"  Agent response: {result.output}")

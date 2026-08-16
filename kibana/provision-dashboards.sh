@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
-# Provision all Kibana saved-object bundles in kibana/saved-objects/.
+# Provision all Kibana dashboards and saved-object bundles.
 #
-# Behavior:
-#   1. Wait for Kibana.
-#   2. Ensure the shared logs data view exists with the exact stable ID.
-#   3. Import every *.ndjson file in saved-objects/ with overwrite=true.
-#
-# This keeps dashboard provisioning generic: adding a new dashboard only
-# requires dropping another .ndjson file into kibana/saved-objects/.
-#
-# Requires: curl, python3, running Kibana.
+# Ensures both logs and traces data views exist, then imports every *.ndjson
+# from kibana/saved-objects/. Compatible with macOS Bash 3.2.
 #
 # Usage:
 #   ./kibana/provision-dashboards.sh
@@ -21,11 +14,13 @@ KIBANA_URL="${KIBANA_URL:-http://localhost:5601}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAVED_OBJECTS_DIR="${SCRIPT_DIR}/saved-objects"
 
-DATA_VIEW_TITLE="logs-generic.otel-default*"
-DATA_VIEW_ID="1ee66b57-99f5-44bd-9828-5b690f3cc8af"
+LOGS_DATA_VIEW_ID="1ee66b57-99f5-44bd-9828-5b690f3cc8af"
+LOGS_DATA_VIEW_TITLE="logs-generic.otel-default*"
+
+TRACES_DATA_VIEW_ID="7f6f1a30-63b2-4c9b-8b0c-3f8bfe8d9a10"
+TRACES_DATA_VIEW_TITLE="traces-generic.otel-default*"
 
 echo "==> Waiting for Kibana at ${KIBANA_URL} ..."
-
 for i in $(seq 1 120); do
   status="$(
     curl -fsS "${KIBANA_URL}/api/status" 2>/dev/null |
@@ -46,9 +41,13 @@ for i in $(seq 1 120); do
   sleep 2
 done
 
-echo "==> Ensuring data view '${DATA_VIEW_TITLE}' exists ..."
+ensure_data_view() {
+  dv_id="$1"
+  title="$2"
 
-python3 - "$KIBANA_URL" "$DATA_VIEW_ID" "$DATA_VIEW_TITLE" <<'PY'
+  echo "==> Ensuring data view '${title}' exists ..."
+
+  python3 - "$KIBANA_URL" "$dv_id" "$title" <<'PY'
 import json
 import sys
 import urllib.error
@@ -63,25 +62,17 @@ headers = {
 
 def request(method, url, body=None):
     data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers=headers,
-        method=method,
-    )
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req) as r:
             return r.status, r.read().decode()
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode()
 
-status, payload = request(
-    "GET",
-    f"{base}/api/data_views/data_view/{dv_id}",
-)
+status, payload = request("GET", f"{base}/api/data_views/data_view/{dv_id}")
 
 if status == 200:
-    update_body = {
+    body = {
         "data_view": {
             "title": title,
             "timeFieldName": "@timestamp",
@@ -89,24 +80,18 @@ if status == 200:
         },
         "refresh_fields": True,
     }
-
     status, payload = request(
         "POST",
         f"{base}/api/data_views/data_view/{dv_id}",
-        update_body,
+        body,
     )
-
     if status != 200:
-        print(
-            f"ERROR: failed to update data view ({status}): {payload[:1000]}",
-            file=sys.stderr,
-        )
+        print(f"ERROR: failed to update data view ({status}): {payload[:1000]}", file=sys.stderr)
         sys.exit(1)
-
     print(f"    updated data view: {dv_id}")
 
 elif status == 404:
-    create_body = {
+    body = {
         "data_view": {
             "id": dv_id,
             "title": title,
@@ -115,55 +100,35 @@ elif status == 404:
         },
         "override": True,
     }
-
-    status, payload = request(
-        "POST",
-        f"{base}/api/data_views/data_view",
-        create_body,
-    )
-
+    status, payload = request("POST", f"{base}/api/data_views/data_view", body)
     if status != 200:
-        print(
-            f"ERROR: failed to create data view ({status}): {payload[:1000]}",
-            file=sys.stderr,
-        )
+        print(f"ERROR: failed to create data view ({status}): {payload[:1000]}", file=sys.stderr)
         sys.exit(1)
-
     print(f"    created data view: {dv_id}")
 
 else:
-    print(
-        f"ERROR: failed to check data view ({status}): {payload[:1000]}",
-        file=sys.stderr,
-    )
+    print(f"ERROR: failed to check data view ({status}): {payload[:1000]}", file=sys.stderr)
     sys.exit(1)
 
-status, payload = request(
-    "GET",
-    f"{base}/api/data_views/data_view/{dv_id}",
-)
-
+status, payload = request("GET", f"{base}/api/data_views/data_view/{dv_id}")
 if status != 200:
-    print(
-        f"ERROR: data view verification failed ({status}): {payload[:1000]}",
-        file=sys.stderr,
-    )
+    print(f"ERROR: data view verification failed ({status}): {payload[:1000]}", file=sys.stderr)
     sys.exit(1)
 
 obj = json.loads(payload)
 dv = obj.get("data_view", {})
-
 if dv.get("id") != dv_id:
-    print(
-        f"ERROR: wrong data view ID returned: {dv.get('id')!r}",
-        file=sys.stderr,
-    )
+    print(f"ERROR: wrong data view ID returned: {dv.get('id')!r}", file=sys.stderr)
     sys.exit(1)
 
 print(f"    verified data view: {dv.get('id')}")
 print(f"    title: {dv.get('title')}")
 print(f"    time field: {dv.get('timeFieldName')}")
 PY
+}
+
+ensure_data_view "${LOGS_DATA_VIEW_ID}" "${LOGS_DATA_VIEW_TITLE}"
+ensure_data_view "${TRACES_DATA_VIEW_ID}" "${TRACES_DATA_VIEW_TITLE}"
 
 if [[ ! -d "${SAVED_OBJECTS_DIR}" ]]; then
   echo "ERROR: saved-objects directory not found: ${SAVED_OBJECTS_DIR}" >&2
@@ -213,7 +178,6 @@ if not payload.get("success"):
 
 results = payload.get("successResults", [])
 print(f"       imported {len(results)} saved objects")
-
 for item in results:
     print(f"         - {item['type']}: {item['id']}")
 PY
@@ -229,8 +193,12 @@ echo "==> Done. Open the dashboards:"
 echo
 echo "    Debug Logs:"
 echo "    ${KIBANA_URL}/app/dashboards#/view/log-levels-dashboard"
-echo "    (or ${KIBANA_URL}/app/dashboards -> 'Agent Harness — Debug Logs')"
 echo
 echo "    Token Usage:"
 echo "    ${KIBANA_URL}/app/dashboards#/view/token-usage-dashboard"
-echo "    (or ${KIBANA_URL}/app/dashboards -> 'Agent Harness — Token Usage')"
+echo
+echo "    Agent Runs:"
+echo "    ${KIBANA_URL}/app/dashboards#/view/agent-runs-dashboard"
+echo
+echo "    Tool Calls:"
+echo "    ${KIBANA_URL}/app/dashboards#/view/tool-calls-dashboard"

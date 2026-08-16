@@ -343,7 +343,10 @@ class ObservabilityBuilder:
         return self
 
     def with_otel_tracing(
-        self, otlp_endpoint: str = "localhost:4317", sample_rate: float = 1.0
+        self,
+        otlp_endpoint: str = "localhost:4317",
+        sample_rate: float = 1.0,
+        create_spans: bool = False,
     ) -> "ObservabilityBuilder":
         from .tracing import OTELTracer
 
@@ -352,6 +355,7 @@ class ObservabilityBuilder:
                 service_name=self.service_name,
                 otlp_endpoint=otlp_endpoint,
                 sample_rate=sample_rate,
+                create_spans=create_spans,
             )
         )
         return self

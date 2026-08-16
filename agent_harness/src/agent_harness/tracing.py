@@ -302,6 +302,17 @@ class OTELTracer:
     Pure OpenTelemetry distributed tracing (without Logfire).
 
     Use this if you want direct OTLP export without Logfire.
+
+    By default (``create_spans=False``) this tracer does NOT create its own
+    harness spans. It only configures the global OTLP provider and lets
+    PydanticAI's native instrumentation emit the canonical span tree
+    (``invoke_agent <name>``, ``execute_tool <tool>``, ``chat <model>``).
+    ``Observability.span()`` then yields the current span's context (or
+    ``None``) so in-run log records still correlate with that tree.
+
+    Set ``create_spans=True`` to restore the legacy behavior of exporting a
+    harness-managed ``<service>.<name>`` span for every ``Observability.span()``
+    call (e.g. to explicitly demo manual OTel spans).
     """
 
     def __init__(
@@ -309,6 +320,7 @@ class OTELTracer:
         service_name: str,
         otlp_endpoint: str = "http://localhost:4317",
         sample_rate: float = 1.0,
+        create_spans: bool = False,
     ):
         """
         Initialize OTEL tracer.
@@ -317,13 +329,32 @@ class OTELTracer:
             service_name: Service name for traces
             otlp_endpoint: OTLP collector endpoint (gRPC)
             sample_rate: Sampling rate (0.0 to 1.0, default 1.0 = trace everything)
+            create_spans: When True, every span() call starts/exports a
+                harness span. When False (default), no harness spans are
+                created — PydanticAI native spans are the trace content.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
         self.sample_rate = sample_rate
+        self.create_spans = create_spans
         self.tracer = None
 
         self._setup_otel()
+
+    def _enable_pydanticai_instrumentation(self) -> None:
+        """Auto-instrument PydanticAI to emit native run/model/tool spans.
+
+        PydanticAI parents its spans to the currently active span, so they nest
+        under the harness's ``agent_run`` umbrella and export through the global
+        OTLP tracer provider configured by ``OTELTracer``.
+        """
+        try:
+            from pydantic_ai.agent import Agent
+
+            Agent.instrument_all(True)
+            print("✅ PydanticAI native instrumentation enabled (OTLP)")
+        except Exception as e:
+            print(f"⚠️  Failed to enable PydanticAI instrumentation: {str(e)}")
 
     def _setup_otel(self):
         """Setup OpenTelemetry tracing."""
@@ -350,6 +381,7 @@ class OTELTracer:
                 print(
                     f"✅ OTEL tracing initialized (reusing existing provider): {self.otlp_endpoint}"
                 )
+                self._enable_pydanticai_instrumentation()
                 return
 
             # No existing provider — create one
@@ -369,6 +401,7 @@ class OTELTracer:
             trace.set_tracer_provider(provider)
             self.tracer = trace.get_tracer(__name__)
 
+            self._enable_pydanticai_instrumentation()
             print(f"✅ OTEL tracing initialized: {self.otlp_endpoint}")
 
         except Exception as e:
@@ -377,13 +410,24 @@ class OTELTracer:
 
     @asynccontextmanager
     async def span(self, name: str, **attributes):
-        """Create an OTEL span."""
+        """Create an OTEL span.
+
+        With ``create_spans=False`` (default) no harness span is created;
+        the current PydanticAI span's context is yielded (or ``None``) so
+        in-run log records still carry its trace id.
+        """
         if not self.tracer:
             yield None
             return
 
         from opentelemetry import trace as otel_trace
         from opentelemetry.trace import Status, StatusCode
+
+        if not self.create_spans:
+            current = otel_trace.get_current_span()
+            span_context = current.get_span_context()
+            yield span_context if span_context.is_valid else None
+            return
 
         # Start span and make it the current span so nested spans and
         # OTel log records inherit its trace context.

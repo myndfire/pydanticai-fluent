@@ -96,6 +96,7 @@ async def main():
                     service_name="otel-jaeger-demo",
                     otlp_endpoint="http://localhost:4317",
                     sample_rate=1.0,
+                    create_spans=True,  # this demo explicitly exercises manual OTel spans
                 ),
                 mem_tracer,  # chain: OTEL + InMemory for local inspection
             ],
