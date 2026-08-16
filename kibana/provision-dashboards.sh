@@ -1,25 +1,31 @@
-##!/usr/bin/env bash
-# Provision the "Agent Harness — Log Levels" dashboard into Kibana.
+#!/usr/bin/env bash
+# Provision all Kibana saved-object bundles in kibana/saved-objects/.
 #
-# Creates/updates the required data view first, then imports the Lens/dashboard
-# saved objects. Safe to run repeatedly.
+# Behavior:
+#   1. Wait for Kibana.
+#   2. Ensure the shared logs data view exists with the exact stable ID.
+#   3. Import every *.ndjson file in saved-objects/ with overwrite=true.
 #
-# Requires: a running Kibana, curl, python3.
+# This keeps dashboard provisioning generic: adding a new dashboard only
+# requires dropping another .ndjson file into kibana/saved-objects/.
+#
+# Requires: curl, python3, running Kibana.
 #
 # Usage:
-#   ./kibana/provision-log-levels-dashboard.sh
-#   KIBANA_URL=http://localhost:5601 ./kibana/provision-log-levels-dashboard.sh
+#   ./kibana/provision-dashboards.sh
+#   KIBANA_URL=http://localhost:5601 ./kibana/provision-dashboards.sh
 
 set -euo pipefail
 
 KIBANA_URL="${KIBANA_URL:-http://localhost:5601}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NDJSON="${SCRIPT_DIR}/saved-objects/log-levels.ndjson"
+SAVED_OBJECTS_DIR="${SCRIPT_DIR}/saved-objects"
 
 DATA_VIEW_TITLE="logs-generic.otel-default*"
 DATA_VIEW_ID="1ee66b57-99f5-44bd-9828-5b690f3cc8af"
 
 echo "==> Waiting for Kibana at ${KIBANA_URL} ..."
+
 for i in $(seq 1 120); do
   status="$(
     curl -fsS "${KIBANA_URL}/api/status" 2>/dev/null |
@@ -65,21 +71,16 @@ def request(method, url, body=None):
     )
     try:
         with urllib.request.urlopen(req) as r:
-            payload = r.read().decode()
-            return r.status, payload
+            return r.status, r.read().decode()
     except urllib.error.HTTPError as e:
-        payload = e.read().decode()
-        return e.code, payload
+        return e.code, e.read().decode()
 
-
-# Check whether the exact ID already exists.
 status, payload = request(
     "GET",
     f"{base}/api/data_views/data_view/{dv_id}",
 )
 
 if status == 200:
-    # Existing data view: update it.
     update_body = {
         "data_view": {
             "title": title,
@@ -105,7 +106,6 @@ if status == 200:
     print(f"    updated data view: {dv_id}")
 
 elif status == 404:
-    # Data view does not exist: create it with the exact ID referenced by Lens.
     create_body = {
         "data_view": {
             "id": dv_id,
@@ -138,8 +138,6 @@ else:
     )
     sys.exit(1)
 
-
-# Verify the exact ID is now resolvable before importing Lens objects.
 status, payload = request(
     "GET",
     f"{base}/api/data_views/data_view/{dv_id}",
@@ -167,33 +165,72 @@ print(f"    title: {dv.get('title')}")
 print(f"    time field: {dv.get('timeFieldName')}")
 PY
 
-echo "==> Importing saved objects from ${NDJSON} ..."
+if [[ ! -d "${SAVED_OBJECTS_DIR}" ]]; then
+  echo "ERROR: saved-objects directory not found: ${SAVED_OBJECTS_DIR}" >&2
+  exit 1
+fi
 
-result="$(
-  curl -fsS -X POST \
-    "${KIBANA_URL}/api/saved_objects/_import?overwrite=true" \
-    -H "kbn-xsrf: true" \
-    --form "file=@${NDJSON}"
-)"
+NDJSON_LIST_FILE="$(mktemp)"
+trap 'rm -f "${NDJSON_LIST_FILE}"' EXIT
 
-python3 - "$result" <<'PY'
+find "${SAVED_OBJECTS_DIR}" -maxdepth 1 -type f -name '*.ndjson' | sort > "${NDJSON_LIST_FILE}"
+
+NDJSON_COUNT="$(wc -l < "${NDJSON_LIST_FILE}" | tr -d ' ')"
+
+if [[ "${NDJSON_COUNT}" -eq 0 ]]; then
+  echo "ERROR: no .ndjson files found in ${SAVED_OBJECTS_DIR}" >&2
+  exit 1
+fi
+
+echo "==> Importing ${NDJSON_COUNT} saved-object bundle(s) ..."
+
+while IFS= read -r ndjson; do
+  [[ -z "${ndjson}" ]] && continue
+
+  echo "    -> $(basename "${ndjson}")"
+
+  result="$(
+    curl -fsS -X POST \
+      "${KIBANA_URL}/api/saved_objects/_import?overwrite=true" \
+      -H "kbn-xsrf: true" \
+      --form "file=@${ndjson}"
+  )"
+
+  python3 - "$result" "$(basename "${ndjson}")" <<'PY'
 import json
 import sys
 
-r = json.loads(sys.argv[1])
+payload = json.loads(sys.argv[1])
+filename = sys.argv[2]
 
-if not r.get("success"):
-    print("ERROR: import failed:", json.dumps(r, indent=2), file=sys.stderr)
+if not payload.get("success"):
+    print(
+        f"ERROR: import failed for {filename}:",
+        json.dumps(payload, indent=2),
+        file=sys.stderr,
+    )
     sys.exit(1)
 
-n = len(r.get("successResults", []))
-print(f"    imported {n} saved objects")
+results = payload.get("successResults", [])
+print(f"       imported {len(results)} saved objects")
 
-for sr in r.get("successResults", []):
-    print(f"      - {sr['type']}: {sr['id']}")
+for item in results:
+    print(f"         - {item['type']}: {item['id']}")
 PY
 
+done < "${NDJSON_LIST_FILE}"
+
 echo
-echo "==> Done. Open the dashboard:"
+echo "==> All Kibana saved objects provisioned successfully."
+echo "    Saved-object directory: ${SAVED_OBJECTS_DIR}"
+
+echo
+echo "==> Done. Open the dashboards:"
+echo
+echo "    Debug Logs:"
 echo "    ${KIBANA_URL}/app/dashboards#/view/log-levels-dashboard"
-echo "    (or ${KIBANA_URL}/app/dashboards -> 'Agent Harness — Log Levels')"
+echo "    (or ${KIBANA_URL}/app/dashboards -> 'Agent Harness — Debug Logs')"
+echo
+echo "    Token Usage:"
+echo "    ${KIBANA_URL}/app/dashboards#/view/token-usage-dashboard"
+echo "    (or ${KIBANA_URL}/app/dashboards -> 'Agent Harness — Token Usage')"

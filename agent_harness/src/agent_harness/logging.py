@@ -15,9 +15,21 @@
 """Structured logging to Elasticsearch and other backends."""
 
 import asyncio
+import math
 from typing import Protocol, Any
 from datetime import datetime, date
 import structlog
+
+
+def _normalize_otel_attr(v: Any) -> Any:
+    """Keep OTel-supported primitive types; stringify everything else."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v if isinstance(v, int) or math.isfinite(v) else str(v)
+    if v is None:
+        return "None"
+    return str(v)
 
 
 class Logger(Protocol):
@@ -434,7 +446,7 @@ class OTELLogger:
             severity_number=severity_number,
             severity_text=severity.upper(),
             body=message,
-            attributes={k: str(v) for k, v in context.items()} or None,
+            attributes={k: _normalize_otel_attr(v) for k, v in context.items()} or None,
         )
 
     def debug(self, message: str, **context):
