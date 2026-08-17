@@ -699,6 +699,12 @@ class ManagedAgent:
                 prompt=prompt_text,
             )
             if error_result:
+                self.observability.error(
+                    "error_handled",
+                    exception=e,
+                    error_source=source,
+                    session_id=session_id,
+                )
                 return error_result
             raise
 

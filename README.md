@@ -158,7 +158,8 @@ pydanticai-fluent/
 ├── prometheus.yml              # Prometheus scrape config (pushgateway; metrics ingested via OTLP receiver)
 ├── grafana/                    # Grafana provisioning (Elasticsearch + Prometheus + Jaeger datasources, dashboards)
 ├── kibana/                     # Kibana log-levels dashboard provisioning (script + saved-object NDJSON)
-└── USAGE.md                    # Full usage guide
+├── USAGE.md                    # Full usage guide
+└── OBSERVABILITY.md            # Observability stack docs: Elasticsearch, Jaeger, Prometheus, Grafana, Kibana
 ```
 
 ## Installation
@@ -175,3 +176,4 @@ Apache 2.0 — see [LICENSE](LICENSE).
 ---
 
 > For detailed API docs, configuration, and examples, see [`USAGE.md`](USAGE.md).
+> For the observability stack (Elasticsearch, Jaeger, Prometheus, Grafana, Kibana), see [`OBSERVABILITY.md`](OBSERVABILITY.md).

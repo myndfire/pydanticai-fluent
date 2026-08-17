@@ -72,11 +72,11 @@ docker compose -f docker-compose.yml up -d elasticsearch otel-collector kibana g
 uv run python observability/09_otel_oltp_logs_traces_metrics.py
 ```
 
-Open **Grafana** (http://localhost:3000, admin/admin) — datasources (Elasticsearch, Prometheus, Jaeger) and the **"Agent Harness — OTel Telemetry"** dashboard are auto-provisioned (Dashboards → OTel → Agent Harness — OTel Telemetry):
+Full docs on using **Elasticsearch** (log/trace queries), **Jaeger**, **Prometheus**, and **Grafana** (datasources, Logs Drilldown, PromQL, Explore → Jaeger) live in **[`OBSERVABILITY.md`](../OBSERVABILITY.md)**. Quick links:
 
-- **Logs like Kibana** — Logs Drilldown (`/a/explore-logs`) on the Elasticsearch datasource.
-- **Metrics like Grafana** — Prometheus datasource (`/a/explore-metrics`) or the dashboard's run/error/latency panels (PromQL).
-- **Traces like Jaeger** — Jaeger UI (http://localhost:16686) or Grafana Explore → Jaeger for the native waterfall; select a span → *View in logs* jumps to the correlated ES log records by `trace_id`.
+- Grafana: http://localhost:3000 (`admin`/`admin`) — datasources (Elasticsearch, Prometheus, Jaeger) and the **"Agent Harness — OTel Telemetry"** dashboard are auto-provisioned (Dashboards → OTel → Agent Harness — OTel Telemetry).
+- Logs like Kibana — Logs Drilldown (`/a/grafana-lokiexplore-app`) on the Elasticsearch datasource.
+- Traces like Jaeger — Jaeger UI (http://localhost:16686) or Grafana Explore → Jaeger.
 
 ### Kibana log-levels dashboard
 
@@ -87,7 +87,7 @@ docker compose -f docker-compose.yml up -d kibana
 ./kibana/provision-log-levels-dashboard.sh
 ```
 
-Opens at `http://localhost:5601/app/dashboards#/view/log-levels-dashboard` ("Agent Harness — Log Levels"). See `USAGE.md §8` for the panel table and data-stream gotcha.
+Opens at `http://localhost:5601/app/dashboards#/view/log-levels-dashboard` ("Agent Harness — Log Levels"). See **[`OBSERVABILITY.md §8`](../OBSERVABILITY.md#8-kibana-optional)** for the panel table, script steps, and the data-stream `-*` vs `*` gotcha.
 
 ---
 

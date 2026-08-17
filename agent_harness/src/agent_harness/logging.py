@@ -15,7 +15,10 @@
 """Structured logging to Elasticsearch and other backends."""
 
 import asyncio
+import inspect
 import math
+import os
+import sysconfig
 from typing import Protocol, Any
 from datetime import datetime, date
 import structlog
@@ -30,6 +33,69 @@ def _normalize_otel_attr(v: Any) -> Any:
     if v is None:
         return "None"
     return str(v)
+
+
+_HARNESS_ROOT = os.path.normpath(
+    os.path.dirname(os.path.abspath(__file__))
+)
+_STDLIB_DIRS = tuple(
+    p
+    for p in {
+        sysconfig.get_path("stdlib"),
+        sysconfig.get_path("platstdlib"),
+    }
+    if p
+)
+_SITE_PACKAGES = sysconfig.get_path("purelib") or ""
+
+
+def _is_harness_or_internal_frame(filename: str) -> bool:
+    """True if a frame is inside agent_harness, stdlib, or third-party deps."""
+    norm = os.path.normpath(filename or "")
+    if not norm or norm.startswith("<"):
+        return True
+    if norm.startswith(_HARNESS_ROOT):
+        return True
+    for base in _STDLIB_DIRS:
+        if base and norm.startswith(base):
+            return True
+    if _SITE_PACKAGES and norm.startswith(_SITE_PACKAGES):
+        return True
+    return False
+
+
+def _app_callsite() -> dict:
+    """Return the first application frame above the agent_harness logging stack.
+
+    Walks the call stack skipping frames inside this package, the standard
+    library, and site-packages so the reported location is the caller's code.
+    """
+    f = inspect.currentframe()
+    try:
+        while f is not None:
+            name = f.f_code.co_filename
+            if not _is_harness_or_internal_frame(name):
+                return {
+                    "code.file.path": os.path.relpath(name),
+                    "code.function": f.f_code.co_name,
+                    "code.line.number": f.f_lineno,
+                }
+            f = f.f_back
+    finally:
+        del f
+    return {}
+
+
+def _callsite_console_keys() -> dict:
+    """Map _app_callsite() to structlog-style keys for console/file renderers."""
+    cs = _app_callsite()
+    if not cs:
+        return {}
+    return {
+        "pathname": cs.get("code.file.path"),
+        "func_name": cs.get("code.function"),
+        "lineno": cs.get("code.line.number"),
+    }
 
 
 class Logger(Protocol):
@@ -123,7 +189,7 @@ class LogfireLogger:
 
         try:
             log_method = getattr(self.logfire, level, self.logfire.info)
-            log_method(message, **context)
+            log_method(message, **context, **_callsite_console_keys())
         except Exception as e:
             print(f"⚠️  Failed to log to Logfire: {str(e)}")
 
@@ -182,19 +248,19 @@ class ConsoleLogger:
 
     def debug(self, message: str, **context):
         """Log debug message to console."""
-        self.logger.debug(message, **context)
+        self.logger.debug(message, **context, **_callsite_console_keys())
 
     def info(self, message: str, **context):
         """Log info message to console."""
-        self.logger.info(message, **context)
+        self.logger.info(message, **context, **_callsite_console_keys())
 
     def warning(self, message: str, **context):
         """Log warning message to console."""
-        self.logger.warning(message, **context)
+        self.logger.warning(message, **context, **_callsite_console_keys())
 
     def error(self, message: str, **context):
         """Log error message to console."""
-        self.logger.error(message, **context)
+        self.logger.error(message, **context, **_callsite_console_keys())
 
 
 class ElasticsearchLogger:
@@ -237,7 +303,7 @@ class ElasticsearchLogger:
 
     def debug(self, message: str, **context):
         """Log debug message."""
-        self.logger.debug(message, **context)
+        self.logger.debug(message, **context, **_callsite_console_keys())
         if self.es_client:
             import asyncio
 
@@ -246,7 +312,7 @@ class ElasticsearchLogger:
 
     def info(self, message: str, **context):
         """Log info message."""
-        self.logger.info(message, **context)
+        self.logger.info(message, **context, **_callsite_console_keys())
         if self.es_client:
             import asyncio
 
@@ -255,7 +321,7 @@ class ElasticsearchLogger:
 
     def warning(self, message: str, **context):
         """Log warning message."""
-        self.logger.warning(message, **context)
+        self.logger.warning(message, **context, **_callsite_console_keys())
         if self.es_client:
             import asyncio
 
@@ -264,7 +330,7 @@ class ElasticsearchLogger:
 
     def error(self, message: str, **context):
         """Log error message."""
-        self.logger.error(message, **context)
+        self.logger.error(message, **context, **_callsite_console_keys())
         if self.es_client:
             import asyncio
 
@@ -360,19 +426,19 @@ class FileLogger:
 
     def debug(self, message: str, **context):
         """Log debug message to file."""
-        self.logger.debug(message, **context)
+        self.logger.debug(message, **context, **_callsite_console_keys())
 
     def info(self, message: str, **context):
         """Log info message to file."""
-        self.logger.info(message, **context)
+        self.logger.info(message, **context, **_callsite_console_keys())
 
     def warning(self, message: str, **context):
         """Log warning message to file."""
-        self.logger.warning(message, **context)
+        self.logger.warning(message, **context, **_callsite_console_keys())
 
     def error(self, message: str, **context):
         """Log error message to file."""
-        self.logger.error(message, **context)
+        self.logger.error(message, **context, **_callsite_console_keys())
 
 
 class OTELLogger:
@@ -442,11 +508,13 @@ class OTELLogger:
             return
 
         severity_number = self._severity_map.get(severity)
+        attrs = {k: _normalize_otel_attr(v) for k, v in context.items()}
+        attrs.update(_app_callsite())
         self._logger.emit(
             severity_number=severity_number,
             severity_text=severity.upper(),
             body=message,
-            attributes={k: _normalize_otel_attr(v) for k, v in context.items()} or None,
+            attributes=attrs or None,
         )
 
     def debug(self, message: str, **context):

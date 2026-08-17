@@ -36,6 +36,14 @@ Demonstrates:
     those spans emit ``<service>.<operation>:failed`` spans carrying
     ``error.type`` / ``error.source``. Guarded by ``DEMO_FAILURES`` at the bottom
     of main().
+  - Code location on log records: every OpenTelemetry log record carries the app
+    callsite (``code.file.path`` / ``code.function`` / ``code.line.number``);
+    console/file lines show ``pathname`` / ``func_name`` / ``lineno``.
+  - Failure detail on log records: ``<operation>_failed`` and ``error_handled``
+    records additionally embed ``exception.type`` / ``exception.message`` /
+    ``exception.stacktrace`` plus the raise-site ``code.*`` (innermost traceback
+    frame). Handled errors (ErrorHandlingConfig callbacks returning a result)
+    emit ``error_handled``.
 
 Architecture:
     agent_harness  --OTLP gRPC:14317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
@@ -61,24 +69,20 @@ Setup
 
 Visualize (single pane: Grafana)
 --------------------------------
-    Grafana: http://localhost:3000   (login admin/admin)
-      Datasources (Elasticsearch, Prometheus, Jaeger) and the dashboard
-      "Agent Harness — OTel Telemetry" are auto-provisioned
-      (Dashboards → OTel).
+    Full docs on using Elasticsearch, Jaeger, Prometheus, Grafana and the
+    optional Kibana dashboard live in OBSERVABILITY.md at the repo root.
 
-      Logs like Kibana:    Logs Drilldown /a/explore-logs (Elasticsearch datasource)
-      Metrics:             Prometheus (PromQL) — e.g.
-                           sum(all_in_one_observability_demo_agent_runs_total)
-      Traces like Jaeger:  Jaeger UI http://localhost:16686 or Explore → Jaeger —
-                           native waterfall; select a span → "View in logs" jumps to
-                           correlated ES log records by trace_id
-
-    Kibana (optional specialist): http://localhost:5601
-      Log levels dashboard "Agent Harness — Log Levels" (bar by severity,
-      volume-over-time, donut share, recent-logs table) is provisioned via:
-        ./kibana/provision-log-levels-dashboard.sh
-      Data view: logs-generic.otel-default*  (time field: @timestamp)
-      Or use Discover and filter  service.name: all-in-one-observability-demo
+    Grafana:      http://localhost:3000  (login admin/admin)
+                  Datasources (Elasticsearch, Prometheus, Jaeger) and the
+                  dashboard "Agent Harness — OTel Telemetry" are
+                  auto-provisioned (Dashboards → OTel).
+                  Logs Drilldown:  /a/grafana-lokiexplore-app
+    Jaeger:       http://localhost:16686 → search service <SERVICE_NAME>
+    Prometheus:   http://localhost:9090  (PromQL under Prometheus datasource)
+    Kibana:       http://localhost:5601 — provision once:
+                    ./kibana/provision-log-levels-dashboard.sh
+                  data view logs-generic.otel-default*  (time field: @timestamp)
+                  filter  service.name: all-in-one-observability-demo
 """
 
 import asyncio
@@ -325,46 +329,20 @@ async def main():
     otel_logger.close()
     print("  Flushed.")
 
-    # ── How to inspect in Elasticsearch ─────────────────────────
+    # ── How to inspect per backend ───────────────────────────
     print("\n" + "=" * 60)
-    print("View data per backend (all via one OTLP collector):")
-    print("\n  Logs → Elasticsearch (data streams are auto-created):")
-    print("  curl -s http://localhost:9200/_cat/indices/*generic.otel-default*")
-    print("  curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=service.name:%s'"
+    print("View data per backend (full docs: OBSERVABILITY.md at repo root):")
+    print("  Elasticsearch (logs/traces data streams) + Jaeger/Prometheus/Grafana")
+    print("  usage, ES reference queries, and Kibana dashboards are documented there.")
+    print("\n  Quick links:")
+    print("    Grafana:  http://localhost:3000  (admin/admin) — Logs Drilldown")
+    print("              /a/grafana-lokiexplore-app, metrics + Jaeger datasources")
+    print("    Jaeger:   http://localhost:16686 — search service:", SERVICE_NAME)
+    print("    Prometheus: http://localhost:9090")
+    print("  ES data streams:")
+    print("    curl -s http://localhost:9200/_cat/indices/*generic.otel-default*")
+    print("    curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=service.name:%s'"
           % SERVICE_NAME)
-    print("\n  Metrics → Prometheus (OTLP receiver):")
-    print("  curl -s 'http://localhost:9090/api/v1/query?query=%s'"
-          % "sum({__name__=~\\\"all_in_one_observability_demo_agent_runs_total\\\"})")
-    print("\n  Traces → Jaeger:")
-    print("  Open http://localhost:16686 and search service: all-in-one-observability-demo")
-    print("\n  Log-trace correlation: log records emitted inside a span carry")
-    print("  top-level trace_id/span_id fields, e.g. filter by trace_id:")
-    print("    curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=trace_id:<span-trace-id>'")
-
-    print("\n  Failure telemetry (traces carrying status=ERROR / exception events):")
-    print("  Trace data view:  traces-generic.otel-default*  (time field: @timestamp)")
-    print("    curl -s 'http://localhost:9200/traces-generic.otel-default*/_search?_source=name,status,attributes.error.type,attributes.error.source&q=name:%22*:failed%22'")
-    print("    curl -s 'http://localhost:9200/traces-generic.otel-default*/_search?_source=name,status,events&q=events.name:exception'")
-    print("  Kibana/ES filter for the Errors dashboard:")
-    print("    status.code: \"STATUS_CODE_ERROR\"                     # all failed spans")
-    print("    name: *:failed                                        # harness-owned failures only")
-    print("    error.type: builtins.ValueError / attributes.error.source: tool  # drill into cause")
-
-    print("\n  Visualize in Kibana (http://localhost:5601):")
-    print("    Provision once:  ./kibana/provision-log-levels-dashboard.sh")
-    print("    Dashboard:       /app/dashboards#/view/log-levels-dashboard")
-    print("                     ('Agent Harness — Log Levels' — bar by severity,")
-    print("                      volume-over-time, donut share, recent-logs table)")
-    print("    Discover:        data view logs-generic.otel-default*,")
-    print("                     filter  service.name: all-in-one-observability-demo")
-    print("\n  Visualize (single pane → Grafana, http://localhost:3000, admin/admin):")
-    print("    Datasources (Elasticsearch, Prometheus, Jaeger) + dashboard")
-    print("    'Agent Harness — OTel Telemetry' auto-provisioned (Dashboards → OTel).")
-    print("    Logs like Kibana:    /a/explore-logs (Elasticsearch datasource)")
-    print("    Metrics (PromQL):   sum({__name__=\"all_in_one_observability_demo_agent_runs_total\"}),")
-    print("                         sum(..._duration_seconds_sum) / sum(..._duration_seconds_count)")
-    print("    Explore → Jaeger:    native trace waterfall; select a span →")
-    print("                         'View in logs' jumps to correlated ES log records by trace_id")
     print("=" * 60)
 
 

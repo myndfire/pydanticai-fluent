@@ -14,6 +14,8 @@
 
 """Unified observability facade combining logging, tracing, and metrics."""
 
+import os
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, Union
@@ -21,6 +23,25 @@ from typing import Optional, Union
 from .logging import Logger, ConsoleLogger, LogfireLogger
 from .tracing import Tracer, LogfireTracer, NoOpTracer
 from .metrics import MetricsCollector, NoOpMetrics, MetricNames, LogfireMetrics
+
+
+def _exception_record(e: BaseException) -> dict:
+    """Build exception.* + raise-site code.* fields for a caught exception."""
+    formatted = traceback.format_exception(type(e), e, e.__traceback__)
+    record = {
+        "exception.type": type(e).__name__,
+        "exception.message": str(e),
+        "exception.stacktrace": "".join(formatted),
+    }
+    tb = e.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        frame = tb.tb_frame
+        record["code.file.path"] = os.path.relpath(frame.f_code.co_filename)
+        record["code.function"] = frame.f_code.co_name
+        record["code.line.number"] = frame.f_lineno
+    return record
 
 
 class Observability:
@@ -107,7 +128,14 @@ class Observability:
         for lg in self._loggers:
             lg.warning(message, **context)
 
-    def error(self, message: str, **context) -> None:
+    def error(
+        self,
+        message: str,
+        exception: Optional[BaseException] = None,
+        **context,
+    ) -> None:
+        if exception is not None:
+            context = {**context, **_exception_record(exception)}
         for lg in self._loggers:
             lg.error(message, **context)
 
@@ -197,6 +225,7 @@ class Observability:
                             error_type=type(e).__name__,
                             duration_seconds=duration,
                             **context,
+                            **_exception_record(e),
                         )
 
                     for m in self._metrics:
@@ -246,7 +275,9 @@ class Observability:
         for lg in self._loggers:
             lg.warning(message, **context)
 
-    def log_error(self, message: str, **context):
+    def log_error(self, message: str, exception: Optional[BaseException] = None, **context):
+        if exception is not None:
+            context = {**context, **_exception_record(exception)}
         for lg in self._loggers:
             lg.error(message, **context)
 

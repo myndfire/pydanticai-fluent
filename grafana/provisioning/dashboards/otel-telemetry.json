@@ -25,7 +25,7 @@
       "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
       "options": {
         "mode": "markdown",
-        "content": "**Single pane for all signals:**\n\n- [Logs Drilldown](http://localhost:3000/a/explore-logs) — browse logs like Kibana (Elasticsearch)\n- [Metrics Drilldown](http://localhost:3000/a/explore-metrics) — explore metrics (Prometheus)\n- [Explore → Jaeger](http://localhost:3000/explore?left=%7B%22datasource%22%3A%22jaeger%22%7D) — trace waterfall\n- [Explore → Elasticsearch logs](http://localhost:3000/explore?left=%7B%22datasource%22%3A%22elasticsearch%22%7D)"
+        "content": "**Single pane for all signals:**\n\n- [Logs Drilldown](http://localhost:3000/a/grafana-lokiexplore-app) — browse logs like Kibana (Elasticsearch)\n- [Metrics Drilldown](http://localhost:3000/a/explore-metrics) — explore metrics (Prometheus)\n- [Explore → Jaeger](http://localhost:3000/explore?left=%7B%22datasource%22%3A%22jaeger%22%7D) — trace waterfall\n- [Explore → Elasticsearch logs](http://localhost:3000/explore?left=%7B%22datasource%22%3A%22elasticsearch%22%7D)"
       }
     },
     {
