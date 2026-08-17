@@ -29,6 +29,13 @@ Demonstrates:
     the default ``create_spans=False`` keeps the harness from adding its own
     agent_run/manual_span spans, so querying on PydanticAI's canonical span names
     and gen_ai.* attributes is stable
+  - Failure telemetry (default ``record_failures=True``): exceptions escaping a
+    span() block surface in the trace stream as status=ERROR + an exception event.
+    PydanticAI-owned failures land on the canonical spans
+    (invoke_agent/execute_tool/chat); harness-owned failures that occur outside
+    those spans emit ``<service>.<operation>:failed`` spans carrying
+    ``error.type`` / ``error.source``. Guarded by ``DEMO_FAILURES`` at the bottom
+    of main().
 
 Architecture:
     agent_harness  --OTLP gRPC:14317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
@@ -94,6 +101,11 @@ OTEL_ENDPOINT = "localhost:14317"
 OTEL_TRACER_ENDPOINT = "http://localhost:14317"
 SERVICE_NAME = "all-in-one-observability-demo"
 
+# When True, main() additionally exercises failure paths so the resulting
+# traces contain ERROR spans / exception events + harness <service>.<op>:failed
+# spans (see the "Failure telemetry demo" section of main()).
+DEMO_FAILURES = True
+
 
 async def check_port(host: str, port: int) -> bool:
     """Check if a TCP port is open."""
@@ -142,7 +154,13 @@ def get_weather(ctx: RunContext[ToolDeps], city: str) -> str:
         "london": "Light rain, 15°C",
         "new york": "Partly cloudy, 18°C",
     }
-    payload = conditions.get(city.lower(), f"Unknown city: {city}")
+    payload = conditions.get(city.lower())
+    if payload is None:
+        if DEMO_FAILURES:
+            err = ValueError(f"Unknown city: {city}")
+            err._error_source = "tool"
+            raise err
+        payload = f"Unknown city: {city}"
     ctx.deps.observability.info(
         "tool_result",
         tool="get_weather",
@@ -264,6 +282,43 @@ async def main():
     )
     print(f"  Agent response: {result.output}")
 
+    # ── Failure telemetry demo (guarded) ────────────────────────
+    if DEMO_FAILURES:
+        print("\n--- Failure telemetry demo ---")
+        print("  (1) harness-owned failure → <service>.guardrail_eval:failed")
+
+        async def _fail_guardrail():
+            raise_runtime = RuntimeError("output guard rejected: hallucination score 0.87")
+            raise_runtime._error_source = "guardrail"
+            raise raise_runtime
+
+        try:
+            async with obs.observe(
+                "guardrail_eval", guard="output", session_id=session_id
+            ):
+                await _fail_guardrail()
+        except RuntimeError as e:
+            print(f"      (expected) raised: {type(e).__name__}: {e}")
+
+        print("  (2) PydanticAI-owned in-graph failure → invoke_agent/execute_tool "
+              "ERROR + exception events")
+        try:
+            session_id2 = "all-in-one-observability-failure-session"
+            memory2 = InMemoryProvider()
+            history2 = await MessageHistory().load(session_id2, memory2)
+            deps2 = ToolDeps(observability=obs, session_id=session_id2)
+            await agent.run(
+                "get_weather called on 'nowhere' will fail — call it and report "
+                "whatever happens.",
+                history2,
+                session_id2,
+                deps=deps2,
+                save_to=[],
+            )
+            print("      (unexpected) run succeeded, the model avoided the failing tool")
+        except Exception as e:
+            print(f"      (expected) run failed: {type(e).__name__}: {e}")
+
     # ── Flush batch exporters ───────────────────────────────────
     print("\n--- Flushing OTLP batch exporters ---")
     await asyncio.sleep(7)  # span/metric readers + log processor export in background
@@ -285,6 +340,15 @@ async def main():
     print("\n  Log-trace correlation: log records emitted inside a span carry")
     print("  top-level trace_id/span_id fields, e.g. filter by trace_id:")
     print("    curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=trace_id:<span-trace-id>'")
+
+    print("\n  Failure telemetry (traces carrying status=ERROR / exception events):")
+    print("  Trace data view:  traces-generic.otel-default*  (time field: @timestamp)")
+    print("    curl -s 'http://localhost:9200/traces-generic.otel-default*/_search?_source=name,status,attributes.error.type,attributes.error.source&q=name:%22*:failed%22'")
+    print("    curl -s 'http://localhost:9200/traces-generic.otel-default*/_search?_source=name,status,events&q=events.name:exception'")
+    print("  Kibana/ES filter for the Errors dashboard:")
+    print("    status.code: \"STATUS_CODE_ERROR\"                     # all failed spans")
+    print("    name: *:failed                                        # harness-owned failures only")
+    print("    error.type: builtins.ValueError / attributes.error.source: tool  # drill into cause")
 
     print("\n  Visualize in Kibana (http://localhost:5601):")
     print("    Provision once:  ./kibana/provision-log-levels-dashboard.sh")

@@ -310,6 +310,15 @@ class OTELTracer:
     ``Observability.span()`` then yields the current span's context (or
     ``None``) so in-run log records still correlate with that tree.
 
+    With ``record_failures=True`` (the default), failures thrown out of a
+    ``span()`` block are still surfaced in the trace stream. If a recording
+    span is current it is marked ERROR and records the exception; otherwise a
+    harness-owned failure span ``<service>.<operation>:failed`` is emitted with
+    ``status=ERROR``, ``error.type``, ``error.source`` and the exception event.
+    The ``:failed`` suffix only exists to distinguish/query these harness spans
+    — the failure semantics come from the standard OTel status + exception
+    event. Successes never produce a harness span in this mode.
+
     Set ``create_spans=True`` to restore the legacy behavior of exporting a
     harness-managed ``<service>.<name>`` span for every ``Observability.span()``
     call (e.g. to explicitly demo manual OTel spans).
@@ -321,6 +330,7 @@ class OTELTracer:
         otlp_endpoint: str = "http://localhost:4317",
         sample_rate: float = 1.0,
         create_spans: bool = False,
+        record_failures: bool = True,
     ):
         """
         Initialize OTEL tracer.
@@ -332,11 +342,15 @@ class OTELTracer:
             create_spans: When True, every span() call starts/exports a
                 harness span. When False (default), no harness spans are
                 created — PydanticAI native spans are the trace content.
+            record_failures: When True (default), exceptions escaping span()
+                blocks are recorded in the trace (ERROR status + exception event),
+                enriching a live span or emitting ``<service>.<operation>:failed``.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
         self.sample_rate = sample_rate
         self.create_spans = create_spans
+        self.record_failures = record_failures
         self.tracer = None
 
         self._setup_otel()
@@ -414,7 +428,8 @@ class OTELTracer:
 
         With ``create_spans=False`` (default) no harness span is created;
         the current PydanticAI span's context is yielded (or ``None``) so
-        in-run log records still carry its trace id.
+        in-run log records still carry its trace id. Failures escaping the
+        block are recorded via ``_record_failure`` (see ``record_failures``).
         """
         if not self.tracer:
             yield None
@@ -424,9 +439,14 @@ class OTELTracer:
         from opentelemetry.trace import Status, StatusCode
 
         if not self.create_spans:
-            current = otel_trace.get_current_span()
-            span_context = current.get_span_context()
-            yield span_context if span_context.is_valid else None
+            try:
+                current = otel_trace.get_current_span()
+                span_context = current.get_span_context()
+                yield span_context if span_context.is_valid else None
+            except Exception as e:
+                if self.record_failures:
+                    self._record_failure(name, e, **attributes)
+                raise
             return
 
         # Start span and make it the current span so nested spans and
@@ -439,17 +459,66 @@ class OTELTracer:
             span.set_attribute(key, str(value))
 
         try:
-            with otel_trace.use_span(span, end_on_exit=False):
+            with otel_trace.use_span(
+                span,
+                end_on_exit=False,
+                record_exception=False,
+                set_status_on_exception=False,
+            ):
                 yield span_context
                 span.set_status(Status(StatusCode.OK))
 
         except Exception as e:
-            span.record_exception(e)
-            span.set_status(Status(StatusCode.ERROR, str(e)))
+            self._annotate_span_failure(span, e)
             raise
 
         finally:
             span.end()
+
+    def _record_failure(self, operation: str, error: Exception, **context) -> None:
+        """Record a failure escaping a span() block.
+
+        If a recording span is current, enrich it with ERROR status and the
+        exception event. Otherwise emit a harness-owned failure span
+        ``<service>.<operation>:failed`` carrying ``error.type``/``error.source``
+        plus the operation context attributes. ``exception.type/message/stacktrace``
+        come only from ``record_exception``.
+        """
+        if not self.tracer:
+            return
+
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.trace import SpanKind, Status, StatusCode
+
+        current = otel_trace.get_current_span()
+        if current.is_recording():
+            current.set_status(Status(StatusCode.ERROR, str(error)))
+            current.record_exception(error, escaped=True)
+            return
+
+        span = self.tracer.start_span(
+            f"{self.service_name}.{operation}:failed", kind=SpanKind.INTERNAL
+        )
+        self._annotate_span_failure(span, error)
+        for key, value in context.items():
+            span.set_attribute(key, str(value))
+        span.end()
+
+    @staticmethod
+    def _annotate_span_failure(span, error: Exception) -> None:
+        """Apply standard OTel failure fields to an open span (ERROR + exception)."""
+        from opentelemetry.trace import Status, StatusCode
+
+        error_type = type(error)
+        error_type_name = (
+            f"{error_type.__module__}.{error_type.__qualname__}"
+            if error_type.__module__ != "builtins"
+            else error_type.__qualname__
+        )
+        span.set_attribute("error.type", error_type_name)
+        span.set_attribute("error.source", getattr(error, "_error_source", "unknown"))
+        span.record_exception(error, escaped=True)
+        span.set_status(Status(StatusCode.ERROR, str(error)))
 
     def add_event(self, name: str, **attributes):
         """Add an event to the current span."""

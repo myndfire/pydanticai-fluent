@@ -630,7 +630,7 @@ All builder methods return `self` for chaining. Call `.build()` at the end to pr
 | `.with_logfire_logging()` | `() -> ObservabilityBuilder` | `LogfireLogger` | Sends structured logs to [Logfire](https://logfire.pydantic.dev). Configures structlog with JSON renderer, timestamps, and caller info. Falls back to console if Logfire is unavailable. |
 | `.with_otel_logging()` | `(otlp_endpoint: str = "localhost:4317") -> ObservabilityBuilder` | `OTELLogger` | Exports structured logs via OTLP gRPC to an OpenTelemetry collector. Log records emitted inside a span automatically carry `trace_id`/`span_id` for log-trace correlation. |
 | `.with_logfire_tracing()` | `(send_to_logfire: bool = True, instrument_pydantic_ai: bool = True) -> ObservabilityBuilder` | `LogfireTracer` | Creates Logfire spans for every agent run. When `instrument_pydantic_ai=True`, automatically instruments the underlying PydanticAI agent for detailed LLM call tracing. The Logfire equivalent of OpenTelemetry distributed tracing. |
-| `.with_otel_tracing()` | `(otlp_endpoint: str = "localhost:4317", sample_rate: float = 1.0, create_spans: bool = False) -> ObservabilityBuilder` | `OTELTracer` | Exports spans via OTLP gRPC to an OpenTelemetry collector (e.g. Grafana, Jaeger, Datadog). `sample_rate` controls trace sampling (1.0 = all traces). By default (`create_spans=False`) the harness adds no spans — the trace stream is PydanticAI's native instrumentation only (`invoke_agent`, `execute_tool`, `chat`), giving stable `gen_ai.*` labels to query on. Set `create_spans=True` to also export harness spans named `{service_name}.{operation}`. Requires `opentelemetry-api`, `opentelemetry-sdk`, and `opentelemetry-exporter-otlp-proto-grpc` packages. |
+| `.with_otel_tracing()` | `(otlp_endpoint: str = "localhost:4317", sample_rate: float = 1.0, create_spans: bool = False, record_failures: bool = True) -> ObservabilityBuilder` | `OTELTracer` | Exports spans via OTLP gRPC to an OpenTelemetry collector (e.g. Grafana, Jaeger, Datadog). `sample_rate` controls trace sampling (1.0 = all traces). By default (`create_spans=False`) the harness adds no spans — the trace stream is PydanticAI's native instrumentation only (`invoke_agent`, `execute_tool`, `chat`), so `gen_ai.*` labels are stable to query on. `record_failures=True` still surfaces failures as ERROR spans / exception events (see "Failure telemetry"). Set `create_spans=True` to also export harness spans named `{service_name}.{operation}`. Requires `opentelemetry-api`, `opentelemetry-sdk`, and `opentelemetry-exporter-otlp-proto-grpc` packages. |
 | `.with_jaeger_tracing()` | `(jaeger_host: str = "localhost", jaeger_port: int = 6831) -> ObservabilityBuilder` | `JaegerTracer` | Sends spans to a Jaeger agent via UDP over the compact Thrift protocol. Lightweight alternative to OTLP when you use Jaeger directly. |
 | `.with_prometheus_metrics()` | `(push_gateway: str \| None = None) -> ObservabilityBuilder` | `PrometheusMetrics` | Records counters, gauges, and histograms using the Prometheus client library. If `push_gateway` is set, metrics are pushed to a Prometheus Pushgateway (useful for short-lived jobs). Otherwise, metrics are only accessible via the Python client API. |
 | `.with_statsd_metrics()` | `(host: str = "localhost", port: int = 8125) -> ObservabilityBuilder` | `StatsdMetrics` | Sends metrics to a StatsD daemon (Datadog Agent, Telegraf, etc.). Uses `timing` for summary metrics. All metric names are prefixed with `prefix` (default `"agent"`). |
@@ -661,7 +661,7 @@ Use these when constructing `Observability(tracer=...)` or `Observability(tracer
 | `NoOpTracer` | `()` | All methods are no-ops. Used internally as the default when no tracer is specified. |
 | `InMemoryTracer` | `()` | Records spans in a list (`get_spans()`). Call `reset()` to clear. Use for testing or debugging span structure. |
 | `LogfireTracer` | `(service_name: str, send_to_logfire: bool = True, instrument_pydantic_ai: bool = True)` | Full Logfire integration. Spans are named `{service_name}.{operation}`. When `instrument_pydantic_ai=True`, auto-instruments the PydanticAI agent for detailed LLM call traces. Supports `notice()`, `set_attribute()`, and `add_event()`. |
-| `OTELTracer` | `(service_name: str, otlp_endpoint: str = "localhost:4317", sample_rate: float = 1.0, create_spans: bool = False)` | Pure OpenTelemetry tracer. Exports via OTLP gRPC. With `create_spans=False` (default) it adds no spans of its own; the trace stream is PydanticAI's native instrumentation (`invoke_agent <name>` / `execute_tool <tool>` / `chat <model>`, plus `gen_ai.*` attributes). With `create_spans=True` it also creates spans named `{service_name}.{operation}`, records exceptions/attributes, and `sample_rate=0.1` traces 10% of runs. |
+| `OTELTracer` | `(service_name: str, otlp_endpoint: str = "localhost:4317", sample_rate: float = 1.0, create_spans: bool = False, record_failures: bool = True)` | Pure OpenTelemetry tracer. Exports via OTLP gRPC. With `create_spans=False` (default) it adds no spans of its own; the trace stream is PydanticAI's native instrumentation (`invoke_agent <name>` / `execute_tool <tool>` / `chat <model>`, plus `gen_ai.*` attributes). `record_failures=True` records escaping exceptions as ERROR + exception events (enriching a live span or emitting `{service}.{operation}:failed`). With `create_spans=True` it also creates spans named `{service_name}.{operation}`, records exceptions/attributes, and `sample_rate=0.1` traces 10% of runs. |
 | `JaegerTracer` | `(service_name: str, jaeger_host: str = "localhost", jaeger_port: int = 6831)` | Jaeger client tracer. Sends spans as Thrift-compact over UDP. Good for local Jaeger all-in-one deployments. |
 
 ### Metrics backends (standalone)
@@ -688,6 +688,28 @@ Use these when constructing `Observability(metrics=...)` or `Observability(metri
 | `agent_duration_seconds` | Histogram | `model`, `status` | Runtime of successful runs |
 | `{operation}_total` | Counter | `model`, `session_id` | Generic counter for custom operations |
 | `{operation}_duration_seconds` | Histogram | `model`, `status` | Generic histogram for custom operations |
+
+### Failure telemetry in the trace stream
+
+With `create_spans=False` (default), success traces contain PydanticAI native spans only. Failures are still surfaced via `record_failures=True` (the default):
+
+- **PydanticAI-owned failure** (model/tool error inside the agent graph) → the canonical `invoke_agent` / `execute_tool` / `chat` spans get `status = ERROR` plus an `exception` event; the harness adds nothing.
+- **Harness failure with a recording span active** → that span is marked `ERROR` and records the exception.
+- **Harness failure with no active recording span** → a harness-owned span `{service}.{operation}:failed` is emitted with `status = ERROR`, `error.type`, `error.source` and the `exception` event. The `:failed` suffix is only a query convenience — the failure semantics come from the standard OTel status + exception event (`exception.type` / `exception.message` / `exception.stacktrace`).
+- Successes never produce a harness span.
+
+Set `record_failures=False` to opt out of all harness failure spans/enrichment.
+
+Reference queries against `traces-generic.otel-default*` (Elasticsearch):
+
+```text
+status.code: "STATUS_CODE_ERROR"                 all failed spans
+name: *:failed                                   harness-owned failures only
+error.type: builtins.ValueError                  drill into cause by type
+error.source: tool                               / by harness error source (memory, tool, guardrail, ...)
+```
+
+Disable repeatedly-failing paths in a run: `create_spans=False, record_failures=False`.
 
 ### Visualizing OTel telemetry (Grafana single pane)
 

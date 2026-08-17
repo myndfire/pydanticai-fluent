@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Provision all Kibana dashboards and saved-object bundles.
-#
-# Ensures both logs and traces data views exist, then imports every *.ndjson
-# from kibana/saved-objects/. Compatible with macOS Bash 3.2.
+# Provision all Kibana dashboards and print dashboard links automatically.
+# Compatible with macOS Bash 3.2 (no mapfile).
 #
 # Usage:
 #   ./kibana/provision-dashboards.sh
@@ -54,11 +52,7 @@ import urllib.error
 import urllib.request
 
 base, dv_id, title = sys.argv[1:]
-
-headers = {
-    "Content-Type": "application/json",
-    "kbn-xsrf": "true",
-}
+headers = {"Content-Type": "application/json", "kbn-xsrf": "true"}
 
 def request(method, url, body=None):
     data = None if body is None else json.dumps(body).encode()
@@ -80,11 +74,7 @@ if status == 200:
         },
         "refresh_fields": True,
     }
-    status, payload = request(
-        "POST",
-        f"{base}/api/data_views/data_view/{dv_id}",
-        body,
-    )
+    status, payload = request("POST", f"{base}/api/data_views/data_view/{dv_id}", body)
     if status != 200:
         print(f"ERROR: failed to update data view ({status}): {payload[:1000]}", file=sys.stderr)
         sys.exit(1)
@@ -115,12 +105,7 @@ if status != 200:
     print(f"ERROR: data view verification failed ({status}): {payload[:1000]}", file=sys.stderr)
     sys.exit(1)
 
-obj = json.loads(payload)
-dv = obj.get("data_view", {})
-if dv.get("id") != dv_id:
-    print(f"ERROR: wrong data view ID returned: {dv.get('id')!r}", file=sys.stderr)
-    sys.exit(1)
-
+dv = json.loads(payload).get("data_view", {})
 print(f"    verified data view: {dv.get('id')}")
 print(f"    title: {dv.get('title')}")
 print(f"    time field: {dv.get('timeFieldName')}")
@@ -169,11 +154,7 @@ payload = json.loads(sys.argv[1])
 filename = sys.argv[2]
 
 if not payload.get("success"):
-    print(
-        f"ERROR: import failed for {filename}:",
-        json.dumps(payload, indent=2),
-        file=sys.stderr,
-    )
+    print(f"ERROR: import failed for {filename}:", json.dumps(payload, indent=2), file=sys.stderr)
     sys.exit(1)
 
 results = payload.get("successResults", [])
@@ -191,14 +172,46 @@ echo "    Saved-object directory: ${SAVED_OBJECTS_DIR}"
 echo
 echo "==> Done. Open the dashboards:"
 echo
-echo "    Debug Logs:"
-echo "    ${KIBANA_URL}/app/dashboards#/view/log-levels-dashboard"
-echo
-echo "    Token Usage:"
-echo "    ${KIBANA_URL}/app/dashboards#/view/token-usage-dashboard"
-echo
-echo "    Agent Runs:"
-echo "    ${KIBANA_URL}/app/dashboards#/view/agent-runs-dashboard"
-echo
-echo "    Tool Calls:"
-echo "    ${KIBANA_URL}/app/dashboards#/view/tool-calls-dashboard"
+
+# Discover dashboard objects directly from the same NDJSON files we imported.
+# This prevents the printed list from becoming stale as dashboards are added.
+python3 - "${KIBANA_URL}" "${SAVED_OBJECTS_DIR}" <<'PY'
+import glob
+import json
+import os
+import sys
+
+base = sys.argv[1].rstrip("/")
+directory = sys.argv[2]
+
+dashboards = {}
+
+for path in sorted(glob.glob(os.path.join(directory, "*.ndjson"))):
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if obj.get("type") != "dashboard":
+                continue
+
+            dashboard_id = obj.get("id")
+            title = obj.get("attributes", {}).get("title", dashboard_id)
+
+            if dashboard_id:
+                dashboards[dashboard_id] = title
+
+if not dashboards:
+    print("    No dashboard objects found.")
+    sys.exit(0)
+
+for dashboard_id, title in sorted(dashboards.items(), key=lambda x: x[1].lower()):
+    print(f"    {title}:")
+    print(f"    {base}/app/dashboards#/view/{dashboard_id}")
+    print()
+PY

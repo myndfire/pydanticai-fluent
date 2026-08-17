@@ -347,6 +347,7 @@ class ObservabilityBuilder:
         otlp_endpoint: str = "localhost:4317",
         sample_rate: float = 1.0,
         create_spans: bool = False,
+        record_failures: bool = True,
     ) -> "ObservabilityBuilder":
         from .tracing import OTELTracer
 
@@ -356,6 +357,7 @@ class ObservabilityBuilder:
                 otlp_endpoint=otlp_endpoint,
                 sample_rate=sample_rate,
                 create_spans=create_spans,
+                record_failures=record_failures,
             )
         )
         return self
