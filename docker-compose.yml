@@ -1,6 +1,12 @@
 # Infrastructure services for all pydanticai-fluent examples.
 # Start all:    docker compose up -d
 # Start one:    docker compose up -d mongo
+# Stop one:     docker compose stop mongo            (keeps data)
+# Remove one (container only):
+#               docker compose rm -f mongo
+# Remove one + its volumes:
+#               docker compose rm -f mongo
+#               docker volume rm agent-harness_mongo_data agent-harness_mongo_configdb
 # Stop all:     docker compose down -v
 
 name: agent-harness
@@ -16,6 +22,18 @@ services:
     volumes:
       - mongo_data:/data/db
       - mongo_configdb:/data/configdb
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: agent-harness-mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      - mongo
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
