@@ -58,7 +58,7 @@ async def main():
 
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name="phi4-mini-reasoning"))
+        .with_model(ModelConfig(provider="ollama", model_name="phi4-mini"))
         .with_output(WeatherReport, output_retries=3)
     )
 
