@@ -19,7 +19,7 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic-ai",
+    "pydantic-ai==2.33.0",
     "python-dotenv",
     "structlog",
     "jinja2",

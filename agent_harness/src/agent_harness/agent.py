@@ -226,7 +226,7 @@ class ManagedAgent:
             kwargs["model_settings"] = self._model_settings
         if self._output_type is not None:
             kwargs["output_type"] = self._output_type
-            kwargs["output_retries"] = self._output_retries
+            kwargs["retries"] = self._output_retries
         self._agent = Agent(model=build_model(model), **kwargs)
         self.model = f"{model.provider}:{model.model_name}"
         return self
@@ -246,7 +246,7 @@ class ManagedAgent:
             kwargs["model_settings"] = model_settings
         if self._output_type is not None:
             kwargs["output_type"] = self._output_type
-            kwargs["output_retries"] = self._output_retries
+            kwargs["retries"] = self._output_retries
         self._agent = Agent(**kwargs)
         return self
 
@@ -326,7 +326,7 @@ class ManagedAgent:
             kwargs["model_settings"] = self._model_settings
         if self._output_type is not None:
             kwargs["output_type"] = self._output_type
-            kwargs["output_retries"] = self._output_retries
+            kwargs["retries"] = self._output_retries
         self._agent = Agent(**kwargs)
         return self
 
@@ -435,7 +435,7 @@ class ManagedAgent:
         kwargs: dict[str, Any] = {
             "model": self._agent._model,
             "output_type": output_type,
-            "output_retries": output_retries,
+            "retries": output_retries,
         }
         if self._model_settings is not None:
             kwargs["model_settings"] = self._model_settings
