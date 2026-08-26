@@ -68,7 +68,8 @@ async def main():
     print(f"\n--- Example 1: Default prompt ---")
     agent_default = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         # Default is "You are a helpful assistant" — no with_prompts() needed
     )
 
@@ -87,7 +88,8 @@ async def main():
 
     agent_chef = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_prompts(chef_prompt)
     )
 
@@ -106,7 +108,8 @@ async def main():
 
     agent_bard = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_prompts(bard_prompt)
     )
 
@@ -126,7 +129,8 @@ async def main():
     print(f"\n--- Example 5: Full fluent pipeline ---")
     agent_full = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_prompts(StaticPrompts(
             "You are a terse database administrator. "
             "Answer in bullet points only. No pleasantries."

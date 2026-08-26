@@ -73,7 +73,8 @@ async def main():
 
     agent1 = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_prompts(StaticPrompts("You are a helpful assistant. Be concise."))
     )
 
@@ -94,7 +95,8 @@ async def main():
     # but demonstrates how prompt_id flows through
     agent2 = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_prompts(StaticPrompts("You are a helpful assistant."))
     )
 
@@ -159,7 +161,8 @@ async def main():
 
     agent5 = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_prompts(StaticPrompts("You are a brief assistant."))
     )
 
@@ -187,7 +190,8 @@ async def main():
 
     agent6 = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_prompts(StaticPrompts("You are a helpful assistant."))
     )
 
