@@ -195,7 +195,8 @@ async def main():
 
     agent = (
         ManagedAgent(deps_type=SearchDeps)
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_tools(tools)
         # Agent retries with timeout
         .with_agent_retries(
@@ -217,7 +218,7 @@ async def main():
         # Token limits
         .with_token_limits(
             TokenLimitsConfig()
-            .with_max_total_tokens(500)
+            .with_max_total_tokens(5000)
         )
         # Evaluator
         .with_evaluators(ToolUsageEvaluator())
