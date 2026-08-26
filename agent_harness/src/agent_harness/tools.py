@@ -87,15 +87,15 @@ class ToolRegistry:
         current value (e.g. after with_tools() injects observability).
         """
         @functools.wraps(func)
-        async def wrapper(**kwargs: Any) -> Any:
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.time()
             _log_tool_call(self._observability, func.__name__, kwargs)
             try:
                 # Support both sync and async tools
                 if asyncio.iscoroutinefunction(func):
-                    result = await func(**kwargs)
+                    result = await func(*args, **kwargs)
                 else:
-                    result = func(**kwargs)
+                    result = func(*args, **kwargs)
                 duration = time.time() - start
                 _log_tool_result(self._observability, func.__name__, kwargs, result, duration)
                 return result
