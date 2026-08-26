@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import structlog
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -26,6 +27,13 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, UserContent
 
 from .errorhandling import ErrorContext, AgentRunResult
+
+# Forward reference for Observability to avoid circular imports at type-check time
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .observability import Observability
+
+from .observability import _truncate_traceback
 
 
 class AgentRetryConfig:
@@ -361,6 +369,7 @@ class GuardConfig:
     cost_limits: Optional[CostLimitsConfig] = None
     circuit_breaker: Optional[CircuitBreakerConfig] = None
     turn_limits: Optional[TurnLimitsConfig] = None
+    observability: Optional["Observability"] = None
 
 
 class GuardRunner:
@@ -368,10 +377,41 @@ class GuardRunner:
 
     def __init__(self, config: GuardConfig):
         self.config = config
+        self._observability = config.observability
         self._failure_count = 0
         self._circuit_open = False
         self._circuit_opened_at: Optional[float] = None
         self._half_open_pending = False
+        self._cumulative_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
+
+    def _accumulate_usage(self, result: Any) -> None:
+        """Extract and accumulate token usage from a result."""
+        usage = None
+        if hasattr(result, "usage"):
+            try:
+                usage = result.usage() if callable(result.usage) else result.usage
+            except Exception:
+                usage = None
+
+        if usage is not None:
+            self._cumulative_usage["input_tokens"] += getattr(usage, "input_tokens", 0) or 0
+            self._cumulative_usage["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
+            self._cumulative_usage["total_tokens"] += getattr(usage, "total_tokens", 0) or 0
+            self._cumulative_usage["prompt_tokens"] += getattr(usage, "input_tokens", 0) or 0
+            self._cumulative_usage["completion_tokens"] += getattr(usage, "output_tokens", 0) or 0
+
+    def _log(self, level: str, event: str, **kwargs) -> None:
+        """Log via observability if available, otherwise bootstrap print fallback."""
+        if self._observability:
+            getattr(self._observability, f"log_{level}")(event, **kwargs)
+        # else: silently drop — Observability is initialized by ManagedAgent before run
+
 
     def apply_to_agent(self, agent: Agent) -> Agent:
         """Apply guard configuration to a PydanticAI agent."""
@@ -420,6 +460,15 @@ class GuardRunner:
                             error_context=error_ctx,
                         )
                     raise RuntimeError(error_ctx.error_message)
+
+        # Reset cumulative token usage for this run
+        self._cumulative_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
 
         # ── Retry loop with timeout ────────────────────────────────
         last_exception = None
@@ -601,6 +650,9 @@ class GuardRunner:
                             )
                         raise
 
+                # Accumulate token usage for this successful attempt
+                self._accumulate_usage(result)
+
                 return AgentRunResult(
                     output=output,
                     success=True,
@@ -609,9 +661,13 @@ class GuardRunner:
                     if hasattr(result, "new_messages")
                     else [],
                     usage=usage_obj,
+                    cumulative_usage=self._cumulative_usage.copy(),
                 )
 
             except asyncio.TimeoutError as e:
+                # Accumulate token usage even on timeout (input tokens were consumed)
+                self._accumulate_usage(result if "result" in dir() else None)
+
                 error_ctx = ErrorContext(
                     error_type="TimeoutError",
                     error_message=(
@@ -623,9 +679,13 @@ class GuardRunner:
                     will_retry=attempt < self.config.agent.max_retries - 1,
                 )
 
-                print(
-                    f"[Retry] Attempt {attempt + 1}/{self.config.agent.max_retries} "
-                    f"- Timeout after {self.config.agent.timeout}s"
+                self._log(
+                    "info",
+                    "retry_attempt",
+                    attempt=attempt + 1,
+                    max_attempts=self.config.agent.max_retries,
+                    reason="timeout",
+                    timeout_seconds=self.config.agent.timeout,
                 )
 
                 if self.config.agent._on_retry:
@@ -635,13 +695,21 @@ class GuardRunner:
 
                 if attempt < self.config.agent.max_retries - 1:
                     wait_time = self.config.agent.backoff_multiplier**attempt
-                    print(f"[Retry] Waiting {wait_time}s before retry...")
+                    self._log(
+                        "info",
+                        "retry_wait",
+                        wait_seconds=wait_time,
+                        attempt=attempt + 1,
+                    )
                     await asyncio.sleep(wait_time)
                     continue
                 else:
                     last_exception = e
 
             except Exception as e:
+                # Accumulate token usage even on error (input tokens were consumed)
+                self._accumulate_usage(result if "result" in dir() else None)
+
                 error_ctx = ErrorContext(
                     error_type=type(e).__name__,
                     error_message=str(e),
@@ -651,9 +719,14 @@ class GuardRunner:
                     will_retry=attempt < self.config.agent.max_retries - 1,
                 )
 
-                print(
-                    f"[Retry] Attempt {attempt + 1}/{self.config.agent.max_retries} "
-                    f"- Error: {type(e).__name__}: {str(e)}"
+                self._log(
+                    "info",
+                    "retry_attempt",
+                    attempt=attempt + 1,
+                    max_attempts=self.config.agent.max_retries,
+                    reason="error",
+                    error_type=type(e).__name__,
+                    error_message=str(e)[:200],
                 )
 
                 if self.config.agent._on_retry:
@@ -663,7 +736,12 @@ class GuardRunner:
 
                 if attempt < self.config.agent.max_retries - 1:
                     wait_time = self.config.agent.backoff_multiplier**attempt
-                    print(f"[Retry] Waiting {wait_time}s before retry...")
+                    self._log(
+                        "info",
+                        "retry_wait",
+                        wait_seconds=wait_time,
+                        attempt=attempt + 1,
+                    )
                     await asyncio.sleep(wait_time)
                     continue
                 else:
@@ -739,10 +817,18 @@ class GuardRunner:
                 usage=None,
             )
 
-        raise Exception(
+        exc = Exception(
             f"All {self.config.agent.max_retries} retries exhausted. "
             f"Last error: {str(last_exception)}"
         )
+        # Attach cumulative usage for logging
+        exc._cumulative_usage = self._cumulative_usage.copy()
+        # Apply traceback frame limit if configured
+        if self._observability and self._observability.traceback_frame_limit is not None:
+            exc.__traceback__ = _truncate_traceback(
+                exc.__traceback__, self._observability.traceback_frame_limit
+            )
+        raise exc
 
     def _track_circuit_failure(self, error_type: str, message: str) -> None:
         """Track failure for circuit breaker, opening circuit if threshold reached."""
@@ -755,9 +841,12 @@ class GuardRunner:
             self._circuit_open = True
             self._circuit_opened_at = time.time()
             self._half_open_pending = False
-            print(
-                f"[CircuitBreaker] OPEN after {self._failure_count} consecutive "
-                f"failures (threshold: {cb.failure_threshold}, "
-                f"timeout: {cb.circuit_timeout}s). "
-                f"Last error: {error_type}: {message}"
+            self._log(
+                "error",
+                "circuit_breaker_open",
+                failure_count=self._failure_count,
+                threshold=cb.failure_threshold,
+                timeout_seconds=cb.circuit_timeout,
+                error_type=error_type,
+                error_message=message,
             )

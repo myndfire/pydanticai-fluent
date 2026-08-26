@@ -7,7 +7,8 @@ dependencies = [
     "pydanticai-fluent",
     "pydantic-ai",
     "beanie",
-    "colorama"
+    "colorama",
+    "elasticsearch>=9.0.0"
 ]
 
 [project.urls]

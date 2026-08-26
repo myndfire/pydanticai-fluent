@@ -15,23 +15,96 @@
 """Unified observability facade combining logging, tracing, and metrics."""
 
 import os
+import socket
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, Union
+
+from pydantic_settings import BaseSettings
+from dotenv import find_dotenv
 
 from .logging import Logger, ConsoleLogger, LogfireLogger
 from .tracing import Tracer, LogfireTracer, NoOpTracer
 from .metrics import MetricsCollector, NoOpMetrics, MetricNames, LogfireMetrics
 
 
-def _exception_record(e: BaseException) -> dict:
-    """Build exception.* + raise-site code.* fields for a caught exception."""
-    formatted = traceback.format_exception(type(e), e, e.__traceback__)
+from pydantic import Field
+
+class HarnessSettings(BaseSettings):
+    """Harness environment settings read from .env at module load."""
+
+    app_env: str = "development"
+    service_name: str = "agent-harness"
+    traceback_frame_limit: Optional[int] = None
+    default_traceback_frames: Optional[int] = Field(
+        default=None,
+        validation_alias="HARNESS_DEFAULT_TRACEBACK_FRAMES",
+    )
+
+    class Config:
+        env_file = find_dotenv() or ".env"
+        env_file_encoding = "utf-8"
+        extra = "allow"
+
+
+# Read once at module load — changes require restart
+HARNESS_SETTINGS = HarnessSettings()
+
+
+def _truncate_traceback(tb, limit: int):
+    """Truncate traceback chain to show at most `limit` frames.
+
+    Args:
+        tb: Traceback object (or None)
+        limit: Max frames to keep (0 = None, 1 = last frame, etc.)
+
+    Returns:
+        Truncated traceback or None
+    """
+    if tb is None or limit < 0:
+        return tb
+    if limit == 0:
+        return None
+
+    import types
+
+    # Collect all frames
+    frames = []
+    current = tb
+    while current is not None:
+        frames.append(current)
+        current = current.tb_next
+
+    # Keep only the last `limit` frames
+    keep = frames[-limit:]
+    if not keep:
+        return None
+
+    # Rebuild chain from bottom up
+    prev = None
+    for frame in reversed(keep):
+        prev = types.TracebackType(
+            tb_next=prev,
+            tb_frame=frame.tb_frame,
+            tb_lasti=frame.tb_lasti,
+            tb_lineno=frame.tb_lineno,
+        )
+    return prev
+
+
+def _exception_record(e: BaseException, limit: Optional[int] = None) -> dict:
+    """Build error.* + raise-site code.* fields for a caught exception.
+
+    Args:
+        e: The exception to record
+        limit: Max traceback frames to include (None = all)
+    """
+    formatted = traceback.format_exception(type(e), e, e.__traceback__, limit=limit)
     record = {
-        "exception.type": type(e).__name__,
-        "exception.message": str(e),
-        "exception.stacktrace": "".join(formatted),
+        "error.type": type(e).__name__,
+        "error.message": str(e),
+        "error.stacktrace": "".join(formatted),
     }
     tb = e.__traceback__
     while tb is not None and tb.tb_next is not None:
@@ -69,6 +142,7 @@ class Observability:
         loggers: Optional[list[Logger]] = None,
         tracers: Optional[list[Tracer]] = None,
         metrics_list: Optional[list[MetricsCollector]] = None,
+        traceback_frame_limit: Optional[int] = None,
     ):
         """
         Initialize observability with pluggable backends.
@@ -81,8 +155,15 @@ class Observability:
             loggers: Multiple logging backends
             tracers: Multiple tracing backends
             metrics_list: Multiple metrics backends
+            traceback_frame_limit: Max traceback frames (None = full)
         """
         self.service_name = service_name
+        # Priority: passed arg > env var > None (full)
+        self.traceback_frame_limit = (
+            traceback_frame_limit
+            if traceback_frame_limit is not None
+            else HARNESS_SETTINGS.traceback_frame_limit
+        )
 
         # Build lists from single or multiple args
         self._loggers: list[Logger] = loggers or []
@@ -102,6 +183,14 @@ class Observability:
             self._metrics.append(metrics)
         if not self._metrics:
             self._metrics = [NoOpMetrics()]
+
+        # Base context injected into every log entry
+        self._base_context = {
+            "service": HARNESS_SETTINGS.service_name,
+            "environment": HARNESS_SETTINGS.app_env,
+            "host": socket.gethostname(),
+            "traceback_frame_limit": self.traceback_frame_limit,
+        }
 
     # Convenience properties — delegate to first backend
     @property
@@ -135,7 +224,7 @@ class Observability:
         **context,
     ) -> None:
         if exception is not None:
-            context = {**context, **_exception_record(exception)}
+            context = {**context, **_exception_record(exception, self.traceback_frame_limit)}
         for lg in self._loggers:
             lg.error(message, **context)
 
@@ -156,7 +245,7 @@ class Observability:
 
             # Log start on all loggers
             for lg in self._loggers:
-                lg.info(f"{operation}_started", **context)
+                lg.info(f"{operation}_started", **self._base_context, **context)
 
             # Increment counter on all metrics
             for m in self._metrics:
@@ -190,14 +279,15 @@ class Observability:
                             except (AttributeError, TypeError):
                                 pass
 
-                    yield {**context, **trace_context}
+                    yield {**context, **trace_context, "tool_call": context.get("tool_call", {"tool": None, "parameters": {}})}
 
                     duration = (datetime.now() - start_time).total_seconds()
 
                     for lg in self._loggers:
                         lg.info(
                             f"{operation}_completed",
-                            duration_seconds=duration,
+                            **self._base_context,
+                            performance={"duration_seconds": duration},
                             **context,
                             **trace_context,
                         )
@@ -221,11 +311,10 @@ class Observability:
                     for lg in self._loggers:
                         lg.error(
                             f"{operation}_failed",
-                            error=str(e),
-                            error_type=type(e).__name__,
-                            duration_seconds=duration,
+                            **self._base_context,
+                            performance={"duration_seconds": duration},
                             **context,
-                            **_exception_record(e),
+                            **_exception_record(e, self.traceback_frame_limit),
                         )
 
                     for m in self._metrics:
@@ -264,22 +353,94 @@ class Observability:
             raise
 
     def log_debug(self, message: str, **context):
+        enriched = {**self._base_context, **context}
         for lg in self._loggers:
-            lg.debug(message, **context)
+            lg.debug(message, **enriched)
 
     def log_info(self, message: str, **context):
+        enriched = {**self._base_context, **context}
         for lg in self._loggers:
-            lg.info(message, **context)
+            lg.info(message, **enriched)
 
     def log_warning(self, message: str, **context):
+        enriched = {**self._base_context, **context}
         for lg in self._loggers:
-            lg.warning(message, **context)
+            lg.warning(message, **enriched)
 
     def log_error(self, message: str, exception: Optional[BaseException] = None, **context):
         if exception is not None:
-            context = {**context, **_exception_record(exception)}
+            context = {**context, **_exception_record(exception, self.traceback_frame_limit)}
+        enriched = {**self._base_context, **context}
         for lg in self._loggers:
-            lg.error(message, **context)
+            lg.error(message, **enriched)
+
+    def log_token_usage(self, result: Any, context: dict) -> None:
+        """Extract and log token usage for all internal model requests."""
+        from .memory import UsageData, ModelResponse
+
+        usage_list = []
+
+        # Path 1: result.usage.requests (multiple internal calls)
+        if hasattr(result, "usage") and result.usage:
+            u = result.usage
+            if (
+                hasattr(u, "requests")
+                and isinstance(getattr(u, "requests", None), list)
+                and u.requests
+            ):
+                for i, req in enumerate(u.requests):
+                    usage_list.append({
+                        "turn": i + 1,
+                        "phase": self._detect_phase(i, len(u.requests)),
+                        "usage": UsageData(
+                            input_tokens=getattr(req, "input_tokens", 0) or 0,
+                            output_tokens=getattr(req, "output_tokens", 0) or 0,
+                            total_tokens=getattr(req, "total_tokens", 0) or 0,
+                            prompt_tokens=getattr(req, "input_tokens", 0) or 0,
+                            completion_tokens=getattr(req, "output_tokens", 0) or 0,
+                        )
+                    })
+            else:
+                # Path 2: result.usage direct access (single call)
+                usage_list.append({
+                    "turn": 1,
+                    "phase": "final_response",
+                    "usage": UsageData(
+                        input_tokens=getattr(u, "input_tokens", 0) or 0,
+                        output_tokens=getattr(u, "output_tokens", 0) or 0,
+                        total_tokens=getattr(u, "total_tokens", 0) or 0,
+                        prompt_tokens=getattr(u, "input_tokens", 0) or 0,
+                        completion_tokens=getattr(u, "output_tokens", 0) or 0,
+                    )
+                })
+
+        # Log each request separately
+        for entry in usage_list:
+            ctx = {**context, "turn": entry["turn"], "phase": entry["phase"]}
+            # Include cumulative usage if provided in context
+            cumulative = context.get("cumulative_usage")
+            if cumulative:
+                ctx["cumulative_usage"] = cumulative
+            self.log_info(
+                "token_usage",
+                token_usage={
+                    "input_tokens": entry["usage"].input_tokens,
+                    "output_tokens": entry["usage"].output_tokens,
+                    "total_tokens": entry["usage"].total_tokens,
+                    "prompt_tokens": entry["usage"].prompt_tokens,
+                    "completion_tokens": entry["usage"].completion_tokens,
+                },
+                **ctx,
+            )
+
+    @staticmethod
+    def _detect_phase(turn_index: int, total_turns: int) -> str:
+        """Determine the phase of a turn."""
+        if turn_index == 0 and total_turns > 1:
+            return "tool_decision"
+        elif turn_index == total_turns - 1:
+            return "final_response"
+        return "intermediate"
 
     def record_metric(
         self, metric_type: str, name: str, value: Union[float, int], **labels

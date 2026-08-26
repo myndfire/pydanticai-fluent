@@ -14,20 +14,101 @@
 
 """Tool registry with MCP support (placeholder)."""
 
-from typing import Callable, Optional
+import asyncio
+import functools
+import time
+from typing import Any, Callable, Dict, Optional
 from pydantic_ai import Agent
+
+
+# ── Tool call logging ─────────────────────────────────────────────────
+
+
+def _log_tool_call(observability, tool_name: str, params: Dict[str, Any]) -> None:
+    """Log tool call invocation via Observability."""
+    if observability:
+        observability.log_info(
+            "tool_call",
+            func_name=tool_name,
+            tool={"name": tool_name, "parameters": params},
+        )
+    else:
+        # Bootstrap fallback — Observability not yet configured
+        print(f"[tool_call] {tool_name}({params})")
+
+
+def _log_tool_result(observability, tool_name: str, params: Dict[str, Any], result: Any, duration: float) -> None:
+    """Log tool result via Observability."""
+    if observability:
+        observability.log_info(
+            "tool_result",
+            func_name=tool_name,
+            tool={"name": tool_name, "parameters": params},
+            result=str(result)[:200],  # Truncate long results
+            performance={"duration_seconds": duration},
+        )
+    else:
+        print(f"[tool_result] {tool_name}({params}) = {str(result)[:200]}")
+
+
+def _log_tool_error(observability, tool_name: str, params: Dict[str, Any], error: Exception, duration: float) -> None:
+    """Log tool error via Observability."""
+    if observability:
+        observability.log_error(
+            "tool_error",
+            func_name=tool_name,
+            tool={"name": tool_name, "parameters": params},
+            error={"type": type(error).__name__, "message": str(error)},
+            performance={"duration_seconds": duration},
+        )
+    else:
+        print(f"[tool_error] {tool_name}({params}) → {type(error).__name__}: {error}")
+
+
+# ── ToolRegistry ───────────────────────────────────────────────────
 
 
 class ToolRegistry:
     """Fluent tool registry supporting multiple tool sources."""
 
-    def __init__(self):
-        """Initialize empty tool registry."""
+    def __init__(self, observability=None):
+        """Initialize empty tool registry.
+        
+        Args:
+            observability: Observability instance for structured logging
+        """
         self._tools: list[Callable] = []
+        self._observability = observability
+
+    def _wrap_tool(self, func: Callable) -> Callable:
+        """Wrap a tool function to log invocations, results, and errors.
+        
+        Reads self._observability at call time so it always uses the
+        current value (e.g. after with_tools() injects observability).
+        """
+        @functools.wraps(func)
+        async def wrapper(**kwargs: Any) -> Any:
+            start = time.time()
+            _log_tool_call(self._observability, func.__name__, kwargs)
+            try:
+                # Support both sync and async tools
+                if asyncio.iscoroutinefunction(func):
+                    result = await func(**kwargs)
+                else:
+                    result = func(**kwargs)
+                duration = time.time() - start
+                _log_tool_result(self._observability, func.__name__, kwargs, result, duration)
+                return result
+            except Exception as e:
+                duration = time.time() - start
+                _log_tool_error(self._observability, func.__name__, kwargs, e, duration)
+                raise
+
+        return wrapper
 
     def add(self, func: Callable) -> "ToolRegistry":
         """
-        Add a custom function tool.
+        Add a custom function tool with structured logging wrapper.
 
         Args:
             func: Function to register as a tool
@@ -35,12 +116,12 @@ class ToolRegistry:
         Returns:
             Self for chaining
         """
-        self._tools.append(func)
+        self._tools.append(self._wrap_tool(func))
         return self
 
     def add_many(self, *funcs: Callable) -> "ToolRegistry":
         """
-        Add multiple function tools.
+        Add multiple function tools with structured logging wrappers.
 
         Args:
             *funcs: Functions to register
@@ -48,7 +129,8 @@ class ToolRegistry:
         Returns:
             Self for chaining
         """
-        self._tools.extend(funcs)
+        for func in funcs:
+            self._tools.append(self._wrap_tool(func))
         return self
 
     def add_mcp(self, server: str, endpoint: Optional[str] = None) -> "ToolRegistry":

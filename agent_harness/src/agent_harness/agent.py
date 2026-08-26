@@ -14,6 +14,7 @@
 
 """Core ManagedAgent with fluent API for crosscutting concerns."""
 
+import sys
 import time
 import uuid
 from collections.abc import Sequence
@@ -33,7 +34,7 @@ from .memory import (
     filter_thinking_parts,
 )
 from .prompts import PromptProvider, StaticPrompts
-from .observability import Observability
+from .observability import Observability, HARNESS_SETTINGS, _truncate_traceback
 from .tools import ToolRegistry
 from .guards import (
     GuardConfig,
@@ -189,11 +190,17 @@ class ManagedAgent:
 
         self.prompts = prompts or StaticPrompts()
         self.observability = observability or Observability()
-        self.tools = tools or ToolRegistry()
+        self.tools = tools or ToolRegistry(self.observability)
         self.evaluators = evaluators or []
         self.guards = guards or GuardConfig()
+        self.guards.observability = self.observability
         self.error_handling = ErrorHandlingConfig()
         self._enrichment: list[LogEnrichmentProvider] = []
+        # Default from env var HARNESS_DEFAULT_TRACEBACK_FRAMES, or None (full)
+        self.traceback_frame_limit = HARNESS_SETTINGS.default_traceback_frames
+        if self.traceback_frame_limit is not None:
+            self.observability.traceback_frame_limit = self.traceback_frame_limit
+            self.observability._base_context["traceback_frame_limit"] = self.traceback_frame_limit
 
         self._guard_runner = GuardRunner(self.guards)
         self._error_handler = ErrorHandler(self.error_handling)
@@ -298,11 +305,16 @@ class ManagedAgent:
     def with_observability(self, observability: Observability) -> "ManagedAgent":
         """Set observability."""
         self.observability = observability
+        # Propagate observability to tools if already set
+        if self.tools is not None:
+            self.tools._observability = observability
         return self
 
     def with_tools(self, registry: ToolRegistry) -> "ManagedAgent":
         """Set tool registry."""
         self.tools = registry
+        # Propagate observability to the registry
+        self.tools._observability = self.observability
         self.tools.register_to_agent(self._agent)
         return self
 
@@ -422,6 +434,21 @@ class ManagedAgent:
         self._guard_runner = GuardRunner(self.guards)
         return self
 
+    def with_traceback_frame_limit(self, limit: Optional[int]) -> "ManagedAgent":
+        """Set max traceback frames shown (None = full tracebacks)."""
+        self.traceback_frame_limit = limit
+        self.observability.traceback_frame_limit = limit
+        self.observability._base_context["traceback_frame_limit"] = limit
+        return self
+
+    def with_minimal_traceback(self) -> "ManagedAgent":
+        """Show only error message, no traceback frames."""
+        return self.with_traceback_frame_limit(0)
+
+    def with_full_traceback(self) -> "ManagedAgent":
+        """Show full tracebacks (default)."""
+        return self.with_traceback_frame_limit(None)
+
     def with_output(self, output_type: Any, output_retries: int = 3) -> "ManagedAgent":
         """
         Set the output type for structured responses.
@@ -527,6 +554,7 @@ class ManagedAgent:
             Agent result
         """
         start_time = time.time()
+        token_usage_logged = False
 
         prompt_id = kwargs.pop("prompt_id", "default")
         prompt_vars = {k: v for k, v in kwargs.items() if not k.startswith("_")}
@@ -610,6 +638,11 @@ class ManagedAgent:
 
                 serialized_messages = filter_thinking_parts(new_messages)
 
+                # Log token usage (per-request logging, includes cumulative across retries)
+                cumulative = getattr(result, "cumulative_usage", None)
+                self.observability.log_token_usage(result, {**context, "cumulative_usage": cumulative})
+                token_usage_logged = True
+
                 try:
                     usage = None
                     if hasattr(result, "usage") and result.usage:
@@ -652,15 +685,6 @@ class ManagedAgent:
                     )
 
                     self._last_turn = turn
-
-                    if usage:
-                        self.observability.log_info(
-                            "token_usage",
-                            input_tokens=usage.input_tokens,
-                            output_tokens=usage.output_tokens,
-                            total_tokens=usage.total_tokens,
-                            **context,
-                        )
                 except Exception as e:
                     e._error_source = "output"
                     raise
@@ -676,9 +700,26 @@ class ManagedAgent:
 
                 for evaluator in self.evaluators:
                     try:
+                        evaluator_name = getattr(evaluator, "name", type(evaluator).__name__)
+                        self.observability.log_info(
+                            "evaluator_started",
+                            evaluator=evaluator_name,
+                            session_id=session_id,
+                        )
                         await evaluator.evaluate(prompt_text, result, context)
+                        self.observability.log_info(
+                            "evaluator_completed",
+                            evaluator=evaluator_name,
+                            session_id=session_id,
+                        )
                     except Exception as e:
                         e._error_source = "evaluator"
+                        self.observability.log_error(
+                            "evaluator_failed",
+                            exception=e,
+                            evaluator=getattr(evaluator, "name", type(evaluator).__name__),
+                            session_id=session_id,
+                        )
                         raise
 
                 try:
@@ -691,7 +732,25 @@ class ManagedAgent:
                 return result
 
         except Exception as e:
+            # Apply traceback frame limit to terminal output
+            if self.traceback_frame_limit is not None and self.traceback_frame_limit >= 0:
+                e.__traceback__ = _truncate_traceback(e.__traceback__, self.traceback_frame_limit)
             source = getattr(e, "_error_source", "unknown")
+            # Log token usage even on failure (if result was partially produced)
+            if not token_usage_logged:
+                if "result" in locals() and result is not None:
+                    cumulative = getattr(result, "cumulative_usage", None)
+                    self.observability.log_token_usage(result, {**context, "cumulative_usage": cumulative})
+                else:
+                    # Log cumulative usage from exception if available
+                    cumulative = getattr(e, "_cumulative_usage", None)
+                    if cumulative:
+                        self.observability.log_info(
+                            "token_usage",
+                            cumulative_usage=cumulative,
+                            phase="error",
+                            **context,
+                        )
             error_result = self._error_handler.handle_error(
                 exception=e,
                 source=source,
@@ -706,6 +765,31 @@ class ManagedAgent:
                     session_id=session_id,
                 )
                 return error_result
+
+            # Create error turn even on failure
+            error_turn = TurnData(
+                turn_id=str(uuid.uuid4()),
+                timestamp=datetime.now(),
+                completed_at=datetime.now(),
+                messages=[
+                    {"role": "system", "content": f"Error: {type(e).__name__}: {str(e)}"}
+                ],
+                usage=None,
+                duration_seconds=time.time() - start_time,
+                model=self.model,
+                status="error",
+            )
+            self._last_turn = error_turn
+
+            # Save error turn to memory providers
+            if save_to:
+                providers = save_to if isinstance(save_to, list) else [save_to]
+                for provider in providers:
+                    try:
+                        await provider.save_turn(session_id, error_turn)
+                    except Exception:
+                        pass  # Don't let save failure mask the original error
+
             raise
 
     async def run_sync(

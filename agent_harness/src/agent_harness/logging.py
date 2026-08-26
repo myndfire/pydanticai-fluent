@@ -15,7 +15,6 @@
 """Structured logging to Elasticsearch and other backends."""
 
 import asyncio
-import inspect
 import math
 import os
 import sysconfig
@@ -62,40 +61,6 @@ def _is_harness_or_internal_frame(filename: str) -> bool:
     if _SITE_PACKAGES and norm.startswith(_SITE_PACKAGES):
         return True
     return False
-
-
-def _app_callsite() -> dict:
-    """Return the first application frame above the agent_harness logging stack.
-
-    Walks the call stack skipping frames inside this package, the standard
-    library, and site-packages so the reported location is the caller's code.
-    """
-    f = inspect.currentframe()
-    try:
-        while f is not None:
-            name = f.f_code.co_filename
-            if not _is_harness_or_internal_frame(name):
-                return {
-                    "code.file.path": os.path.relpath(name),
-                    "code.function": f.f_code.co_name,
-                    "code.line.number": f.f_lineno,
-                }
-            f = f.f_back
-    finally:
-        del f
-    return {}
-
-
-def _callsite_console_keys() -> dict:
-    """Map _app_callsite() to structlog-style keys for console/file renderers."""
-    cs = _app_callsite()
-    if not cs:
-        return {}
-    return {
-        "pathname": cs.get("code.file.path"),
-        "func_name": cs.get("code.function"),
-        "lineno": cs.get("code.line.number"),
-    }
 
 
 class Logger(Protocol):
@@ -164,11 +129,18 @@ class LogfireLogger:
     def _setup_structlog(self):
         """Configure structlog to use Logfire."""
         try:
-            # Configure structlog (simplified)
+            # Configure structlog with automatic call site tracking
             structlog.configure(
                 processors=[
                     structlog.contextvars.merge_contextvars,
                     structlog.processors.add_log_level,
+                    structlog.processors.CallsiteParameterAdder(
+                        parameters=[
+                            structlog.processors.CallsiteParameter.FUNC_NAME,
+                            structlog.processors.CallsiteParameter.PATHNAME,
+                            structlog.processors.CallsiteParameter.LINENO,
+                        ]
+                    ),
                     structlog.processors.TimeStamper(fmt="iso"),
                     structlog.processors.StackInfoRenderer(),
                     structlog.processors.format_exc_info,
@@ -189,7 +161,7 @@ class LogfireLogger:
 
         try:
             log_method = getattr(self.logfire, level, self.logfire.info)
-            log_method(message, **context, **_callsite_console_keys())
+            log_method(message, **context)
         except Exception as e:
             print(f"⚠️  Failed to log to Logfire: {str(e)}")
 
@@ -248,19 +220,19 @@ class ConsoleLogger:
 
     def debug(self, message: str, **context):
         """Log debug message to console."""
-        self.logger.debug(message, **context, **_callsite_console_keys())
+        self.logger.debug(message, **context)
 
     def info(self, message: str, **context):
         """Log info message to console."""
-        self.logger.info(message, **context, **_callsite_console_keys())
+        self.logger.info(message, **context)
 
     def warning(self, message: str, **context):
         """Log warning message to console."""
-        self.logger.warning(message, **context, **_callsite_console_keys())
+        self.logger.warning(message, **context)
 
     def error(self, message: str, **context):
         """Log error message to console."""
-        self.logger.error(message, **context, **_callsite_console_keys())
+        self.logger.error(message, **context)
 
 
 class ElasticsearchLogger:
@@ -303,7 +275,7 @@ class ElasticsearchLogger:
 
     def debug(self, message: str, **context):
         """Log debug message."""
-        self.logger.debug(message, **context, **_callsite_console_keys())
+        self.logger.debug(message, **context)
         if self.es_client:
             import asyncio
 
@@ -312,7 +284,7 @@ class ElasticsearchLogger:
 
     def info(self, message: str, **context):
         """Log info message."""
-        self.logger.info(message, **context, **_callsite_console_keys())
+        self.logger.info(message, **context)
         if self.es_client:
             import asyncio
 
@@ -321,7 +293,7 @@ class ElasticsearchLogger:
 
     def warning(self, message: str, **context):
         """Log warning message."""
-        self.logger.warning(message, **context, **_callsite_console_keys())
+        self.logger.warning(message, **context)
         if self.es_client:
             import asyncio
 
@@ -330,7 +302,7 @@ class ElasticsearchLogger:
 
     def error(self, message: str, **context):
         """Log error message."""
-        self.logger.error(message, **context, **_callsite_console_keys())
+        self.logger.error(message, **context)
         if self.es_client:
             import asyncio
 
@@ -426,19 +398,19 @@ class FileLogger:
 
     def debug(self, message: str, **context):
         """Log debug message to file."""
-        self.logger.debug(message, **context, **_callsite_console_keys())
+        self.logger.debug(message, **context)
 
     def info(self, message: str, **context):
-        """Log info message to file."""
-        self.logger.info(message, **context, **_callsite_console_keys())
+        """Log info message to Elasticsearch."""
+        self.logger.info(message, **context)
 
     def warning(self, message: str, **context):
-        """Log warning message to file."""
-        self.logger.warning(message, **context, **_callsite_console_keys())
+        """Log warning message to Elasticsearch."""
+        self.logger.warning(message, **context)
 
     def error(self, message: str, **context):
-        """Log error message to file."""
-        self.logger.error(message, **context, **_callsite_console_keys())
+        """Log error message to Elasticsearch."""
+        self.logger.error(message, **context)
 
 
 class OTELLogger:

@@ -14,17 +14,16 @@
 
 """Evaluators for agent output quality and safety."""
 
-from typing import Protocol, Any
+import os
+
 import structlog
+from typing import Protocol, Any
 
 from pydantic_ai import Agent
 
 
-logger = structlog.get_logger()
-
-
 class Evaluator(Protocol):
-    """Protocol for evaluators."""
+    """Protocol for evaluators — user code implements this."""
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> None:
         """
@@ -52,6 +51,7 @@ class QualityCheck:
         self.threshold = threshold
         self.judge_model = judge_model
         self._judge_agent = Agent(judge_model)
+        self._logger = structlog.get_logger()
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> None:
         """
@@ -79,14 +79,14 @@ Respond with just a number between 0 and 10."""
             try:
                 score = float(judgment.output.strip())
             except ValueError:
-                logger.warning(
+                self._logger.warning(
                     "Could not parse quality score", judgment=judgment.output
                 )
                 return
 
             # Log result
             if score < self.threshold:
-                logger.warning(
+                self._logger.warning(
                     "Low quality response detected",
                     score=score,
                     threshold=self.threshold,
@@ -94,7 +94,7 @@ Respond with just a number between 0 and 10."""
                     **context,
                 )
             else:
-                logger.info(
+                self._logger.info(
                     "Quality check passed",
                     score=score,
                     threshold=self.threshold,
@@ -102,7 +102,7 @@ Respond with just a number between 0 and 10."""
                 )
 
         except Exception as e:
-            logger.error(f"Quality evaluation failed: {str(e)}")
+            self._logger.error("Quality evaluation failed", error=str(e))
 
 
 class SafetyCheck:
@@ -110,7 +110,8 @@ class SafetyCheck:
 
     def __init__(self):
         """Initialize safety evaluator."""
-        pass
+        self.model = os.getenv("SAFETY_CHECK_MODEL", "omni-moderation-2024-09-26")
+        self._logger = structlog.get_logger()
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> None:
         """
@@ -128,7 +129,7 @@ class SafetyCheck:
             result_text = result.output if hasattr(result, "output") else str(result)
 
             # Check both prompt and result
-            moderation = await openai.moderations.create(input=[prompt, result_text])
+            moderation = openai.moderations.create(input=[prompt, result_text], model=self.model)
 
             # Check if any content was flagged
             for i, mod_result in enumerate(moderation.results):
@@ -141,19 +142,19 @@ class SafetyCheck:
                         if flagged
                     ]
 
-                    logger.warning(
+                    self._logger.warning(
                         f"Content policy violation in {content_type}",
                         categories=categories,
                         content=content_type,
                         **context,
                     )
                 else:
-                    logger.debug(f"Safety check passed for {content_type}", **context)
+                    self._logger.debug(f"Safety check passed for {content_type}", **context)
 
         except ImportError:
-            logger.warning("OpenAI not available - skipping safety check")
+            self._logger.warning("OpenAI not available - skipping safety check")
         except Exception as e:
-            logger.error(f"Safety evaluation failed: {str(e)}")
+            self._logger.error("Safety evaluation failed", error=str(e))
 
 
 class CustomEvaluator:
@@ -176,19 +177,19 @@ class CustomEvaluator:
             name: Evaluator name for logging
         """
         self.name = name
-        self.logger = structlog.get_logger()
+        self._logger = structlog.get_logger()
 
     def log_info(self, message: str, **kwargs):
         """Log info message."""
-        self.logger.info(f"[{self.name}] {message}", **kwargs)
+        self._logger.info(f"[{self.name}] {message}", **kwargs)
 
     def log_warning(self, message: str, **kwargs):
         """Log warning message."""
-        self.logger.warning(f"[{self.name}] {message}", **kwargs)
+        self._logger.warning(f"[{self.name}] {message}", **kwargs)
 
     def log_error(self, message: str, **kwargs):
         """Log error message."""
-        self.logger.error(f"[{self.name}] {message}", **kwargs)
+        self._logger.error(f"[{self.name}] {message}", **kwargs)
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> None:
         """

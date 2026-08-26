@@ -47,6 +47,7 @@ class AgentRunResult:
     used_fallback: bool = False
     new_messages: list[ModelMessage] = field(default_factory=list)
     usage: Any = None
+    cumulative_usage: Optional[dict] = None
 
 
 @dataclass
