@@ -34,6 +34,7 @@ Setup
 """
 
 import asyncio
+import os
 
 from agent_harness import ManagedAgent, LogContext, EnvEnricher
 from agent_harness.memory import InMemoryProvider, MessageHistory
@@ -45,7 +46,10 @@ async def main():
     print("Log Enrichment — Basic LogContext")
     print("=" * 60)
 
-    model = ModelConfig(provider="ollama", model_name="gpt-oss:20b")
+    model = ModelConfig(
+        provider=os.getenv("LOGGING_MODEL_PROVIDER", "ollama"),
+        model_name=os.getenv("LOGGING_MODEL_NAME", "gpt-oss:20b"),
+    )
     memory = InMemoryProvider()
 
     # ── Agent with persistent enrichment (A) ────────────────────
@@ -55,14 +59,19 @@ async def main():
         .with_model(model)
         .with_log_enrichment(
             LogContext()
-            .with_("pipeline", "content-qa")
-            .with_("agent_role", "assistant"),
+            .with_("pipeline", os.getenv("LOGGING_01_PIPELINE", "content-qa"))
+            .with_(
+                "agent_role", os.getenv("LOGGING_01_AGENT_ROLE", "assistant")
+            ),
             EnvEnricher(),  # auto-attaches host, env, pid
         )
     )
 
     print("\nAgent enrichment providers:")
-    print(f"  LogContext: pipeline=content-qa, agent_role=assistant")
+    print(
+        f"  LogContext: pipeline={os.getenv('LOGGING_01_PIPELINE', 'content-qa')}, "
+        f"agent_role={os.getenv('LOGGING_01_AGENT_ROLE', 'assistant')}"
+    )
     print(f"  EnvEnricher: host, env, pid (automatic)")
 
     # ── Run 1: with per-run enrichment (B) ──────────────────────
@@ -72,7 +81,9 @@ async def main():
         "What is 2+2? Answer in one word.",
         h1,
         "log-1",
-        enrichment=LogContext().with_("stage", "math-check"),
+        enrichment=LogContext().with_(
+            "stage", os.getenv("LOGGING_01_STAGE_1", "math-check")
+        ),
     )
     print(f"  Output: {r1.output}")
 
@@ -83,12 +94,18 @@ async def main():
         "What color is the sky? Answer in one word.",
         h2,
         "log-2",
-        enrichment=LogContext().with_("stage", "knowledge-check"),
+        enrichment=LogContext().with_(
+            "stage", os.getenv("LOGGING_01_STAGE_2", "knowledge-check")
+        ),
     )
     print(f"  Output: {r2.output}")
 
     print(f"\n✓ Done. Check the JSON log output above.")
-    print(f"  Each entry carries: pipeline, agent_role, stage, host, env, pid")
+    print(
+        f"  Each entry carries: "
+        f"{os.getenv('LOGGING_01_PIPELINE', 'content-qa')}, "
+        f"{os.getenv('LOGGING_01_AGENT_ROLE', 'assistant')}, stage, host, env, pid"
+    )
 
 
 if __name__ == "__main__":

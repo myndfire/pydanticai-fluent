@@ -69,7 +69,8 @@ async def main():
     # ── Build agent with both ───────────────────────────────────
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_short_term_memory(short_term)
         .with_long_term_memory(long_term)
     )
@@ -135,7 +136,8 @@ async def main():
     # Generate 5 turns
     dummy_agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
     )
     for i in range(1, 6):
         h = await MessageHistory().load("trim-test", small)

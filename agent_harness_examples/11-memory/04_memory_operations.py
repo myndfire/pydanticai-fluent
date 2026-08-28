@@ -64,7 +64,8 @@ async def main():
     memory = InMemoryProvider()
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
     )
 
     session = "crud-demo"
@@ -139,7 +140,8 @@ async def main():
     memory2 = InMemoryProvider()
     agent2 = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
     )
     for i in range(1, 4):
         h = await MessageHistory().load("session-keep", memory2)

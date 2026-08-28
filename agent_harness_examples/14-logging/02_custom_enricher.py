@@ -36,6 +36,7 @@ Setup
 
 import asyncio
 import contextvars
+import os
 import uuid
 
 from agent_harness import ManagedAgent, LogContext, EnvEnricher
@@ -77,7 +78,10 @@ async def main():
     print("Log Enrichment — Custom Providers")
     print("=" * 60)
 
-    model = ModelConfig(provider="ollama", model_name="gpt-oss:20b")
+    model = ModelConfig(
+        provider=os.getenv("LOGGING_MODEL_PROVIDER", "ollama"),
+        model_name=os.getenv("LOGGING_MODEL_NAME", "gpt-oss:20b"),
+    )
     memory = InMemoryProvider()
 
     # ── Agent with multiple enrichment sources ──────────────────
@@ -85,10 +89,14 @@ async def main():
         ManagedAgent()
         .with_model(model)
         .with_log_enrichment(
-            LogContext().with_("pipeline", "enrichment-demo"),
-            EnvEnricher(),                # host, env, pid
-            VersionEnricher("2.1.0"),     # application version
-            RequestIdEnricher(),          # async request context
+            LogContext().with_(
+                "pipeline", os.getenv("LOGGING_02_PIPELINE", "enrichment-demo")
+            ),
+            EnvEnricher(),  # host, env, pid
+            VersionEnricher(
+                os.getenv("LOGGING_02_APP_VERSION", "2.1.0")
+            ),  # application version
+            RequestIdEnricher(),  # async request context
         )
     )
 
@@ -116,9 +124,13 @@ async def main():
 
     # ── Summary ─────────────────────────────────────────────────
     print(f"\n✓ Every log entry carries:")
-    print(f"  pipeline=enrichment-demo (from LogContext)")
+    print(
+        f"  pipeline={os.getenv('LOGGING_02_PIPELINE', 'enrichment-demo')} (from LogContext)"
+    )
     print(f"  host, env, pid (from EnvEnricher)")
-    print(f"  version=2.1.0 (from VersionEnricher)")
+    print(
+        f"  version={os.getenv('LOGGING_02_APP_VERSION', '2.1.0')} (from VersionEnricher)"
+    )
     print(f"  request_id=<uuid> (from RequestIdEnricher)")
     print(f"\n  Custom providers implement: def enrich(self) -> dict[str, str]")
 

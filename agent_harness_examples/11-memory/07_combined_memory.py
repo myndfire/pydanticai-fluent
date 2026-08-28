@@ -70,7 +70,7 @@ REDIS_KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "agent:memory:")
 async def check_mongo(uri: str) -> bool:
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
-        client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=2000)
+        client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=int(os.getenv("MEMORY_MONGODB_TIMEOUT_MS", "2000")))
         await client.admin.command("ping")
         return True
     except Exception:
@@ -80,7 +80,7 @@ async def check_mongo(uri: str) -> bool:
 async def check_redis(host: str, port: int) -> bool:
     try:
         import redis.asyncio as redis
-        r = redis.Redis(host=host, port=port, socket_connect_timeout=2)
+        r = redis.Redis(host=host, port=port, socket_connect_timeout=int(os.getenv("MEMORY_REDIS_CONNECT_TIMEOUT", "2")))
         await r.ping()
         await r.aclose()
         return True
@@ -132,7 +132,8 @@ async def main():
     # Redis = short-term (fast reads), Mongo = long-term (durable archive)
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_short_term_memory(redis_mem)
         .with_long_term_memory(mongo)
     )
@@ -172,7 +173,8 @@ async def main():
     print("\n--- Context union: load only from MongoDB ---")
     agent2 = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
     )
     # Load from Mongo only — proves Redis is not required for persistence
     mongo_only_history = await MessageHistory().load(session, mongo)

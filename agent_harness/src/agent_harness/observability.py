@@ -245,7 +245,7 @@ class Observability:
 
             # Log start on all loggers
             for lg in self._loggers:
-                lg.info(f"{operation}_started", **self._base_context, **context)
+                lg.info(f"{operation}_started", **{**self._base_context, **context})
 
             # Increment counter on all metrics
             for m in self._metrics:
@@ -284,13 +284,9 @@ class Observability:
                     duration = (datetime.now() - start_time).total_seconds()
 
                     for lg in self._loggers:
-                        lg.info(
-                            f"{operation}_completed",
-                            **self._base_context,
-                            performance={"duration_seconds": duration},
-                            **context,
-                            **trace_context,
-                        )
+                        merged = {**self._base_context, **context, **trace_context}
+                        merged["performance"] = {"duration_seconds": duration}
+                        lg.info(f"{operation}_completed", **merged)
 
                     for m in self._metrics:
                         m.histogram(
@@ -309,13 +305,10 @@ class Observability:
                     duration = (datetime.now() - start_time).total_seconds()
 
                     for lg in self._loggers:
-                        lg.error(
-                            f"{operation}_failed",
-                            **self._base_context,
-                            performance={"duration_seconds": duration},
-                            **context,
-                            **_exception_record(e, self.traceback_frame_limit),
-                        )
+                        merged = {**self._base_context, **context}
+                        merged["performance"] = {"duration_seconds": duration}
+                        merged.update(_exception_record(e, self.traceback_frame_limit))
+                        lg.error(f"{operation}_failed", **merged)
 
                     for m in self._metrics:
                         m.counter(

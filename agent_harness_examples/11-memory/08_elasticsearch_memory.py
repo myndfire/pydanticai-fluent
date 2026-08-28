@@ -94,7 +94,7 @@ async def main():
     print("  Elasticsearch is reachable.")
 
     # ── Setup providers ─────────────────────────────────────────
-    short_term = InMemoryProvider(max_turns=10)
+    short_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "10")))
     es_mem = ElasticsearchMemory(
         endpoint=ES_ENDPOINT,
         index=ES_INDEX,
@@ -102,7 +102,8 @@ async def main():
 
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_short_term_memory(short_term)
         .with_long_term_memory(es_mem)
     )
@@ -140,7 +141,8 @@ async def main():
     print("\n--- Context restoration (new agent, load from Elasticsearch) ---")
     agent2 = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
     )
     restored_history = await MessageHistory().load(session, es_mem)
     print(f"  Messages loaded from Elasticsearch: {len(restored_history.messages)}")

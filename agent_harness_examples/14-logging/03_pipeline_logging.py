@@ -36,6 +36,7 @@ Setup
 """
 
 import asyncio
+import os
 
 from agent_harness import (
     ManagedAgent,
@@ -53,17 +54,25 @@ async def main():
     print("Log Enrichment — Pipeline with Auto-Logging")
     print("=" * 60)
 
-    model = ModelConfig(provider="ollama", model_name="gpt-oss:20b")
+    model = ModelConfig(
+        provider=os.getenv("LOGGING_MODEL_PROVIDER", "ollama"),
+        model_name=os.getenv("LOGGING_MODEL_NAME", "gpt-oss:20b"),
+    )
     obs = Observability()
 
     # ── Agents with persistent enrichment ───────────────────────
-    base = LogContext().with_("pipeline", "content-qa")
+    base = LogContext().with_(
+        "pipeline", os.getenv("LOGGING_03_PIPELINE", "content-qa")
+    )
 
     researcher = (
         ManagedAgent()
         .with_model(model)
         .with_log_enrichment(
-            base.with_("agent_role", "researcher"),
+            base.with_(
+                "agent_role",
+                os.getenv("LOGGING_03_ROLE_RESEARCHER", "researcher"),
+            ),
             EnvEnricher(),
         )
     )
@@ -72,7 +81,9 @@ async def main():
         ManagedAgent()
         .with_model(model)
         .with_log_enrichment(
-            base.with_("agent_role", "writer"),
+            base.with_(
+                "agent_role", os.getenv("LOGGING_03_ROLE_WRITER", "writer")
+            ),
             EnvEnricher(),
         )
     )
@@ -81,7 +92,9 @@ async def main():
         ManagedAgent()
         .with_model(model)
         .with_log_enrichment(
-            base.with_("agent_role", "editor"),
+            base.with_(
+                "agent_role", os.getenv("LOGGING_03_ROLE_EDITOR", "editor")
+            ),
             EnvEnricher(),
         )
     )

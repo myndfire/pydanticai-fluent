@@ -82,8 +82,9 @@ async def main():
 
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
-        .with_agent_retries(AgentRetryConfig().with_timeout(60))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
+        .with_agent_retries(AgentRetryConfig().with_timeout(int(os.getenv("MEMORY_REASONING_TIMEOUT", "60"))))
     )
 
     memory = InMemoryProvider()

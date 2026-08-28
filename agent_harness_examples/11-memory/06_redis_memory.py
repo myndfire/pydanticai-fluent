@@ -62,7 +62,7 @@ async def check_redis(host: str, port: int) -> bool:
     try:
         import redis.asyncio as redis
 
-        r = redis.Redis(host=host, port=port, socket_connect_timeout=2)
+        r = redis.Redis(host=host, port=port, socket_connect_timeout=int(os.getenv("MEMORY_REDIS_CONNECT_TIMEOUT", "2")))
         await r.ping()
         await r.aclose()
         return True
@@ -94,7 +94,7 @@ async def main():
     print("  Redis is reachable.")
 
     # ── Setup providers ─────────────────────────────────────────
-    short_term = InMemoryProvider(max_turns=10)
+    short_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "10")))
     redis_mem = RedisMemory(
         host=REDIS_HOST,
         port=REDIS_PORT,
@@ -103,7 +103,8 @@ async def main():
 
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_short_term_memory(short_term)
         .with_long_term_memory(redis_mem)
     )

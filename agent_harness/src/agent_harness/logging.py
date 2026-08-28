@@ -63,6 +63,33 @@ def _is_harness_or_internal_frame(filename: str) -> bool:
     return False
 
 
+def _app_callsite() -> dict:
+    """Return the first non-harness/non-stdlib frame for OTel code.* attributes.
+
+    Walks the stack from the caller of the logger outward, skipping any frame
+    that lives inside the agent_harness package, the Python stdlib, or a
+    third-party site-package.  The first "user" frame encountered is treated as
+    the callsite.
+
+    Returns
+    -------
+    dict
+        ``{"code.file.path": ..., "code.function": ..., "code.line.number": ...}``
+        or an empty dict if no suitable frame is found.
+    """
+    import inspect
+
+    for frame_info in inspect.stack():
+        filename = frame_info.filename
+        if not _is_harness_or_internal_frame(filename):
+            return {
+                "code.file.path": os.path.relpath(filename),
+                "code.function": frame_info.function,
+                "code.line.number": frame_info.lineno,
+            }
+    return {}
+
+
 class Logger(Protocol):
     """Protocol for structured logging."""
 
@@ -189,26 +216,6 @@ class LogfireLogger:
         """Log error message."""
         if self.logfire:
             self._log_to_logfire("error", message, context)
-
-
-class ConsoleLogger:
-    """Protocol for structured logging."""
-
-    def debug(self, message: str, **context):
-        """Log debug message."""
-        ...
-
-    def info(self, message: str, **context):
-        """Log info message."""
-        ...
-
-    def warning(self, message: str, **context):
-        """Log warning message."""
-        ...
-
-    def error(self, message: str, **context):
-        """Log error message."""
-        ...
 
 
 class ConsoleLogger:

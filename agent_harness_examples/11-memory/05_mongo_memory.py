@@ -62,7 +62,7 @@ async def check_mongo(uri: str) -> bool:
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
 
-        client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=2000)
+        client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=int(os.getenv("MEMORY_MONGODB_TIMEOUT_MS", "2000")))
         await client.admin.command("ping")
         return True
     except Exception:
@@ -93,7 +93,7 @@ async def main():
     print("  MongoDB is reachable.")
 
     # ── Setup providers ─────────────────────────────────────────
-    short_term = InMemoryProvider(max_turns=10)
+    short_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "10")))
     mongo = MongoMemory(
         uri=MONGO_URI,
         database=MONGO_DATABASE,
@@ -102,7 +102,8 @@ async def main():
 
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_short_term_memory(short_term)
         .with_long_term_memory(mongo)
     )
@@ -133,7 +134,8 @@ async def main():
     print("\n--- Context restoration (new agent, load from MongoDB) ---")
     new_agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
     )
     # Load only from mongo — prove persistence works independently
     history_restored = await MessageHistory().load(session, mongo)

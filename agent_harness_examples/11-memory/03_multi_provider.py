@@ -84,13 +84,14 @@ async def main():
     print("=" * 60)
 
     # ── Three providers, three purposes ──────────────────────────
-    short_term = InMemoryProvider(max_turns=10)    # fast context
-    long_term = InMemoryProvider(max_turns=1000)   # full archive
-    audit_log = InMemoryProvider(max_turns=10000)  # compliance trail
+    short_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "10")))    # fast context
+    long_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_LONG_TERM_MAX_TURNS", "100")))     # full archive
+    audit_log = InMemoryProvider(max_turns=int(os.getenv("MEMORY_AUDIT_MAX_TURNS", "10000")))       # compliance trail
 
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_short_term_memory(short_term)
         .with_long_term_memory(long_term)
     )
