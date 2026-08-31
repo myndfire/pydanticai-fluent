@@ -36,7 +36,7 @@ example-1: Tools              example-2: Observability       example-3: Structur
 |---|---|---|
 | **Logfire** | Tracing and logging dashboard | Set `LOGFIRE_TOKEN` in `../.env` (token from [logfire.pydantic.dev](https://logfire.pydantic.dev)) |
 | **OTLP Collector** | Distributed tracing backend | Run a collector (e.g., Jaeger) on `localhost:4317` (gRPC) |
-| **OTLP Metrics** | Metrics export | Run a metrics receiver on `localhost:4319` |
+| **OTLP Metrics** | Metrics export | Run a metrics receiver on `localhost:4317` (OTel Collector) |
 | **MongoDB** | Persistent long-term memory | Set `MONGODB_URI` in `../.env`; if unset, falls back to in-memory storage |
 
 ## Environment Variables
@@ -96,7 +96,7 @@ Observability stack:
 │  Observability                                  │
 │  ├── tracer: LogfireTracer ──▶ logfire.pydantic │
 │  ├── tracers: [OTELTracer]  ──▶ localhost:4317  │
-│  ├── metrics: [OTELMetrics] ──▶ localhost:4319  │
+│  ├── metrics: [OTELMetrics] ──▶ localhost:4317  │
 │  └── loggers: [ConsoleLogger]                   │
 └─────────────────────────────────────────────────┘
 

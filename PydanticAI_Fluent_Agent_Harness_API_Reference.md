@@ -55,7 +55,7 @@ the same ManagedAgent instance and are designed to be chained.
 | with_prompts(provider)                                                                        | PromptProvider                 | Selects the source used to resolve the system prompt.                                                                     | StaticPrompts('...')                                |
 | with_observability(observability)                                                             | Observability                  | Replaces the observability facade and propagates it to the tool registry.                                                 | Observability(...)                                  |
 | with_tools(registry)                                                                          | ToolRegistry                   | Attaches registered function tools and injects observability into the registry.                                           | ToolRegistry().add_many(...)                        |
-| with_mcp_server(url, \*\*kwargs)                                                              | str; tool_prefix optional      | Adds one MCP Streamable HTTP server directly as a PydanticAI toolset.                                                     | url, tool_prefix='crm'                              |
+| with_mcp_server(url, \*\*kwargs)                                                              | str; tool_prefix optional      | Adds one MCP Streamable HTTP server directly as a PydanticAI toolset via MCPToolset(FastMCPClient(url)).    | url, tool_prefix='crm'                              |
 | with_mcp_servers(\*urls, tool_prefix=None)                                                    | str...                         | Adds multiple MCP servers using the same optional tool prefix.                                                            | 'http://a','http://b'                               |
 | with_evaluators(\*evaluators)                                                                 | Evaluator...                   | Appends post-run evaluators; evaluators execute sequentially.                                                             | QualityCheck(), SafetyCheck()                       |
 | with_error_handling(config)                                                                   | ErrorHandlingConfig            | Installs source-specific/catch-all error callbacks.                                                                       | ErrorHandlingConfig().on_tool_error(...)            |
@@ -163,7 +163,7 @@ invocation/result/error logging and can be synchronous or asynchronous.
 
 | Method                                     | Settings                              | Notes                                                           |
 |--------------------------------------------|---------------------------------------|-----------------------------------------------------------------|
-| with_mcp_server(url, \*\*kwargs)           | url; optional tool_prefix             | Uses MCPServerStreamableHTTP and adds it to the agent toolsets. |
+| with_mcp_server(url, \*\*kwargs)           | url; optional tool_prefix             | Uses MCPToolset(FastMCPClient(url)) via pydantic-ai 2.x. Tools discovered lazily at run(). |
 | with_mcp_servers(\*urls, tool_prefix=None) | multiple URLs; optional common prefix | Convenience loop around with_mcp_server().                      |
 
 # 5. Memory and conversation history
@@ -322,7 +322,7 @@ tracer is supplied it defaults to NoOpTracer.
 | NoOpTracer     | No configuration; minimal overhead.                                                                            |
 | InMemoryTracer | No configuration; records spans in memory for testing/development.                                             |
 | LogfireTracer  | service_name; send_to_logfire=True; instrument_pydantic_ai=True                                                |
-| OTELTracer     | service_name; otlp_endpoint='http://localhost:4317'; sample_rate=1.0; create_spans=False; record_failures=True |
+| OTELTracer     | service_name; otlp_endpoint='localhost:4317'; sample_rate=1.0; create_spans=False; record_failures=True |
 
 OTELTracer defaults to create_spans=False so PydanticAI native
 instrumentation is the canonical span tree. record_failures=True still
@@ -336,8 +336,56 @@ successful operation.
 | NoOpMetrics       | none                                                 |
 | InMemoryMetrics   | none; supports get_metrics() and reset()             |
 | LogfireMetrics    | service_name='agent'                                 |
-| OTELMetrics       | service_name='agent'; otlp_endpoint='localhost:4319' |
+| OTELMetrics       | service_name='agent'; otlp_endpoint='localhost:4317' |
 | PrometheusMetrics | namespace='agent'; push_gateway=None                 |
+
+## OpenTelemetry & the OTel Collector
+
+`OTELLogger`, `OTELTracer`, and `OTELMetrics` are the OpenTelemetry backends.
+They all emit over OTLP (gRPC by default) to the endpoint given by
+`otlp_endpoint`, whose library default is `localhost:4317`. That endpoint is
+expected to be an **OpenTelemetry Collector**, not a backend such as Jaeger or
+Elasticsearch directly.
+
+### Why a collector?
+
+OTLP is the de-facto telemetry transport. Routing every signal through one
+collector gives you:
+
+- a single egress point from the application (one OTLP connection instead of
+  one per backend);
+- backend portability — change `otel-collector-config.yml` to swap
+  Elasticsearch for Loki or Jaeger for Tempo without touching application code;
+- buffering/retry so a transient backend outage does not drop telemetry;
+- one receiver that accepts logs, metrics, and traces together.
+
+### Repository collector layout
+
+`docker-compose.yml` exposes the collector on the standard OTLP ports `4317`
+(gRPC) and `4318` (HTTP). `otel-collector-config.yml` defines three pipelines
+from a single `otlp` receiver:
+
+- `logs`    → `otlphttp/elasticsearch`  (stored in `logs-generic.otel-default`)
+- `metrics` → `otlphttp/prometheus`    (Prometheus native OTLP receiver)
+- `traces`  → `otlp/jaeger`            (Jaeger, exposed on host `14317`)
+
+Jaeger's host ports (`14317`/`14318`) are a downstream target of the collector
+only; the application should not export to them directly.
+
+### Best practice
+
+> Export OTLP to the collector in production. Do not point the OTEL backends
+> straight at Elasticsearch/Jaeger/Prometheus — the collector owns backend
+> connectivity, batching, and retry. (Logfire is a managed service and exports
+> to Logfire's cloud by design, which is expected.)
+
+### Provider registration note
+
+The OTEL backends register the global OpenTelemetry `MeterProvider` /
+`TracerProvider`. If you also use a `Logfire*` backend, create the OTEL
+backends first; Logfire then attaches to the already-registered providers
+(reusing them) rather than overriding them, so you will not see the
+`Overriding of current ...Provider` warning.
 
 # 12. Log enrichment
 

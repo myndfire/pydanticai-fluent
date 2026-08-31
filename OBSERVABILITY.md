@@ -6,8 +6,10 @@ How to run the observability stack and inspect agent telemetry in **Elasticsearc
 
 The OTEL backends (`OTELLogger`, `OTELTracer`, `OTELMetrics`) export over OTLP gRPC to the OpenTelemetry Collector, which routes each signal over OTLP to a separate native-OTLP backend:
 
+> **OTLP is the de-facto transport for all telemetry.** Every OTEL backend ships logs, metrics, and traces to the OTel Collector at `localhost:4317` (gRPC) / `localhost:4318` (HTTP). Direct export to Jaeger (or any other backend) is not used by these examples — Jaeger is reached only as a downstream target of the collector.
+
 ```
-agent_harness  --OTLP gRPC:14317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
+agent_harness  --OTLP gRPC:4317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
     (logs + metrics + traces)        (otlp receiver:   --otlphttp-->  Prometheus (metrics)
                                        grpc :4317,      \--otlp gRPC-->  Jaeger (traces)
                                        http :4318)
@@ -30,9 +32,9 @@ Skip `kibana` if you don't need the optional specialist browser (Grafana Logs Dr
 | `elasticsearch` | `9200` | Logs backend — native OTLP/HTTP intake (`/_otlp/v1/logs`) → OTel data stream `logs-generic.otel-default` |
 | `grafana` | `3000` | Single pane — ES datasource (logs), Prometheus datasource (metrics), Jaeger datasource (trace waterfall) |
 | `prometheus` | `9090` | Metrics backend — native OTLP receiver (`/api/v1/otlp/v1/metrics`) |
-| `jaeger` | `16686` | Trace backend — native OTLP gRPC ingest (`:4317`), UI at `:16686` |
+| `jaeger` | `16686` | Trace backend — native OTLP gRPC ingest (host `:14317`), UI at `:16686` |
 | `kibana` | `5601` | Optional specialist log browser (Grafana Logs Drilldown covers this) |
-| `otel-collector` | `14317`, `14318` | Single OTLP receiver; traces → Jaeger, metrics → Prometheus, logs → Elasticsearch |
+| `otel-collector` | `4317`, `4318` | Single OTLP receiver; traces → Jaeger, metrics → Prometheus, logs → Elasticsearch |
 
 ## 4. Elasticsearch
 
@@ -88,7 +90,7 @@ curl -s 'http://localhost:9200/traces-generic.otel-default*/_search?_source=name
 
 ## 5. Jaeger
 
-Trace backend with a native OTLP gRPC ingest (`:4317`) and UI at **http://localhost:16686**.
+Trace backend with a native OTLP gRPC ingest (host `:14317`, forwarded from the collector) and UI at **http://localhost:16686**.
 
 To view your runs:
 

@@ -97,14 +97,14 @@ async def main():
         tracers=[
             OTELTracer(
                 service_name="agent_example-2_service",
-                otlp_endpoint="http://localhost:4317",
+                otlp_endpoint="localhost:4317",
                 sample_rate=1.0,
             ),
         ],
         metrics_list=[
             OTELMetrics(
                 service_name="agent_example-2_service",
-                otlp_endpoint="http://localhost:4319",
+                otlp_endpoint="localhost:4317",
             ),
         ],
     )

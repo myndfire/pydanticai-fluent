@@ -252,7 +252,7 @@ Key components:
 - Chained tracers: `OTELTracer` + `InMemoryTracer` for local inspection
 - `obs.add_span_event("checkpoint")` — add events to current span
 - `obs.set_span_attribute("key", "value")` — add attributes
-- Prerequisite: `docker compose up -d jaeger`
+- Prerequisite: `docker compose up -d otel-collector` (forwards traces to Jaeger)
 
 ### 07_prometheus_logs_metrics.py
 
@@ -430,9 +430,9 @@ All variables are optional and read from `.env` via `python-dotenv`.
 | `OBSERVABILITY_MODEL_NAME` | 03, 05–09 | `gpt-oss:20b` | LLM model name |
 | `OBSERVABILITY_MAX_TOKENS` | 03, 05–09 | `512` | Max LLM output tokens |
 | `ELASTICSEARCH_ENDPOINT` | 05, 09 | `http://localhost:9200` | Elasticsearch endpoint |
-| `JAEGER_OTLP_ENDPOINT` | 06, 09 | `http://localhost:4317` | Jaeger OTLP gRPC endpoint |
+| `JAEGER_OTLP_ENDPOINT` | — | `localhost:14317` | **Deprecated** — Jaeger host OTLP port. All OTLP now flows through the OTel Collector; no example reads this. |
 | `PROMETHEUS_PUSH_GATEWAY` | 07 | `http://localhost:9091` | Prometheus push gateway |
-| `OTEL_COLLECTOR_ENDPOINT` | 09 | `localhost:14317` | OTel Collector OTLP gRPC |
+| `OTEL_COLLECTOR_ENDPOINT` | 06, 09 | `localhost:4317` | OTel Collector OTLP gRPC (logs, metrics, traces) |
 | `OBSERVABILITY_SERVICE_NAME` | 09 | `all-in-one-observability-demo` | OTLP service name |
 | `OLLAMA_BASE_URL` | all | `http://localhost:11434/v1` | Ollama endpoint |
 

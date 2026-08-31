@@ -1012,7 +1012,7 @@ for context-aware tools.
 
 ## `03_mcp_server.py`
 
-Demonstrates MCP-provided tools.
+Demonstrates MCP-provided tools. Example 4 combines two public MCP servers — Context7 (library documentation) and Complex server (data/user/order operations) — with `tool_prefix` disambiguation. Example 5 runs a live demo connecting to Context7, resolving a library ID and fetching a docs excerpt using MCP tools at runtime.
 
 **Production rule:** MCP expands the agent's capability boundary. Use authentication, allow-lists, timeouts, network controls, and audit logging.
 
@@ -1273,6 +1273,102 @@ ES   Prometheus  Jaeger
 ```
 
 **Production starting point:** This is one of the strongest examples for operational diagnostics.
+
+## OpenTelemetry & the OTel Collector
+
+OpenTelemetry (OTEL) is the de-facto standard transport for logs, metrics, and
+traces in this project. **Every OTEL backend — `OTELLogger`, `OTELTracer`,
+`OTELMetrics` — exports over OTLP to a single OpenTelemetry Collector**, which
+then fans each signal out to the appropriate backend. This is the architecture
+used by `09_otel_oltp_logs_traces_metrics.py` and recommended for production.
+
+### Why route through a collector?
+
+Exporting telemetry straight from the application to each backend (logs to
+Elasticsearch, traces to Jaeger, metrics to Prometheus) couples your code to
+the backend topology and multiplies outbound connections, auth configs, and
+failure modes. A collector centralizes that responsibility:
+
+- **One egress point.** The app only needs to reach the collector over OTLP
+  (gRPC `4317` / HTTP `4318`). The collector owns downstream routing, batching,
+  retries, and backend credentials.
+- **Backend substitution without code changes.** Swap Elasticsearch for Loki,
+  or Jaeger for Tempo/Datadog, by editing the collector config — not your
+  Python code.
+- **Resilience.** The collector buffers and retries, so a briefly unavailable
+  backend does not drop telemetry or back-pressure your agent.
+- **Unified pipelines.** One receiver accepts all three signals and routes them
+  through consistent processing (batching, resource attributes, multi-tenancy).
+
+### The OTel Collector in this repository
+
+`docker-compose.yml` publishes the collector on the standard OTLP ports:
+
+| Port | Purpose |
+|------|---------|
+| `4317` | OTLP gRPC (logs, metrics, traces) |
+| `4318` | OTLP HTTP (logs, metrics, traces) |
+
+Jaeger is exposed on `14317`/`14318` **only as a downstream target of the
+collector** — it is not meant to be hit directly by the application.
+
+`otel-collector-config.yml` defines three pipelines off a single `otlp`
+receiver:
+
+```yaml
+service:
+  pipelines:
+    traces:   receivers: [otlp]  exporters: [otlp/jaeger, otlphttp/elasticsearch]
+    metrics:  receivers: [otlp]  exporters: [otlphttp/prometheus]
+    logs:     receivers: [otlp]  exporters: [otlphttp/elasticsearch]
+```
+
+- **Logs** → Elasticsearch (`/_otlp/v1/logs`), stored in the
+  `logs-generic.otel-default` data stream.
+- **Metrics** → Prometheus via its native OTLP receiver
+  (`/api/v1/otlp/v1/metrics`).
+- **Traces** → Jaeger (`jaeger:4317`).
+
+### Pointing the backends at the collector
+
+All OTEL backends take an `otlp_endpoint`. The library default is
+`localhost:4317` (gRPC), which is exactly where the collector listens:
+
+```python
+OTELMetrics(service_name="agent")                                   # → localhost:4317
+OTELTracer(service_name="agent", otlp_endpoint="localhost:4317")
+OTELLogger(service_name="agent", otlp_endpoint="localhost:4317")
+```
+
+In the examples this is driven by the `OTEL_COLLECTOR_ENDPOINT` environment
+variable (the older `JAEGER_OTLP_ENDPOINT` is now deprecated).
+
+### Log / trace correlation
+
+Because logs and traces share the same OTLP stream, records emitted inside an
+active span automatically carry `trace_id` / `span_id`. Jaeger's trace→logs link
+and Elasticsearch queries on `trace_id` let you jump from a slow span to the
+exact log lines that produced it.
+
+### Production best practice
+
+> **Use the OTel Collector as the single telemetry gateway in production.**
+> Configure the application to export OTLP to the collector and let the
+> collector own all backend connectivity. Do **not** point `OTELLogger` /
+> `OTELTracer` / `OTELMetrics` directly at the individual open-source backends
+> (Elasticsearch/Jaeger/Prometheus) in a production deployment — direct-to-
+> backend export is acceptable for a local demo but forfeits the buffering,
+> retry, and backend-portability benefits above. (Logfire is a managed service
+> and exports to Logfire's cloud by design, which is expected.)
+
+Operational notes:
+
+- Run the collector as a sidecar or a dedicated service with its own resource
+  limits; it is critical infrastructure for observability.
+- Secure the OTLP endpoint (mTLS / network policy) — it receives potentially
+  sensitive structured logs and traces.
+- Keep `otel-collector-config.yml` in version control; it is your telemetry
+  contract.
 
 ---
 
@@ -2636,7 +2732,7 @@ This is one of the most important security patterns in production agent design.
 
 This file introduces MCP as an external tool provider.
 
-Rather than registering every function directly in the Python process, the agent can consume tools published by an MCP server.
+Rather than registering every function directly in the Python process, the agent can consume tools published by an MCP server. Example 4 combines two public, keyless servers — Context7 (`https://mcp.context7.com/mcp`) for library documentation and Complex server (`https://mcpplaygroundonline.com/mcp-complex-server`) for data operations — using `tool_prefix` to disambiguate tools across servers. No auth required, only network egress.
 
 The developer should view MCP as another integration boundary that requires trust, authentication, allow-listing, timeout, and audit policy.
 
@@ -2804,9 +2900,9 @@ Production applications should not depend on hidden/private chain-of-thought for
 | `OBSERVABILITY_MODEL_NAME` | `gpt-oss:20b` |
 | `OBSERVABILITY_MAX_TOKENS` | `512` |
 | `ELASTICSEARCH_ENDPOINT` | `http://localhost:9200` |
-| `JAEGER_OTLP_ENDPOINT` | `localhost:4317` |
+| `JAEGER_OTLP_ENDPOINT` | `localhost:14317` *(deprecated — OTLP now flows through the collector)* |
 | `PROMETHEUS_PUSH_GATEWAY` | `http://localhost:9091` |
-| `OTEL_COLLECTOR_ENDPOINT` | `localhost:14317` |
+| `OTEL_COLLECTOR_ENDPOINT` | `localhost:4317` |
 | `OBSERVABILITY_SERVICE_NAME` | `all-in-one-observability-demo` |
 
 ### `01_logging.py`
@@ -3106,9 +3202,9 @@ REDIS_KEY_PREFIX=agent:memory:
 ELASTICSEARCH_ENDPOINT=http://localhost:9200
 
 # Telemetry
-JAEGER_OTLP_ENDPOINT=localhost:4317
+JAEGER_OTLP_ENDPOINT=localhost:14317  # deprecated
 PROMETHEUS_PUSH_GATEWAY=http://localhost:9091
-OTEL_COLLECTOR_ENDPOINT=localhost:14317
+OTEL_COLLECTOR_ENDPOINT=localhost:4317
 OBSERVABILITY_SERVICE_NAME=all-in-one-observability-demo
 
 # Logfire
@@ -3736,9 +3832,11 @@ Use:
 TOOL_CALLING_MODEL_NAME=gpt-oss:20b
 TOOL_CALLING_MAX_TOKENS=512
 OLLAMA_BASE_URL=http://localhost:11434/v1
+MCP_HTTP_URL=https://mcp.context7.com/mcp
+MCP_COMPLEX_URL=https://mcpplaygroundonline.com/mcp-complex-server
 ```
 
-Plus any MCP-server-specific endpoint/configuration required by the server you connect to. The current root `.env.example` does not define a separate MCP endpoint variable for this example.
+`MCP_HTTP_URL` defaults to Context7 (public, keyless). `MCP_COMPLEX_URL` defaults to the Complex server for multi-server demos. Override either to point at your own MCP server.
 
 ## `04_tool_combinations.py`
 
@@ -4006,7 +4104,7 @@ External services:
 ```dotenv
 OBSERVABILITY_MODEL_NAME=gpt-oss:20b
 OBSERVABILITY_MAX_TOKENS=512
-JAEGER_OTLP_ENDPOINT=localhost:4317
+JAEGER_OTLP_ENDPOINT=localhost:14317  # deprecated
 OBSERVABILITY_SERVICE_NAME=all-in-one-observability-demo
 OLLAMA_BASE_URL=http://localhost:11434/v1
 ```
@@ -4046,7 +4144,7 @@ Add backend-specific variables for whichever logger/metrics providers are enable
 ```dotenv
 OBSERVABILITY_MODEL_NAME=gpt-oss:20b
 OBSERVABILITY_MAX_TOKENS=512
-OTEL_COLLECTOR_ENDPOINT=localhost:14317
+OTEL_COLLECTOR_ENDPOINT=localhost:4317
 OBSERVABILITY_SERVICE_NAME=all-in-one-observability-demo
 OLLAMA_BASE_URL=http://localhost:11434/v1
 ```

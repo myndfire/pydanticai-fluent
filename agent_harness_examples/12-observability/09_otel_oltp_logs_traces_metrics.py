@@ -46,7 +46,7 @@ Demonstrates:
     emit ``error_handled``.
 
 Architecture:
-    agent_harness  --OTLP gRPC:14317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
+    agent_harness  --OTLP gRPC:4317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
     (logs + metrics + traces)          (otlp receiver:          --otlphttp-->  Prometheus (metrics)
                                          grpc :4317, http :4318) +--otlp gRPC-->  Jaeger (traces)
 
@@ -107,8 +107,8 @@ load_dotenv()
 MODEL_NAME = os.getenv("OBSERVABILITY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("OBSERVABILITY_MAX_TOKENS", "512"))
 ES_ENDPOINT = os.getenv("ELASTICSEARCH_ENDPOINT", "http://localhost:9200")
-OTEL_ENDPOINT = os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:14317")
-OTEL_TRACER_ENDPOINT = os.getenv("JAEGER_OTLP_ENDPOINT", "http://localhost:14317")
+OTEL_ENDPOINT = os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:4317")
+OTEL_TRACER_ENDPOINT = os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:4317")
 SERVICE_NAME = os.getenv("OBSERVABILITY_SERVICE_NAME", "all-in-one-observability-demo")
 
 # When True, main() additionally exercises failure paths so the resulting
@@ -227,7 +227,7 @@ async def main():
     print(f"  {'Reachable' if es_ok else 'NOT reachable'}")
 
     print(f"Checking OTel Collector at {OTEL_ENDPOINT} ...")
-    otel_ok = await check_port("localhost", 14317)
+    otel_ok = await check_port("localhost", 4317)
     print(f"  {'Reachable' if otel_ok else 'NOT reachable'}")
 
     if not (es_ok and otel_ok):
@@ -274,7 +274,8 @@ async def main():
 
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_prompts(
             StaticPrompts(
                 "You are a helpful assistant with weather and calculator tools. "

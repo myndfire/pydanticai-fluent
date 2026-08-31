@@ -158,6 +158,46 @@ async def main():
             history3,
             "token-limit-demo-3",
         )
+    except Exception as e:
+        print(f"  Caught exception: {e}")
+
+    # ── Example 4: Streaming with token limits ──────────────
+    print("\n--- Example 4: Streaming with token limits ---")
+
+    limits4 = (
+        TokenLimitsConfig()
+        .with_max_output_tokens(20)
+        .with_reasoning_traces(True)  # capture thinking parts for debugging
+        .on_streaming_token_limit(
+            lambda ctx, partial: (
+                f"\n[TRUNCATED after {len(partial)} chars] "
+                f"{ctx.error_message}\n"
+                f"Partial output: {partial[:100]}..."
+            )
+        )
+    )
+
+    agent4 = (
+        ManagedAgent()
+        .with_model(ModelConfig(provider=GUARDRAILS_MODEL_PROVIDER, model_name=GUARDRAILS_MODEL_NAME))
+        .with_token_limits(limits4)
+    )
+
+    history4 = await MessageHistory().load("token-limit-demo-4", memory)
+
+    print(f"Output tokens limit: {limits4.max_output_tokens}")
+    print("Streaming response (tokens arrive in real-time)...\n")
+
+    collected = ""
+    try:
+        async for chunk in agent4.run_stream(
+            "Write a haiku about the sea.",
+            history4,
+            "token-limit-demo-4",
+        ):
+            collected += chunk
+            print(f"  [{len(collected):3d} chars] {chunk!r}")
+        print(f"\nFull output: {collected}")
     except RuntimeError as e:
         print(f"  Caught RuntimeError: {e}")
 

@@ -139,11 +139,32 @@ class LogfireLogger:
                 self.logfire = logfire
                 return
 
-            logfire.configure(
-                service_name=self.service_name,
-                send_to_logfire=True,
-                console=False,
-            )
+            # If a TracerProvider/MeterProvider is already registered (e.g. by
+            # OTEL), Logfire attempts to override it and OpenTelemetry logs a
+            # "Overriding of current ...Provider is not allowed" warning via the
+            # `logging` module (not `warnings`). Suppress those loggers while
+            # configuring Logfire, which then attaches to the existing provider.
+            import logging
+
+            otel_loggers = [
+                logging.getLogger("opentelemetry.trace"),
+                logging.getLogger("opentelemetry.metrics"),
+                logging.getLogger("opentelemetry.metrics._internal"),
+            ]
+            saved_levels = [(lg, lg.level) for lg in otel_loggers]
+            for lg in otel_loggers:
+                lg.setLevel(logging.ERROR)
+
+            try:
+                logfire.configure(
+                    service_name=self.service_name,
+                    send_to_logfire=True,
+                    console=False,
+                )
+            finally:
+                for lg, level in saved_levels:
+                    lg.setLevel(level)
+
             logfire._configured = True
             self.logfire = logfire
             print(f"✅ Logfire logger initialized")

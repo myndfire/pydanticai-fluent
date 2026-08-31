@@ -23,7 +23,7 @@ Demonstrates:
 MCP servers expose tools over HTTP that the agent can discover and
 invoke at runtime (e.g., filesystem access, web browsing, databases).
 
-NOTE: MCP support uses pydantic_ai's MCPServerStreamableHTTP.
+NOTE: MCP support uses pydantic_ai's MCPToolset and FastMCPClient.
 Requires a running MCP server (e.g., via mcp-server-sdk or
 an SSE-compatible MCP implementation).
 
@@ -53,6 +53,8 @@ load_dotenv()
 
 MODEL_NAME = os.getenv("TOOL_CALLING_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("TOOL_CALLING_MAX_TOKENS", "512"))
+MCP_HTTP_URL = os.getenv("MCP_HTTP_URL", "https://mcp.context7.com/mcp")
+MCP_COMPLEX_URL = os.getenv("MCP_COMPLEX_URL", "https://mcpplaygroundonline.com/mcp-complex-server")
 
 
 # ── Example custom tool to complement MCP tools ─────────────────────
@@ -87,7 +89,7 @@ async def main():
     print()
 
     # In production, replace with a real MCP server URL:
-    #   agent.with_mcp_server("http://localhost:8000")
+    #   agent.with_mcp_server("MCP_HTTP_URL")
     # Common MCP servers:
     #   - filesystem: file read/write operations
     #   - browserbase: web browsing automation
@@ -98,15 +100,15 @@ async def main():
     # agent1 = (
     #     ManagedAgent()
     #     .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
-    #     .with_mcp_server("http://localhost:8000/mcp/filesystem")
+    #     .with_mcp_server("MCP_HTTP_URL/mcp/filesystem")
     # )
 
-    print("  API: agent.with_mcp_server(\"http://localhost:8000/mcp/filesystem\")")
+    print("  API: agent.with_mcp_server(\"MCP_HTTP_URL/mcp/filesystem\")")
 
     # ── Example 2: Multiple MCP servers ─────────────────────────
     print("\n--- Example 2: Multiple MCP servers ---")
     print("  API: agent.with_mcp_servers(\n"
-          "    \"http://localhost:8000/mcp/filesystem\",\n"
+          "    \"MCP_HTTP_URL/mcp/filesystem\",\n"
           "    \"http://localhost:8001/mcp/postgres\",\n"
           "    \"http://localhost:8002/mcp/github\",\n"
           "  )")
@@ -116,7 +118,7 @@ async def main():
     print("  Use tool_prefix to avoid name collisions when multiple")
     print("  servers expose tools with the same name.\n")
     print("  API: agent.with_mcp_server(\n"
-          "    \"http://localhost:8000/mcp/filesystem\",\n"
+          "    \"MCP_HTTP_URL/mcp/filesystem\",\n"
           "    tool_prefix=\"fs_\"\n"
           "  )")
     print("  API: agent.with_mcp_server(\n"
@@ -126,28 +128,27 @@ async def main():
 
     # ── Example 4: MCP + custom tools ───────────────────────────
     print("\n--- Example 4: MCP toolsets + custom tools ---")
-    # Combine MCP servers with custom ToolRegistry tools:
-    # custom_tools = ToolRegistry().add_many(echo)
-    # agent = (
-    #     ManagedAgent()
-    #     .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
-    #     .with_tools(custom_tools)
-    #     .with_mcp_servers(
-    #         "http://localhost:8000/mcp/filesystem",
-    #         "http://localhost:8001/mcp/web-search",
-    #         tool_prefix="mcp_",
-    #     )
-    # )
+    # Combine two MCP servers with custom ToolRegistry tools.
+    # Context7 provides library documentation tools.
+    # Complex server provides data/user/order tools.
+    # tool_prefix disambiguates tool names across servers.
+    custom_tools = ToolRegistry().add(echo)
+    agent4 = (
+        ManagedAgent()
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_model_settings({"max_tokens": MAX_TOKENS})
+        .with_tools(custom_tools)
+        .with_mcp_server(MCP_HTTP_URL, tool_prefix="ctx7_")
+        .with_mcp_server(MCP_COMPLEX_URL, tool_prefix="complex_")
+    )
     print("  API: agent.with_tools(ToolRegistry().add(echo))\n"
-          "       .with_mcp_servers(\n"
-          "           \"http://localhost:8000/mcp/filesystem\",\n"
-          "           \"http://localhost:8001/mcp/web-search\",\n"
-          "           tool_prefix=\"mcp_\",\n"
-          "       )")
+          "       .with_mcp_server(MCP_HTTP_URL, tool_prefix=\"ctx7_\")\n"
+          "       .with_mcp_server(MCP_COMPLEX_URL, tool_prefix=\"complex_\")")
+    print("  Tools available: ctx7_*, complex_*, echo")
 
     # ── Example 5: Run agent with MCP + custom tool (live demo) ─
     print("\n" + "=" * 60)
-    print("Live Demo: Agent with custom tool (no MCP server needed)")
+    print("Live Demo: Agent with MCP + custom tool")
     print("=" * 60)
 
     custom_tools = ToolRegistry().add(echo)
@@ -157,13 +158,12 @@ async def main():
         .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
         .with_model_settings({"max_tokens": MAX_TOKENS})
         .with_tools(custom_tools)
+        .with_mcp_server(MCP_HTTP_URL)
     )
-    # In production, you would also add:
-    # .with_mcp_server("http://localhost:8000")
 
     history = await MessageHistory().load("mcp-demo-live", memory)
     result = await agent.run(
-        "Use the echo tool to say 'Hello from MCP demo!'",
+        "Use the MCP-provided tools to resolve the library id for 'fastapi' and fetch a docs excerpt.",
         history,
         "mcp-demo-live",
     )

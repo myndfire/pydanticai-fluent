@@ -31,7 +31,8 @@ class UsageData:
     """Token usage for a turn."""
 
     input_tokens: int = 0
-    output_tokens: int = 0
+    output_tokens: int = 0  # total output (visible + reasoning)
+    reasoning_tokens: int = 0  # thinking chain portion (0 if API doesn't report)
     total_tokens: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -48,8 +49,12 @@ class TurnData:
     usage: Optional[UsageData] = None
     duration_seconds: float = 0.0
     cost: Optional[float] = None
+    cost_breakdown: dict = field(default_factory=dict)  # {"reasoning": 0.001, "output": 0.005}
+    billing_mode: str = "output_plus_reasoning"  # "output_plus_reasoning" or "output_only"
+    latency_breakdown: dict = field(default_factory=dict)  # {"thinking": 5.2, "generation": 8.1, ...}
     model: Optional[str] = None
     status: str = "success"
+    error: Optional[dict] = None  # only on failure
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to plain dict for any storage that expects JSON‑compatible data."""

@@ -50,7 +50,7 @@ class AgentConfig(BaseSettings):
     # Logging Configuration
     enable_otel: bool = False
     otel_service_name: str = "my-agent"
-    otel_endpoint: str = "http://localhost:4317"
+    otel_endpoint: str = "localhost:4317"
     elasticsearch_endpoint: Optional[str] = None
     elasticsearch_index_prefix: str = "agent-logs"
 

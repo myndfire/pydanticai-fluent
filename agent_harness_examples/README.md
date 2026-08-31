@@ -56,8 +56,8 @@ Services:
 | `kibana` | `5601` | Optional specialist — Kibana log browser (Grafana Logs Drilldown covers this) |
 | `grafana` | `3000` | Single pane: logs from ES, metrics from Prometheus, trace waterfall from Jaeger |
 | `prometheus` | `9090` | Metrics backend — native OTLP receiver (ingests the collector's OTLP metrics) |
-| `jaeger` | `16686`, `4317`, `4318` | Trace backend — native OTLP gRPC ingest, UI at :16686 |
-| `otel-collector` | `14317`, `14318` | Single OTLP receiver → ES logs + Prometheus metrics + Jaeger traces (OTELLogger, OTELTracer, OTELMetrics) |
+| `jaeger` | `16686`, `14317`, `14318` | Trace backend — native OTLP gRPC ingest (host :14317/:14318), UI at :16686 |
+| `otel-collector` | `4317`, `4318` | Single OTLP receiver → ES logs + Prometheus metrics + Jaeger traces (OTELLogger, OTELTracer, OTELMetrics) |
 | `pushgateway` | `9091` | PrometheusMetrics |
 | `rabbitmq` | `5672`, `15672` | Messaging examples |
 

@@ -611,7 +611,7 @@ obs = (
     .with_console_logging()
     .with_file_logging("agent.log")
     .with_logfire_tracing()
-    .with_otel_tracing(otlp_endpoint="http://localhost:4317")
+    .with_otel_tracing(otlp_endpoint="localhost:4317")
     .with_prometheus_metrics(push_gateway="localhost:9091")
     .build()
 )
@@ -673,7 +673,7 @@ Use these when constructing `Observability(metrics=...)` or `Observability(metri
 | `NoOpMetrics` | `()` | All counter/gauge/histogram/summary calls are no-ops. Default when no metrics backend is configured. |
 | `InMemoryMetrics` | `()` | Stores metrics in Python dicts: `_counters`, `_gauges`, `_histograms`, `_summaries`. Access with `get_metrics()`, clear with `reset()`. Perfect for testing. |
 | `LogfireMetrics` | `(service_name: str = "agent")` | Sends metric events to Logfire as info-level log entries. No dedicated metric protocol — uses Logfire's structured event system. |
-| `OTELMetrics` | `(service_name: str = "agent", otlp_endpoint: str = "localhost:4319")` | OpenTelemetry metrics via OTLP gRPC. Creates real OTel counters, gauges, and histograms with a `PeriodicExportingMetricReader`. Note: metrics use port 4319 (separate from tracing at 4317). |
+| `OTELMetrics` | `(service_name: str = "agent", otlp_endpoint: str = "localhost:4317")` | OpenTelemetry metrics via OTLP gRPC. Creates real OTel counters, gauges, and histograms with a `PeriodicExportingMetricReader`. Same default OTLP gRPC port as tracing (`4317`); the collector routes metrics to Prometheus. |
 | `PrometheusMetrics` | `(namespace: str = "agent", push_gateway: str \| None = None)` | Prometheus client library metrics. Supports `push_to_gateway(job_name)` for push-based workflows. Metric names follow Prometheus naming conventions. |
 | `StatsdMetrics` | `(host: str = "localhost", port: int = 8125, prefix: str = "agent")` | Standard StatsD client. `summary()` maps to StatsD `timing()`. Compatible with Datadog Agent, Telegraf, and other StatsD-compatible collectors. |
 
@@ -1406,7 +1406,7 @@ print(config.model_name)  # "ollama:gpt-oss:20b"
 | `default_system_prompt` | `str` | `"You are a helpful assistant"` | Fallback system prompt text |
 | `enable_otel` | `bool` | `False` | Enable OpenTelemetry export |
 | `otel_service_name` | `str` | `"agent"` | OTel service name for traces/metrics |
-| `otel_endpoint` | `str` | `"http://localhost:4317"` | OTLP collector endpoint |
+| `otel_endpoint` | `str` | `"localhost:4317"` | OTLP collector endpoint |
 | `elasticsearch_endpoint` | `str \| None` | `None` | Elasticsearch endpoint for log shipping |
 | `elasticsearch_index_prefix` | `str` | `"agent-logs"` | Prefix for ES daily log indices |
 | `max_retries` | `int` | `3` | Default max retry attempts |
@@ -1488,7 +1488,7 @@ All parameters are optional. Omitted parameters fall back to sensible defaults (
 | `with_prompts` | `(provider: PromptProvider) -> ManagedAgent` | Replace the system prompt provider. |
 | `with_observability` | `(obs: Observability) -> ManagedAgent` | Replace the logging/tracing/metrics facade. |
 | `with_tools` | `(registry: ToolRegistry) -> ManagedAgent` | Replace the tool registry and register tools with the underlying agent. |
-| `with_mcp_server` | `(url: str, **kwargs) -> ManagedAgent` | Add a single MCP SSE server. `tool_prefix` strips a prefix from tool names. |
+| `with_mcp_server` | `(url: str, **kwargs) -> ManagedAgent` | Add a single MCP Streamable HTTP server. `tool_prefix` strips a prefix from tool names. |
 | `with_mcp_servers` | `(*urls: str, tool_prefix: str \| None = None) -> ManagedAgent` | Add multiple MCP servers. Calls `with_mcp_server` for each URL. |
 | `with_evaluators` | `(*evaluators: Evaluator) -> ManagedAgent` | Append evaluators to the list that runs after each turn. |
 | `with_error_handling` | `(config: ErrorHandlingConfig) -> ManagedAgent` | Replace the error handling config with per-source callbacks. |

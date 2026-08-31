@@ -15,13 +15,13 @@
 """OTEL — OpenTelemetry and Jaeger v2 distributed tracing via OTLP.
 
 Demonstrates:
-  - OTELTracer: OTLP gRPC export (→ Jaeger collector at localhost:4317)
+  - OTELTracer: OTLP gRPC export (→ OTel Collector at localhost:4317, forwarded to Jaeger)
   - InMemoryTracer: chained alongside for local span inspection
   - Span attributes, span context (trace_id, span_id) captured in observe()
   - Observability with multiple tracers chained together
 
 Prerequisite:
-    docker compose -f docker-compose.yml up -d jaeger
+    docker compose -f docker-compose.yml up -d otel-collector
 
 Jaeger UI: http://localhost:16686
 
@@ -32,8 +32,8 @@ Setup
 -----
     1. Start Ollama (if using local models):
         ollama serve
-    2. (Optional) Start Jaeger:
-        docker compose -f docker-compose.yml up -d jaeger
+    2. (Optional) Start the OTel Collector (forwards to Jaeger):
+        docker compose -f docker-compose.yml up -d otel-collector
     3. Install dependencies and run:
         cd agent_harness_examples
         uv sync
@@ -56,7 +56,7 @@ load_dotenv()
 
 MODEL_NAME = os.getenv("OBSERVABILITY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("OBSERVABILITY_MAX_TOKENS", "512"))
-JAEGER_OTLP = os.getenv("JAEGER_OTLP_ENDPOINT", "localhost:4317")
+OTEL_COLLECTOR = os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:4317")
 
 
 async def check_port(host: str, port: int) -> bool:
@@ -79,7 +79,7 @@ async def main():
     -----
         1. Start Ollama: ollama serve
         2. Pull model: ollama pull gpt-oss:20b
-        3. Start Jaeger: docker compose -f docker-compose.yml up -d jaeger
+        3. Start the OTel Collector (forwards to Jaeger): docker compose -f docker-compose.yml up -d otel-collector
         4. Install deps: cd agent_harness_examples && uv sync
     """
     print("=" * 60)
@@ -87,19 +87,19 @@ async def main():
     print("=" * 60)
 
     # ── Connection check ────────────────────────────────────────
-    print(f"Checking Jaeger OTLP at {JAEGER_OTLP} ...")
+    print(f"Checking OTel Collector at {OTEL_COLLECTOR} ...")
     otlp_ok = await check_port("localhost", 4317)
     print(f"  {'Reachable' if otlp_ok else 'NOT reachable'}")
 
     if not otlp_ok:
-        print("\n  Jaeger not reachable. Start with:")
-        print("    docker compose -f docker-compose.yml up -d jaeger")
-        print("  Then open http://localhost:16686 to view traces.")
+        print("\n  OTel Collector not reachable. Start with:")
+        print("    docker compose -f docker-compose.yml up -d otel-collector")
+        print("  Traces are forwarded to Jaeger; open http://localhost:16686 to view them.")
         return
 
     # ── Example 1: OTELTracer (OTLP → Jaeger) ───────────────────
     if otlp_ok:
-        print("\n--- Example 1: OTELTracer (OTLP gRPC → Jaeger) ---")
+        print("\n--- Example 1: OTELTracer (OTLP gRPC → Collector → Jaeger) ---")
 
         mem_tracer = InMemoryTracer()
 
@@ -109,7 +109,7 @@ async def main():
             tracers=[
                 OTELTracer(
                     service_name="otel-jaeger-demo",
-                    otlp_endpoint=f"http://{JAEGER_OTLP}",
+                    otlp_endpoint=OTEL_COLLECTOR,
                     sample_rate=1.0,
                     create_spans=True,  # this demo explicitly exercises manual OTel spans
                 ),
@@ -137,7 +137,8 @@ async def main():
         print("\n  --- Agent run with OTEL tracing ---")
         agent_otel = (
             ManagedAgent()
-            .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME, max_tokens=MAX_TOKENS))
+            .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+            .with_model_settings({"max_tokens": MAX_TOKENS})
             .with_observability(obs_otel)
         )
 

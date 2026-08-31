@@ -88,8 +88,8 @@ services:
     container_name: agent-harness-jaeger
     ports:
       - "16686:16686"   # UI
-      - "4317:4317"     # OTLP gRPC
-      - "4318:4318"     # OTLP HTTP
+      - "14317:4317"     # OTLP gRPC
+      - "14318:4318"     # OTLP HTTP
     volumes:
       - jaeger_data:/tmp   # badger storage dir (image declares VOLUME /tmp)
 
@@ -97,8 +97,8 @@ services:
     image: otel/opentelemetry-collector-contrib:0.143.0
     container_name: agent-harness-otel-collector
     ports:
-      - "14317:4317"   # OTLP gRPC (host 4317 is used by jaeger)
-      - "14318:4318"   # OTLP HTTP (host 4318 is used by jaeger)
+      - "4317:4317"   # OTLP gRPC (standard OTLP port)
+      - "4318:4318"   # OTLP HTTP (standard OTLP port)
     volumes:
       - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
     depends_on:

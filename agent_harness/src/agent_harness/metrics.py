@@ -19,6 +19,18 @@ from collections import defaultdict
 from datetime import datetime
 
 
+def _is_proxy_provider(provider: Any) -> bool:
+    """Return True only if the global provider is still OTEL's unset default proxy.
+
+    OpenTelemetry installs a proxy provider until a real one is registered, and
+    rejects any attempt to override an already-registered real provider. We must
+    distinguish OTEL's *internal* no-op default (``_ProxyMeterProvider``) from
+    other proxies (e.g. Logfire's ``ProxyMeterProvider``), which are real providers
+    that must not be overridden.
+    """
+    return type(provider).__name__ == "_ProxyMeterProvider"
+
+
 class LogfireMetrics:
     """Logfire metrics collector - sends metrics to Logfire."""
 
@@ -43,11 +55,32 @@ class LogfireMetrics:
                 self.logfire = logfire
                 return
 
-            logfire.configure(
-                service_name=self.service_name,
-                send_to_logfire=True,
-                console=False,
-            )
+            # If a MeterProvider is already registered (e.g. by OTEL), Logfire
+            # will attempt to override it and OpenTelemetry logs a
+            # "Overriding of current MeterProvider is not allowed" warning via
+            # the `logging` module (not `warnings`). Suppress that logger while
+            # configuring Logfire, which then attaches to the existing provider.
+            import logging
+
+            otel_loggers = [
+                logging.getLogger("opentelemetry.metrics"),
+                logging.getLogger("opentelemetry.metrics._internal"),
+                logging.getLogger("opentelemetry.trace"),
+            ]
+            saved_levels = [(lg, lg.level) for lg in otel_loggers]
+            for lg in otel_loggers:
+                lg.setLevel(logging.ERROR)
+
+            try:
+                logfire.configure(
+                    service_name=self.service_name,
+                    send_to_logfire=True,
+                    console=False,
+                )
+            finally:
+                for lg, level in saved_levels:
+                    lg.setLevel(level)
+
             logfire._configured = True
             self.logfire = logfire
             print(f"✅ Logfire metrics initialized")
@@ -204,14 +237,14 @@ class OTELMetrics:
     def __init__(
         self,
         service_name: str = "agent",
-        otlp_endpoint: str = "localhost:4319",
+        otlp_endpoint: str = "localhost:4317",
     ):
         """
         Initialize OTEL metrics.
 
         Args:
             service_name: Service name for metrics
-            otlp_endpoint: OTel Collector OTLP gRPC endpoint (default: localhost:4319)
+            otlp_endpoint: OTel Collector OTLP gRPC endpoint (default: localhost:4317)
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
@@ -238,14 +271,27 @@ class OTELMetrics:
             )
 
             provider = MeterProvider(resource=resource, metric_readers=[reader])
-            metrics.set_meter_provider(provider)
 
-            self._meter = metrics.get_meter(self.service_name)
+            # OpenTelemetry allows only one global MeterProvider per process.
+            # Reuse an already-registered provider instead of overriding it
+            # (which OTEL rejects with "Overriding of current MeterProvider").
+            existing = metrics.get_meter_provider()
+            if _is_proxy_provider(existing):
+                metrics.set_meter_provider(provider)
+                self._meter = metrics.get_meter(self.service_name)
+                print(f"✅ OTLP metrics initialized: {self.otlp_endpoint}")
+            else:
+                # A provider is already registered (e.g. by Logfire). We cannot
+                # retrofit our OTLP reader onto it, so attach to the existing one.
+                self._meter = metrics.get_meter(self.service_name)
+                print(
+                    f"✅ OTLP metrics attached to existing MeterProvider (reuse): "
+                    f"{self.otlp_endpoint}"
+                )
+
             self._counters = {}
             self._gauges = {}
             self._histograms = {}
-
-            print(f"✅ OTLP metrics initialized: {self.otlp_endpoint}")
 
         except Exception as e:
             print(f"⚠️  Failed to setup OTLP metrics: {str(e)}")
@@ -504,4 +550,6 @@ class MetricNames:
     TOKEN_USAGE = "token_usage_total"
     PROMPT_TOKENS = "prompt_tokens"
     COMPLETION_TOKENS = "completion_tokens"
+    REASONING_TOKENS = "reasoning_tokens"
     RESPONSE_SIZE = "response_size_bytes"
+    REASONING_COST = "reasoning_cost"

@@ -199,15 +199,27 @@ class LogfireTracer:
                 "scrubbing": False,
             }
 
-            # If a TracerProvider already exists, Logfire will warn but still work
-            # Suppress the warning since we expect this in multi-example runs
-            import warnings
+            # If a TracerProvider is already registered (e.g. by OTEL), Logfire
+            # attempts to override it and OpenTelemetry logs a
+            # "Overriding of current TracerProvider is not allowed" warning via
+            # the `logging` module (not `warnings`). Suppress that logger while
+            # configuring Logfire, which then attaches to the existing provider.
+            import logging
 
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", message="Overriding of current TracerProvider"
-                )
+            otel_loggers = [
+                logging.getLogger("opentelemetry.trace"),
+                logging.getLogger("opentelemetry.metrics"),
+                logging.getLogger("opentelemetry.metrics._internal"),
+            ]
+            saved_levels = [(lg, lg.level) for lg in otel_loggers]
+            for lg in otel_loggers:
+                lg.setLevel(logging.ERROR)
+
+            try:
                 logfire.configure(**config_kwargs)
+            finally:
+                for lg, level in saved_levels:
+                    lg.setLevel(level)
 
             logfire._configured = True
             self.logfire = logfire
@@ -327,7 +339,7 @@ class OTELTracer:
     def __init__(
         self,
         service_name: str,
-        otlp_endpoint: str = "http://localhost:4317",
+        otlp_endpoint: str = "localhost:4317",
         sample_rate: float = 1.0,
         create_spans: bool = False,
         record_failures: bool = True,
@@ -381,10 +393,15 @@ class OTELTracer:
                 OTLPSpanExporter,
             )
             from opentelemetry.sdk.resources import Resource
+            from opentelemetry.trace import ProxyTracerProvider
 
-            # Check if a TracerProvider is already set
+            # OpenTelemetry allows only one global TracerProvider per process.
+            # Reuse any already-registered provider (including Logfire's) instead
+            # of overriding it (which OTEL rejects with
+            # "Overriding of current TracerProvider"). We can still attach our
+            # OTLP span processor to the existing provider.
             existing_provider = trace.get_tracer_provider()
-            if isinstance(existing_provider, TracerProvider):
+            if not isinstance(existing_provider, ProxyTracerProvider):
                 # Reuse existing provider, just add our exporter
                 otlp_exporter = OTLPSpanExporter(
                     endpoint=self.otlp_endpoint, insecure=True, timeout=5

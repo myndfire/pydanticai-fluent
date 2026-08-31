@@ -26,7 +26,7 @@ from typing import Any, Callable, Optional, Union
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, UserContent
 
-from .errorhandling import ErrorContext, AgentRunResult
+from .errorhandling import ErrorContext, AgentRunResult, TokenUsageInfo
 
 # Forward reference for Observability to avoid circular imports at type-check time
 from typing import TYPE_CHECKING
@@ -197,13 +197,23 @@ class TokenLimitsConfig:
         max_input_tokens: Optional[int] = None,
         max_output_tokens: Optional[int] = None,
         max_total_tokens: Optional[int] = None,
+        max_reasoning_tokens: Optional[int] = None,
+        billing_mode: str = "output_plus_reasoning",
+        auto_estimate_reasoning: bool = True,
         on_token_limit: Optional[Callable[[ErrorContext], Any]] = None,
+        on_streaming_token_limit: Optional[Callable[[ErrorContext, str], Any]] = None,
+        capture_reasoning_traces: bool = False,
         on_error: Optional[Callable[[ErrorContext], Any]] = None,
     ):
         self.max_input_tokens = max_input_tokens
         self.max_output_tokens = max_output_tokens
         self.max_total_tokens = max_total_tokens
+        self.max_reasoning_tokens = max_reasoning_tokens
+        self.billing_mode = billing_mode
+        self.auto_estimate_reasoning = auto_estimate_reasoning
         self._on_token_limit = on_token_limit
+        self._on_streaming_token_limit = on_streaming_token_limit
+        self._capture_reasoning_traces = capture_reasoning_traces
         self._on_error = on_error
 
     def with_max_input_tokens(self, n: int) -> "TokenLimitsConfig":
@@ -218,8 +228,36 @@ class TokenLimitsConfig:
         self.max_total_tokens = n
         return self
 
+    def with_max_reasoning_tokens(self, n: int) -> "TokenLimitsConfig":
+        self.max_reasoning_tokens = n
+        return self
+
+    def with_billing_mode(self, mode: str) -> "TokenLimitsConfig":
+        """Set billing mode: "output_plus_reasoning" (default) or "output_only"."""
+        self.billing_mode = mode
+        return self
+
+    def with_auto_estimate_reasoning(self, enabled: bool = True) -> "TokenLimitsConfig":
+        """Estimate reasoning tokens from text if API doesn't report them."""
+        self.auto_estimate_reasoning = enabled
+        return self
+
     def on_token_limit(self, callback: Callable[[ErrorContext], Any]) -> "TokenLimitsConfig":
         self._on_token_limit = callback
+        return self
+
+    def on_streaming_token_limit(self, callback: Callable[[ErrorContext, str], Any]) -> "TokenLimitsConfig":
+        """Set callback for streaming token limit events.
+
+        Receives (ErrorContext, partial_output) where partial_output is the
+        text collected before the limit was hit.
+        """
+        self._on_streaming_token_limit = callback
+        return self
+
+    def with_reasoning_traces(self, enabled: bool = True) -> "TokenLimitsConfig":
+        """Capture reasoning traces (thinking parts) in error context for debugging."""
+        self._capture_reasoning_traces = enabled
         return self
 
     def on_error(self, callback: Callable[[ErrorContext], Any]) -> "TokenLimitsConfig":
@@ -240,6 +278,8 @@ class CostLimitsConfig:
         max_total_cost: Optional[float] = None,
         cost_per_input_token: Optional[float] = None,
         cost_per_output_token: Optional[float] = None,
+        cost_per_reasoning_token: Optional[float] = None,
+        billing_mode: str = "output_plus_reasoning",
         on_cost_limit: Optional[Callable[[ErrorContext], Any]] = None,
         on_error: Optional[Callable[[ErrorContext], Any]] = None,
     ):
@@ -248,6 +288,8 @@ class CostLimitsConfig:
         self.max_total_cost = max_total_cost
         self.cost_per_input_token = cost_per_input_token
         self.cost_per_output_token = cost_per_output_token
+        self.cost_per_reasoning_token = cost_per_reasoning_token
+        self.billing_mode = billing_mode
         self._on_cost_limit = on_cost_limit
         self._on_error = on_error
 
@@ -269,6 +311,15 @@ class CostLimitsConfig:
 
     def with_cost_per_output_token(self, n: float) -> "CostLimitsConfig":
         self.cost_per_output_token = n
+        return self
+
+    def with_cost_per_reasoning_token(self, n: float) -> "CostLimitsConfig":
+        self.cost_per_reasoning_token = n
+        return self
+
+    def with_billing_mode(self, mode: str) -> "CostLimitsConfig":
+        """Set billing mode: "output_plus_reasoning" (default) or "output_only"."""
+        self.billing_mode = mode
         return self
 
     def on_cost_limit(self, callback: Callable[[ErrorContext], Any]) -> "CostLimitsConfig":
@@ -402,9 +453,38 @@ class GuardRunner:
         if usage is not None:
             self._cumulative_usage["input_tokens"] += getattr(usage, "input_tokens", 0) or 0
             self._cumulative_usage["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
-            self._cumulative_usage["total_tokens"] += getattr(usage, "total_tokens", 0) or 0
+            self._cumulative_usage["reasoning_tokens"] += getattr(usage, "reasoning_tokens", 0) or 0
+            self._cumulative_usage["total_tokens"] += (
+                getattr(usage, "total_tokens", 0)
+                or (getattr(usage, "input_tokens", 0) + getattr(usage, "output_tokens", 0))
+            )
             self._cumulative_usage["prompt_tokens"] += getattr(usage, "input_tokens", 0) or 0
             self._cumulative_usage["completion_tokens"] += getattr(usage, "output_tokens", 0) or 0
+
+    def _build_token_usage_info(
+        self, limit_type: str, limit_value: int, actual: int, usage_obj: Any = None
+    ) -> TokenUsageInfo:
+        """Build structured token usage info for limit debugging."""
+        from .errorhandling import TokenUsageInfo
+
+        input_tok = getattr(usage_obj, "input_tokens", 0) or 0 if usage_obj else None
+        output_tok = getattr(usage_obj, "output_tokens", 0) or 0 if usage_obj else None
+        reasoning_tok = getattr(usage_obj, "reasoning_tokens", 0) or 0 if usage_obj else None
+
+        exceeded = max(0, actual - limit_value)
+        pct = (actual / limit_value * 100) if limit_value > 0 else 0.0
+
+        return TokenUsageInfo(
+            limit_type=limit_type,
+            limit_value=limit_value,
+            actual_tokens=actual,
+            output_tokens=output_tok,
+            reasoning_tokens=reasoning_tok,
+            input_tokens=input_tok,
+            exceeded_by=exceeded,
+            percentage_of_limit=pct,
+            billing_mode=self.config.token_limits.billing_mode if self.config.token_limits else "output_plus_reasoning",
+        )
 
     def _log(self, level: str, event: str, **kwargs) -> None:
         """Log via observability if available, otherwise bootstrap print fallback."""
@@ -465,6 +545,7 @@ class GuardRunner:
         self._cumulative_usage = {
             "input_tokens": 0,
             "output_tokens": 0,
+            "reasoning_tokens": 0,
             "total_tokens": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -482,7 +563,7 @@ class GuardRunner:
                 usage_obj = None
                 if hasattr(result, "usage"):
                     try:
-                        usage_obj = result.usage()
+                        usage_obj = result.usage
                     except Exception:
                         usage_obj = None
 
@@ -502,7 +583,28 @@ class GuardRunner:
 
                     input_tok = getattr(usage_obj, "input_tokens", 0) or 0
                     output_tok = getattr(usage_obj, "output_tokens", 0) or 0
-                    total_tok = getattr(usage_obj, "total_tokens", 0) or 0
+                    reasoning_tok = getattr(usage_obj, "reasoning_tokens", 0) or 0
+                    total_tok = input_tok + output_tok
+
+                    # Hard stop: reasoning limit (Q1: B)
+                    if tl.max_reasoning_tokens is not None and reasoning_tok > tl.max_reasoning_tokens:
+                        error_ctx = ErrorContext(
+                            error_type="TokenLimitExceeded",
+                            error_message=(
+                                f"Reasoning tokens {reasoning_tok} > {tl.max_reasoning_tokens}"
+                            ),
+                            source="guardrail",
+                            token_usage=self._build_token_usage_info(
+                                "reasoning", tl.max_reasoning_tokens, reasoning_tok, usage_obj
+                            ),
+                        )
+                        if tl._on_token_limit:
+                            return AgentRunResult(
+                                output=tl._on_token_limit(error_ctx),
+                                success=False,
+                                error_context=error_ctx,
+                            )
+                        raise RuntimeError(error_ctx.error_message)
 
                     if tl.max_input_tokens is not None and input_tok > tl.max_input_tokens:
                         error_ctx = ErrorContext(
@@ -511,6 +613,9 @@ class GuardRunner:
                                 f"Input tokens {input_tok} > {tl.max_input_tokens}"
                             ),
                             source="guardrail",
+                            token_usage=self._build_token_usage_info(
+                                "input", tl.max_input_tokens, input_tok, usage_obj
+                            ),
                         )
                         if tl._on_token_limit:
                             return AgentRunResult(
@@ -527,6 +632,9 @@ class GuardRunner:
                                 f"Output tokens {output_tok} > {tl.max_output_tokens}"
                             ),
                             source="guardrail",
+                            token_usage=self._build_token_usage_info(
+                                "output", tl.max_output_tokens, output_tok, usage_obj
+                            ),
                         )
                         if tl._on_token_limit:
                             return AgentRunResult(
@@ -543,6 +651,9 @@ class GuardRunner:
                                 f"Total tokens {total_tok} > {tl.max_total_tokens}"
                             ),
                             source="guardrail",
+                            token_usage=self._build_token_usage_info(
+                                "total", tl.max_total_tokens, total_tok, usage_obj
+                            ),
                         )
                         if tl._on_token_limit:
                             return AgentRunResult(
@@ -558,9 +669,18 @@ class GuardRunner:
 
                     input_tok = getattr(usage_obj, "input_tokens", 0) or 0
                     output_tok = getattr(usage_obj, "output_tokens", 0) or 0
+                    reasoning_tok = getattr(usage_obj, "reasoning_tokens", 0) or 0
 
+                    # Calculate costs based on billing mode
                     input_cost = input_tok * (cl.cost_per_input_token or 0)
-                    output_cost = output_tok * (cl.cost_per_output_token or 0)
+                    if cl.billing_mode == "output_plus_reasoning":
+                        # Charge for both output and reasoning
+                        output_cost = (output_tok + reasoning_tok) * (cl.cost_per_output_token or 0)
+                        reasoning_cost = reasoning_tok * (cl.cost_per_reasoning_token or cl.cost_per_output_token or 0)
+                    else:
+                        # output_only: charge only for visible output
+                        output_cost = output_tok * (cl.cost_per_output_token or 0)
+                        reasoning_cost = 0.0
                     total_cost = input_cost + output_cost
 
                     if cl.max_input_cost is not None and input_cost > cl.max_input_cost:
@@ -653,6 +773,13 @@ class GuardRunner:
                 # Accumulate token usage for this successful attempt
                 self._accumulate_usage(result)
 
+                # Build token_usage info for success path
+                token_usage_info = None
+                if usage_obj and self.config.token_limits:
+                    token_usage_info = self._build_token_usage_info(
+                        "success", 0, 0, usage_obj
+                    )
+
                 return AgentRunResult(
                     output=output,
                     success=True,
@@ -662,6 +789,7 @@ class GuardRunner:
                     else [],
                     usage=usage_obj,
                     cumulative_usage=self._cumulative_usage.copy(),
+                    token_usage=token_usage_info,
                 )
 
             except asyncio.TimeoutError as e:

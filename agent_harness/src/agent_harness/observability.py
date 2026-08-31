@@ -279,6 +279,8 @@ class Observability:
                             except (AttributeError, TypeError):
                                 pass
 
+                    _structlog.contextvars.bind_contextvars(**trace_context)
+
                     yield {**context, **trace_context, "tool_call": context.get("tool_call", {"tool": None, "parameters": {}})}
 
                     duration = (datetime.now() - start_time).total_seconds()
@@ -305,7 +307,7 @@ class Observability:
                     duration = (datetime.now() - start_time).total_seconds()
 
                     for lg in self._loggers:
-                        merged = {**self._base_context, **context}
+                        merged = {**self._base_context, **context, **trace_context}
                         merged["performance"] = {"duration_seconds": duration}
                         merged.update(_exception_record(e, self.traceback_frame_limit))
                         lg.error(f"{operation}_failed", **merged)
@@ -388,6 +390,7 @@ class Observability:
                         "usage": UsageData(
                             input_tokens=getattr(req, "input_tokens", 0) or 0,
                             output_tokens=getattr(req, "output_tokens", 0) or 0,
+                            reasoning_tokens=getattr(req, "reasoning_tokens", 0) or 0,
                             total_tokens=getattr(req, "total_tokens", 0) or 0,
                             prompt_tokens=getattr(req, "input_tokens", 0) or 0,
                             completion_tokens=getattr(req, "output_tokens", 0) or 0,
@@ -401,6 +404,7 @@ class Observability:
                     "usage": UsageData(
                         input_tokens=getattr(u, "input_tokens", 0) or 0,
                         output_tokens=getattr(u, "output_tokens", 0) or 0,
+                        reasoning_tokens=getattr(u, "reasoning_tokens", 0) or 0,
                         total_tokens=getattr(u, "total_tokens", 0) or 0,
                         prompt_tokens=getattr(u, "input_tokens", 0) or 0,
                         completion_tokens=getattr(u, "output_tokens", 0) or 0,
@@ -419,6 +423,7 @@ class Observability:
                 token_usage={
                     "input_tokens": entry["usage"].input_tokens,
                     "output_tokens": entry["usage"].output_tokens,
+                    "reasoning_tokens": entry["usage"].reasoning_tokens,
                     "total_tokens": entry["usage"].total_tokens,
                     "prompt_tokens": entry["usage"].prompt_tokens,
                     "completion_tokens": entry["usage"].completion_tokens,

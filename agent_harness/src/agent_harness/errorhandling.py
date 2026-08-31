@@ -22,6 +22,22 @@ from pydantic_ai.messages import ModelMessage
 
 
 @dataclass
+class TokenUsageInfo:
+    """Structured token usage info for debugging limit issues."""
+
+    limit_type: str  # "output", "reasoning", "total"
+    limit_value: int
+    actual_tokens: int
+    output_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None  # from API
+    reasoning_estimate: Optional[int] = None  # estimated if API doesn't report
+    input_tokens: Optional[int] = None
+    exceeded_by: int = 0
+    percentage_of_limit: float = 0.0
+    billing_mode: str = "output_plus_reasoning"
+
+
+@dataclass
 class ErrorContext:
     """Context about a failure for the agent to inspect."""
 
@@ -32,6 +48,9 @@ class ErrorContext:
     prompt: Optional[str] = None
     stack_trace: Optional[str] = None
     partial_result: Optional["AgentRunResult"] = None
+    partial_output: Optional[str] = None  # text collected before truncation (streaming)
+    reasoning_traces: Optional[str] = None  # thinking parts from reasoning models (streaming)
+    token_usage: Optional[TokenUsageInfo] = None  # structured limit debugging info
     attempt: int = 1
     max_attempts: int = 1
     will_retry: bool = False
@@ -48,6 +67,7 @@ class AgentRunResult:
     new_messages: list[ModelMessage] = field(default_factory=list)
     usage: Any = None
     cumulative_usage: Optional[dict] = None
+    token_usage: Optional[TokenUsageInfo] = None  # structured token info (also on success)
 
 
 @dataclass

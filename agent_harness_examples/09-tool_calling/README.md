@@ -136,7 +136,7 @@ Key components:
 
 ### 03_mcp_server.py
 
-MCP (Model Context Protocol) server integration — add external tool servers over HTTP. The file demonstrates the API patterns (most examples are commented out since MCP servers aren't running).
+MCP (Model Context Protocol) server integration — add external tool servers over HTTP. The file demonstrates the API patterns and includes a live demo that connects to Context7 (a public, keyless MCP server for library documentation).
 
 ```
 MCP integration options:
@@ -167,23 +167,27 @@ MCP integration options:
     )
 ```
 
-Live demo (no MCP server needed):
+Live demo (requires network — connects to Context7 + Complex server):
 ```
+MCP_HTTP_URL defaults to https://mcp.context7.com/mcp
+MCP_COMPLEX_URL defaults to https://mcpplaygroundonline.com/mcp-complex-server
+
 agent = ManagedAgent()
     .with_model(...)
     .with_tools(ToolRegistry().add(echo))
+    .with_mcp_server(MCP_HTTP_URL, tool_prefix="ctx7_")
+    .with_mcp_server(MCP_COMPLEX_URL, tool_prefix="complex_")
 
-agent.run("Use the echo tool to say 'Hello from MCP demo!'")
-    → echo("Hello from MCP demo!")
-    → "Echo: Hello from MCP demo!"
+# Tools available: ctx7_*, complex_*, echo
 ```
 
 Key components:
 - `with_mcp_server(url)` — add a single MCP server as toolset
 - `with_mcp_servers(url1, url2, ...)` — add multiple MCP servers
 - `tool_prefix` — prefix tool names to avoid collisions
-- `discover_mcp_servers()` / `get_mcp_server_info()` — discovery utilities
-- Demo: echo tool + MCP API patterns
+- `MCP_HTTP_URL` env var — primary MCP server URL (defaults to Context7)
+- `MCP_COMPLEX_URL` env var — second MCP server (defaults to Complex server)
+- Demo: two MCP servers + custom echo tool combined
 
 ### 04_tool_combinations.py
 
@@ -284,6 +288,8 @@ All variables are optional and read from `.env` via `python-dotenv`.
 | `TOOL_CALLING_MODEL_NAME` | all | `gpt-oss:20b` | LLM model name |
 | `TOOL_CALLING_MAX_TOKENS` | all | `512` | Max LLM output tokens |
 | `OLLAMA_BASE_URL` | all | `http://localhost:11434/v1` | Ollama endpoint |
+| `MCP_HTTP_URL` | `03_mcp_server.py` | `https://mcp.context7.com/mcp` | Primary MCP server URL (public keyless) |
+| `MCP_COMPLEX_URL` | `03_mcp_server.py` | `https://mcpplaygroundonline.com/mcp-complex-server` | Second MCP server for multi-server demo (public keyless) |
 
 ## Running
 
@@ -309,7 +315,7 @@ uv run python 09-tool_calling/04_tool_combinations.py
 
 **02_context_tools.py:** Four runs: get profile, change role, verify profile (shows mutation), audit log. Demonstrates dependency injection and state mutation across turns.
 
-**03_mcp_server.py:** API pattern examples (mostly commented out) + live demo with echo tool. Shows MCP server discovery utilities.
+**03_mcp_server.py:** API pattern examples + live demo connecting to Context7 (library docs) and Complex server (data/user/order tools) with `tool_prefix` disambiguation. Agent uses MCP tools to resolve library ID and fetch docs excerpt. Requires network egress.
 
 **04_tool_combinations.py:** Four runs: search docs, context-aware search, calculate ratings, content filter demo. Shows the full stack with guards, evaluators, and content filtering.
 
@@ -319,7 +325,7 @@ uv run python 09-tool_calling/04_tool_combinations.py
 
 2. **02_context_tools.py** — Functions with `RunContext[T]` as first parameter register via `agent.tool()`. The dependency container `T` is injected at runtime via `agent.run(..., deps=deps)`. Tools can mutate deps state.
 
-3. **03_mcp_server.py** — `with_mcp_server()` / `with_mcp_servers()` add external HTTP tool servers. `tool_prefix` avoids name collisions. MCP tools are discovered at runtime.
+3. **03_mcp_server.py** — `with_mcp_server()` / `with_mcp_servers()` add external HTTP tool servers via `MCPToolset(FastMCPClient(url))`. `tool_prefix` avoids name collisions via `.prefixed()`. MCP tools are discovered lazily at `agent.run()` time. Example 4 combines two public servers (Context7 for docs, Complex server for data operations) with `tool_prefix` disambiguation. Example 5 runs a live demo with Context7 + custom echo tool.
 
 4. **04_tool_combinations.py** — Full-stack agent combining `ToolRegistry` with `AgentRetryConfig`, `ToolRetryConfig`, `ContentFilterConfig`, `TokenLimitsConfig`, and `Evaluator`. Tools run through the content filter before the LLM sees the result.
 
@@ -328,5 +334,5 @@ uv run python 09-tool_calling/04_tool_combinations.py
 - **"Connection refused"** — Ollama is not running. Start it with `ollama serve`.
 - **Model not found** — Pull the required model (see Setup section).
 - **Tool not called** — The LLM may not recognize it needs the tool. Rephrase the prompt to be more explicit (e.g., "Use the calculator to...").
-- **MCP server not connecting** — Ensure the MCP server is running at the given URL. Check firewall/network settings.
+- **MCP server not connecting** — Ensure network egress is available (Context7 requires internet). Check firewall/proxy settings. Set `MCP_HTTP_URL` to a different MCP server if needed.
 - **Wrong endpoint** — Set `OLLAMA_BASE_URL` if Ollama is running on a non-default host/port.
