@@ -35,6 +35,7 @@ import asyncio
 import os
 from typing import Literal
 from dotenv import load_dotenv
+import structlog
 from pydantic import BaseModel, Field
 
 from agent_harness.agent import ManagedAgent
@@ -42,6 +43,8 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("STRUCTURED_OUTPUT_REASONING_MODEL", "phi4-mini-reasoning")
 MAX_TOKENS = int(os.getenv("STRUCTURED_OUTPUT_MAX_TOKENS", "512"))
@@ -72,9 +75,9 @@ async def main():
         2. Pull model: ollama pull phi4-mini-reasoning
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Classification with Literal Types")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="Classification with Literal Types")
+    log.debug("separator")
 
     agent = (
         ManagedAgent()
@@ -86,7 +89,7 @@ async def main():
     memory = InMemoryProvider()
 
     # ── Positive ────────────────────────────────────────────────
-    print("\n--- Positive review ---")
+    log.debug("section", title="Positive review")
     history = await MessageHistory().load("sent-pos", memory)
     result = await agent.run(
         "Analyze this review: 'Absolutely love this product! "
@@ -94,13 +97,13 @@ async def main():
         history, "sent-pos",
     )
     r = result.output
-    print(f"  Sentiment:  {r.sentiment}")
-    print(f"  Confidence: {r.confidence:.2f}")
-    print(f"  Keywords:   {', '.join(r.keywords)}")
-    print(f"  Reasoning:  {r.reasoning}")
+    log.debug("field", field="sentiment", value=r.sentiment)
+    log.debug("field", field="confidence", value=f"{r.confidence:.2f}")
+    log.debug("field", field="keywords", value=", ".join(r.keywords))
+    log.debug("field", field="reasoning", value=r.reasoning)
 
     # ── Negative ────────────────────────────────────────────────
-    print("\n--- Negative review ---")
+    log.debug("section", title="Negative review")
     history2 = await MessageHistory().load("sent-neg", memory)
     result2 = await agent.run(
         "Analyze this review: 'Terrible experience. It broke after "
@@ -108,12 +111,12 @@ async def main():
         history2, "sent-neg",
     )
     r2 = result2.output
-    print(f"  Sentiment:  {r2.sentiment}")
-    print(f"  Confidence: {r2.confidence:.2f}")
-    print(f"  Keywords:   {', '.join(r2.keywords)}")
+    log.debug("field", field="sentiment", value=r2.sentiment)
+    log.debug("field", field="confidence", value=f"{r2.confidence:.2f}")
+    log.debug("field", field="keywords", value=", ".join(r2.keywords))
 
     # ── Neutral ─────────────────────────────────────────────────
-    print("\n--- Neutral review ---")
+    log.debug("section", title="Neutral review")
     history3 = await MessageHistory().load("sent-neu", memory)
     result3 = await agent.run(
         "Analyze this review: 'Product works as described. Nothing "
@@ -121,14 +124,14 @@ async def main():
         history3, "sent-neu",
     )
     r3 = result3.output
-    print(f"  Sentiment:  {r3.sentiment}")
-    print(f"  Confidence: {r3.confidence:.2f}")
+    log.debug("field", field="sentiment", value=r3.sentiment)
+    log.debug("field", field="confidence", value=f"{r3.confidence:.2f}")
 
     # ── How Literal works ──────────────────────────────────────
-    print(f"\n--- How Literal types work ---")
-    print(f"  The model can only return: positive, negative, or neutral")
-    print(f"  If it returns 'happy' → pydantic rejects → agent retries")
-    print(f"  This guarantees consistent classification labels")
+    log.debug("section", title="How Literal types work")
+    log.debug("info", message="The model can only return: positive, negative, or neutral")
+    log.debug("info", message="If it returns 'happy' → pydantic rejects → agent retries")
+    log.debug("info", message="This guarantees consistent classification labels")
 
 
 if __name__ == "__main__":

@@ -30,26 +30,7 @@ from agent_harness.guards import (
     TurnLimitsConfig,
 )
 from agent_harness.errorhandling import ErrorHandlingConfig
-from agent_harness.observability import Observability
-from agent_harness.logging import (
-    ConsoleLogger,
-    ElasticsearchLogger,
-    OTELLogger,
-    LogfireLogger,
-)
-from agent_harness.tracing import (
-    NoOpTracer,
-    InMemoryTracer,
-    LogfireTracer,
-    OTELTracer,
-)
-from agent_harness.metrics import (
-    NoOpMetrics,
-    InMemoryMetrics,
-    LogfireMetrics,
-    OTELMetrics,
-    PrometheusMetrics,
-)
+from agent_harness.observability import Observability, ObservabilityBuilder
 from agent_harness.log_enrichment import (
     LogContext,
     EnvEnricher,
@@ -321,110 +302,21 @@ error_handling = (
 
 
 # -------------------------------------------------------------------
-# Observability — backends
+# Observability — OTEL backends (logging + tracing + metrics via OTLP)
 #
-# The OTEL backends (OTELMetrics / OTELTracer) are created FIRST so they
-# register the global OpenTelemetry providers with their OTLP readers and
-# span processors. The Logfire backends are created afterwards and attach to
-# those already-registered providers (OpenTelemetry rejects overriding an
-# existing provider), which avoids the "Overriding of current ...Provider"
-# warnings.
-# -------------------------------------------------------------------
-
-# --- OTEL backends (registered first so the global providers carry the OTLP
-#     readers/processors; the Logfire backends below then attach to them) ---
-otel_metrics = OTELMetrics(
-    service_name="agent",
-    otlp_endpoint="localhost:4317",
-)
-
-otel_tracer = OTELTracer(
-    service_name="agent",
-    otlp_endpoint="localhost:4317",
-    sample_rate=1.0,
-    create_spans=False,
-    record_failures=True,
-)
-
-# --- Metrics ---
-noop_metrics = NoOpMetrics()
-
-in_memory_metrics = InMemoryMetrics()
-
-logfire_metrics = LogfireMetrics(
-    service_name="agent",
-)
-
-prometheus_metrics = PrometheusMetrics(
-    namespace="agent",
-    push_gateway=None,
-)
-
-# --- Tracing ---
-noop_tracer = NoOpTracer()
-
-in_memory_tracer = InMemoryTracer()
-
-logfire_tracer = LogfireTracer(
-    service_name="agent",
-    send_to_logfire=True,
-    instrument_pydantic_ai=True,
-)
-
-# --- Logging (Logfire attaches to the providers registered above) ---
-console_logger = ConsoleLogger()
-
-elasticsearch_logger = ElasticsearchLogger(
-    endpoint="http://localhost:9200",
-    index_prefix="agent-logs",
-    service_name="agent",
-)
-
-otel_logger = OTELLogger(
-    service_name="agent",
-    otlp_endpoint="localhost:4317",
-)
-
-logfire_logger = LogfireLogger(
-    service_name="agent",
-    logfire_instance=None,
-)
-
-
-# -------------------------------------------------------------------
-# Observability facade
+# The OTEL backends register the global OpenTelemetry providers with
+# their OTLP readers and span processors. All signals are exported
+# via OTLP gRPC to the OTel Collector (default: localhost:4317).
 # -------------------------------------------------------------------
 
 observability = Observability(
-    # Single-backend convenience settings
-    logger=console_logger,
-    tracer=otel_tracer,
-    metrics=otel_metrics,
-
-    service_name="agent",
-
-    # Multi-backend fan-out alternatives
-    loggers=[
-        console_logger,
-        elasticsearch_logger,
-        otel_logger,
-        logfire_logger,
-    ],
-    tracers=[
-        noop_tracer,
-        in_memory_tracer,
-        logfire_tracer,
-        otel_tracer,
-    ],
-    metrics_list=[
-        noop_metrics,
-        in_memory_metrics,
-        logfire_metrics,
-        otel_metrics,
-        prometheus_metrics,
-    ],
-
-    traceback_frame_limit=None,
+    builder=ObservabilityBuilder(service_name="agent")
+    .with_otel_observability(
+        otlp_endpoint="localhost:4317",
+        sample_rate=1.0,
+        create_spans=False,
+        record_failures=True,
+    )
 )
 
 

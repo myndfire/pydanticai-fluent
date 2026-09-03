@@ -36,6 +36,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -45,6 +46,7 @@ from agent_harness.guards import AgentRetryConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -75,9 +77,9 @@ async def main():
         - Project dependencies (`dotenv`, `agent_harness`) must be installed,
           e.g. via `uv sync`.
     """
-    print("=" * 60)
-    print("Agent-Level Retries with Fallback & Callbacks")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Agent-Level Retries with Fallback & Callbacks")
+    log.debug("separator")
 
     # ── Setup memory ────────────────────────────────────────────
     memory = InMemoryProvider()
@@ -90,10 +92,11 @@ async def main():
         .with_timeout(AGENT_RETRIES_TIMEOUT)                  # per attempt
         .with_backoff(AGENT_RETRIES_BACKOFF)                  # exponential backoff
         .with_fallback(AGENT_RETRIES_FALLBACK_MODEL)          # fallback model
-        .on_retry(lambda ctx: print(  # called on each retry
-            f"  [on_retry] type={ctx.error_type} "
-            f"attempt={ctx.attempt}/{ctx.max_attempts} "
-            f"will_retry={ctx.will_retry}"
+        .on_retry(lambda ctx: log.debug("retry_callback",  # called on each retry
+            error_type=ctx.error_type,
+            attempt=ctx.attempt,
+            max_attempts=ctx.max_attempts,
+            will_retry=ctx.will_retry,
         ))
         .on_error(lambda ctx: f"Fallback response: all attempts failed "
                                f"({ctx.error_type}: {ctx.error_message})")
@@ -107,11 +110,12 @@ async def main():
     )
 
     # ── Run ────────────────────────────────────────────────────
-    print(f"\nMax retries: {retry_config.max_retries}")
-    print(f"Timeout: {retry_config.timeout}s")
-    print(f"Backoff multiplier: {retry_config.backoff_multiplier}x")
-    print(f"Fallback model: {retry_config.fallback_model}")
-    print(f"\nSending prompt: 'What is 2+2?'...\n")
+    log.debug("section", title="Configuration")
+    log.debug("retry_config", max_retries=retry_config.max_retries)
+    log.debug("retry_config", timeout=retry_config.timeout)
+    log.debug("retry_config", backoff_multiplier=retry_config.backoff_multiplier)
+    log.debug("retry_config", fallback_model=retry_config.fallback_model)
+    log.debug("section", title="Sending prompt: 'What is 2+2?'")
 
     result = await agent.run(
         "What is 2+2?",
@@ -119,10 +123,11 @@ async def main():
         "retry-demo",
     )
 
-    print(f"\nSuccess: {result.success}")
-    print(f"Used fallback: {result.used_fallback}")
-    print(f"Output: {result.output}")
-    print(f"Error: {result.error_context}")
+    log.debug("separator")
+    log.debug("result", success=result.success)
+    log.debug("result", used_fallback=result.used_fallback)
+    log.debug("result", output=result.output)
+    log.debug("result", error_context=result.error_context)
 
 
 if __name__ == "__main__":

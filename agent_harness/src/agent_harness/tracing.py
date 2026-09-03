@@ -31,6 +31,12 @@ for env_path in _env_paths:
         load_dotenv(env_path)
         break
 
+# Module-level guard: prevent Agent.instrument_all(True) from being called
+# multiple times across OTELTracer instances. Each call registers atexit
+# handlers on the global TracerProvider, causing "shutdown can only be called
+# once" warnings.
+_instrumentation_enabled = False
+
 
 class Tracer(Protocol):
     """Protocol for distributed tracing."""
@@ -343,6 +349,9 @@ class OTELTracer:
         sample_rate: float = 1.0,
         create_spans: bool = False,
         record_failures: bool = True,
+        export_interval_ms: int = 5000,
+        flush_on_exit: bool = True,
+        shutdown_on_exit: bool = True,
     ):
         """
         Initialize OTEL tracer.
@@ -357,13 +366,28 @@ class OTELTracer:
             record_failures: When True (default), exceptions escaping span()
                 blocks are recorded in the trace (ERROR status + exception event),
                 enriching a live span or emitting ``<service>.<operation>:failed``.
+            export_interval_ms: BatchSpanProcessor export interval in
+                milliseconds (default 5000). Lower values make traces appear
+                in the backend faster during development.
+            flush_on_exit: Register an atexit handler that calls
+                ``force_flush()`` on the TracerProvider before the process
+                exits (default True). Ensures buffered spans are sent even
+                for short-lived scripts.
+            shutdown_on_exit: Register an atexit handler that calls
+                ``shutdown()`` on the TracerProvider (default True). Implies
+                ``flush_on_exit``.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
         self.sample_rate = sample_rate
         self.create_spans = create_spans
         self.record_failures = record_failures
+        self._export_interval_ms = export_interval_ms
+        self._flush_on_exit = flush_on_exit or shutdown_on_exit
+        self._shutdown_on_exit = shutdown_on_exit
         self.tracer = None
+        self._provider = None
+        self._shut_down = False
 
         self._setup_otel()
 
@@ -374,10 +398,14 @@ class OTELTracer:
         under the harness's ``agent_run`` umbrella and export through the global
         OTLP tracer provider configured by ``OTELTracer``.
         """
+        global _instrumentation_enabled
+        if _instrumentation_enabled:
+            return
         try:
             from pydantic_ai.agent import Agent
 
             Agent.instrument_all(True)
+            _instrumentation_enabled = True
             print("✅ PydanticAI native instrumentation enabled (OTLP)")
         except Exception as e:
             print(f"⚠️  Failed to enable PydanticAI instrumentation: {str(e)}")
@@ -406,13 +434,18 @@ class OTELTracer:
                 otlp_exporter = OTLPSpanExporter(
                     endpoint=self.otlp_endpoint, insecure=True, timeout=5
                 )
-                processor = BatchSpanProcessor(otlp_exporter)
+                processor = BatchSpanProcessor(
+                    otlp_exporter,
+                    schedule_delay_millis=self._export_interval_ms,
+                )
                 existing_provider.add_span_processor(processor)
                 self.tracer = trace.get_tracer(__name__)
+                self._provider = existing_provider
                 print(
                     f"✅ OTEL tracing initialized (reusing existing provider): {self.otlp_endpoint}"
                 )
                 self._enable_pydanticai_instrumentation()
+                # Don't register atexit — the original provider owner already did
                 return
 
             # No existing provider — create one
@@ -426,18 +459,64 @@ class OTELTracer:
             otlp_exporter = OTLPSpanExporter(
                 endpoint=self.otlp_endpoint, insecure=True, timeout=5
             )
-            processor = BatchSpanProcessor(otlp_exporter)
+            processor = BatchSpanProcessor(
+                otlp_exporter,
+                schedule_delay_millis=self._export_interval_ms,
+            )
             provider.add_span_processor(processor)
 
             trace.set_tracer_provider(provider)
             self.tracer = trace.get_tracer(__name__)
+            self._provider = provider
 
             self._enable_pydanticai_instrumentation()
             print(f"✅ OTEL tracing initialized: {self.otlp_endpoint}")
+            self._register_atexit(provider)
 
         except Exception as e:
             print(f"⚠️  Failed to setup OTEL tracing: {str(e)}")
             self.tracer = None
+
+    def _register_atexit(self, provider):
+        """Register atexit handler to flush/shutdown the TracerProvider."""
+        if self._flush_on_exit or self._shutdown_on_exit:
+            import atexit
+
+            # The SDK's TracerProvider.__init__ registers its own atexit
+            # handler that calls provider.shutdown(). Unregister it to avoid
+            # "shutdown can only be called once" when our handler also fires.
+            if getattr(provider, "_atexit_handler", None) is not None:
+                atexit.unregister(provider._atexit_handler)
+                provider._atexit_handler = None
+
+            def _cleanup():
+                try:
+                    if self._shut_down:
+                        return
+                    if self._shutdown_on_exit:
+                        provider.shutdown()
+                    elif self._flush_on_exit:
+                        provider.force_flush()
+                except Exception:
+                    pass
+
+            atexit.register(_cleanup)
+
+    def shutdown(self):
+        """Explicitly flush and shut down the OTLP trace provider.
+
+        Call this for deterministic cleanup in long-running processes or
+        when ``flush_on_exit=False``.
+        """
+        if self._provider:
+            try:
+                self._provider.force_flush()
+                self._provider.shutdown()
+            except Exception:
+                pass
+            self._provider = None
+            self.tracer = None
+            self._shut_down = True
 
     @asynccontextmanager
     async def span(self, name: str, **attributes):

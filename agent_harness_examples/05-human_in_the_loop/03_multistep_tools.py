@@ -54,22 +54,25 @@ Setup
 
 import asyncio
 
+import structlog
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.tools import ToolRegistry
+
+log = structlog.get_logger()
 
 
 # ── Tool 1: Human approves price before it's used downstream ────────
 
 def get_flight_price(destination: str) -> str:
     """Look up flight price. Human approves or corrects before returning."""
-    print(f"\n[tool:get_flight_price] Looking up price for {destination}...")
+    log.debug("tool_lookup", tool="get_flight_price", destination=destination)
 
     prices = {"tokyo": "$1,200.00", "new york": "$450.00", "london": "$800.00"}
     price = prices.get(destination.lower(), "$999.00")
 
-    print(f"[tool:get_flight_price] Found: {price}")
+    log.debug("tool_result", tool="get_flight_price", price=price)
     choice = input("[tool:get_flight_price] Approve? [Y]es  enter correction: ").strip()
 
     if choice.upper() == "Y":
@@ -129,7 +132,7 @@ async def main():
 
     memory = InMemoryProvider()
     history = await MessageHistory().load("hitl-multistep-demo", memory)
-    print("[agent] Generating response...")
+    log.debug("generating_response")
     result = await agent.run(
         "I need to plan a 5-night trip to Tokyo. "
         "First, look up the flight price to Tokyo. "

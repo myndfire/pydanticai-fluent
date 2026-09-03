@@ -65,10 +65,13 @@ Setup
 
 import asyncio
 
+import structlog
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.guards import ContentFilterConfig
+
+log = structlog.get_logger()
 
 
 def human_review(text: str) -> str:
@@ -101,7 +104,7 @@ async def main():
 
     memory = InMemoryProvider()
     history = await MessageHistory().load("hitl-demo", memory)
-    print("[agent] Generating response...")
+    log.debug("generating_response")
     result = await agent.run(
         "Write a one-sentence company mission statement "
         "for a sustainable fashion startup called Green Threads.",

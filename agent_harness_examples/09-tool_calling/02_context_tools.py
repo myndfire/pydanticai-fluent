@@ -43,6 +43,8 @@ import os
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
+import structlog
+
 from pydantic_ai import RunContext
 
 from agent_harness.agent import ManagedAgent
@@ -51,6 +53,7 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.tools import ToolRegistry
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("TOOL_CALLING_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("TOOL_CALLING_MAX_TOKENS", "512"))
@@ -70,7 +73,7 @@ class UserDeps:
     def log_call(self, tool_name: str, params: str) -> None:
         """Log a tool invocation for auditing."""
         self.api_calls.append(f"{tool_name}({params})")
-        print(f"  [deps:audit] user={self.username} invoked {tool_name}({params})")
+        log.debug("deps_audit", username=self.username, tool=tool_name, params=params)
 
 
 # ── Context-aware tools ─────────────────────────────────────────────
@@ -122,7 +125,7 @@ def get_audit_log(ctx: RunContext[UserDeps], count: int = 5) -> str:
 
 def echo(message: str) -> str:
     """Echo a message back to the user."""
-    print(f"  [tool:echo] {message}")
+    log.debug("tool_echo", message=message)
     return f"Echo: {message}"
 
 
@@ -137,9 +140,9 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Context-Aware Tools with RunContext")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="Context-Aware Tools with RunContext")
+    log.debug("separator")
 
     # ── Create dependency container ─────────────────────────────
     deps = UserDeps(
@@ -155,10 +158,10 @@ async def main():
     #   - echo(message: str) → agent.tool_plain()
     tools = ToolRegistry().add_many(get_profile, set_role, get_audit_log, echo)
 
-    print("\nTool inspection:")
+    log.debug("tool_inspection")
     for t in tools.get_tools():
         sig_info = "context-aware" if "RunContext" in str(t.__annotations__.get(list(t.__annotations__.keys())[0] if t.__annotations__ else "", "")) else "plain"
-        print(f"  {t.__name__}: {sig_info}")
+        log.debug("tool_info", name=t.__name__, type=sig_info)
 
     # ── Build agent with dependency type ────────────────────────
     agent = (
@@ -171,7 +174,7 @@ async def main():
     memory = InMemoryProvider()
 
     # ── Run 1: Get profile ──────────────────────────────────────
-    print("\n--- Run 1: Get user profile ---")
+    log.debug("section", section="Run 1: Get user profile")
     history1 = await MessageHistory().load("ctx-tools-1", memory)
     result1 = await agent.run(
         "Check my user profile.",
@@ -179,10 +182,10 @@ async def main():
         "ctx-tools-1",
         deps=deps,
     )
-    print(f"  Output: {result1.output}")
+    log.debug("output", result=result1.output)
 
     # ── Run 2: Change role ──────────────────────────────────────
-    print("\n--- Run 2: Change role to admin ---")
+    log.debug("section", section="Run 2: Change role to admin")
     history2 = await MessageHistory().load("ctx-tools-2", memory)
     result2 = await agent.run(
         "Please change my role to 'admin'.",
@@ -190,10 +193,10 @@ async def main():
         "ctx-tools-2",
         deps=deps,
     )
-    print(f"  Output: {result2.output}")
+    log.debug("output", result=result2.output)
 
     # ── Run 3: Verify role changed ──────────────────────────────
-    print("\n--- Run 3: Verify updated profile ---")
+    log.debug("section", section="Run 3: Verify updated profile")
     history3 = await MessageHistory().load("ctx-tools-3", memory)
     result3 = await agent.run(
         "What is my current role and profile?",
@@ -201,10 +204,10 @@ async def main():
         "ctx-tools-3",
         deps=deps,
     )
-    print(f"  Output: {result3.output}")
+    log.debug("output", result=result3.output)
 
     # ── Run 4: Check audit log ──────────────────────────────────
-    print("\n--- Run 4: Get audit log ---")
+    log.debug("section", section="Run 4: Get audit log")
     history4 = await MessageHistory().load("ctx-tools-4", memory)
     result4 = await agent.run(
         "Show me the last 3 audit log entries.",
@@ -212,11 +215,10 @@ async def main():
         "ctx-tools-4",
         deps=deps,
     )
-    print(f"  Output: {result4.output}")
+    log.debug("output", result=result4.output)
 
     # ── Summary ─────────────────────────────────────────────────
-    print(f"\nTotal deps API calls: {len(deps.api_calls)}")
-    print(f"Final role: {deps.role}")
+    log.debug("summary", total_api_calls=len(deps.api_calls), final_role=deps.role)
 
 
 if __name__ == "__main__":

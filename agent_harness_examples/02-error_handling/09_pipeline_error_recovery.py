@@ -41,10 +41,14 @@ Setup
 
 import asyncio
 
+import structlog
+
 from agent_harness import ManagedAgent, PipelineContext
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
+
+log = structlog.get_logger()
 
 
 # ── Failing prompt provider (deterministic failure) ──────────────────
@@ -66,9 +70,9 @@ def analysis_fallback(ctx: ErrorContext) -> str:
 # ── Main ────────────────────────────────────────────────────────────
 
 async def main():
-    print("=" * 60)
-    print("Pipeline Error Recovery — 3-Agent Chain")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Pipeline Error Recovery — 3-Agent Chain")
+    log.debug("separator")
 
     model = ModelConfig(provider="ollama", model_name="gpt-oss:20b")
     memory = InMemoryProvider()
@@ -99,8 +103,7 @@ async def main():
 
     # ── Stage 1: Research ────────────────────────────────────────
     topic = "What are embeddings in machine learning?"
-    print(f"\n── Stage 1: Research ──")
-    print(f"  Topic: {topic}")
+    log.debug("stage", stage=1, name="Research", topic=topic)
     h1 = await MessageHistory().load("pipe-r", memory)
     r1 = await research.run(
         f"Give 3 key facts about this topic in one paragraph: {topic}",
@@ -110,7 +113,7 @@ async def main():
     ctx.post("Research", r1.success, str(r1.output or ""))
 
     # ── Stage 2: Analysis (fails, suppressed) ────────────────────
-    print(f"\n── Stage 2: Analysis (will fail) ──")
+    log.debug("stage", stage=2, name="Analysis", will_fail=True)
     h2 = await MessageHistory().load("pipe-a", memory)
     r2 = await analysis.run(
         "Analyze the above.",
@@ -123,7 +126,7 @@ async def main():
     ctx.post("Analysis", r2.success, str(r2.output or ""), error_msg)
 
     # ── Stage 3: Summary ─────────────────────────────────────────
-    print(f"\n── Stage 3: Summary ──")
+    log.debug("stage", stage=3, name="Summary")
     h3 = await MessageHistory().load("pipe-s", memory)
     r3 = await summary.run(
         f"Summarize the following into a single sentence.\n\n"

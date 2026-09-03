@@ -14,10 +14,13 @@
 
 from pathlib import Path
 from dotenv import load_dotenv
+import structlog
 
-# Load .env BEFORE any imports that might trigger logfire
+# Load .env BEFORE any imports that trigger observability backends
 _env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(_env_path)
+
+log = structlog.get_logger()
 
 import asyncio
 from datetime import datetime
@@ -26,7 +29,6 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.tools import ToolRegistry
 from agent_harness.prompts import StaticPrompts
 from agent_harness.observability import Observability, ObservabilityBuilder
-from agent_harness.logging import ConsoleLogger
 from agent_harness.guards import (
     AgentRetryConfig,
     ToolRetryConfig,
@@ -43,7 +45,7 @@ from agent_harness.model_config import ModelConfig
 
 def get_labs(category: str) -> list[str]:
     """get_labs tool that returns retrived labs for the specified category."""
-    print("[tool:get_labs] params:", category)
+    log.debug("tool_call", tool="get_labs", category=category)
     result = [
     "Total Cholesterol: 192 ( <200 )",
     "Triglyceride: 200 ( <150 )",
@@ -57,7 +59,7 @@ def get_labs(category: str) -> list[str]:
 
 def get_diagnosis(category: str) -> list[str]:
     """get_diagnosis tool that returns retrived diagnosis for the specified category."""
-    print("[tool:get_diagnosis] params:", category)
+    log.debug("tool_call", tool="get_diagnosis", category=category)
     result = [
     "Hepatic abnormality",
     "Liver damage", 
@@ -69,7 +71,7 @@ def get_diagnosis(category: str) -> list[str]:
 
 def get_findings(category: str) -> list[str]:
     """get_findings tool that returns retrived findings for the specified category."""
-    print("[tool:get_findings] params:", category)
+    log.debug("tool_call", tool="get_findings", category=category)
     result = [
         "Bilateral lung fields show no obvious parenchymal lesion.",
         "Cardiac size is normal.",
@@ -90,15 +92,12 @@ class LLMJudgeEvaluator(Evaluator):
         
         # Log to a production monitoring system (e.g., Prometheus, LangSmith, or a DB)
         # await telemetry_client.log_metric("eval_score", score)
-        print(f"[Judge] Prompt: {prompt}")
-        print(f"[Judge] Response: {output}")
+        log.debug("judge_eval", prompt=prompt, response=str(output))
         # print(f"[Judge] Score: {score}")  # Uncomment when judge LLM implemented
 
 class PrintEvaluator(Evaluator):
     async def evaluate(self, prompt: str, result, context: dict) -> None:  # type: ignore[override]
-        print("[Evaluator] Context:", context)
-        print("[Evaluator] Prompt:", prompt)
-        print("[Evaluator] Result:", getattr(result, "output", result))
+        log.debug("evaluator_result", context=str(context), prompt=prompt, result=str(getattr(result, "output", result)))
 
 
 async def chat_loop():
@@ -115,10 +114,8 @@ async def chat_loop():
         .with_tools(tools)
         .with_prompts(StaticPrompts("You are a medical assistant. When user asks about labs, ALWAYS call get_labs with category='lipid panel'. When user asks about diagnosis, ALWAYS call get_diagnosis with category='general'. When user asks about imaging/films, ALWAYS call get_findings with category='chest xray'. Provide concise answers based on tool results."))
         .with_observability(
-            ObservabilityBuilder()
-            .with_logfire_tracing()
-            .with_console_logging()
-            .build())
+            Observability(builder=ObservabilityBuilder().with_otel_observability())
+        )
         .with_error_handling(ErrorHandlingConfig())
         .with_agent_retries(AgentRetryConfig(max_retries=3, timeout=120))
         .with_tool_retries(ToolRetryConfig(max_retries=3))
@@ -126,25 +123,25 @@ async def chat_loop():
     )
 
     history = await MessageHistory().load(session_id, short_term)
-    print(f"[Session: {session_id}]")
-    print("Type 'quit' or 'exit' to end the chat.")
+    log.debug("session_started", session_id=session_id)
+    log.debug("chat_instructions")
 
     while True:
         try:
             user_input = input("\nYou: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nExiting...")
+            log.debug("exiting")
             break
 
         if user_input.lower() in ("quit", "exit"):
-            print("Goodbye!")
+            log.debug("goodbye")
             break
 
         if not user_input:
             continue
 
         result = await agent.run(user_input, history, session_id)
-        print(f"\nAgent: {result.output}")
+        log.debug("agent_response", output=str(result.output))
 
 
 if __name__ == "__main__":

@@ -47,6 +47,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from pydantic_ai.messages import ThinkingPart, TextPart, ModelResponse
@@ -57,6 +58,7 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.guards import AgentRetryConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("REASONING_MODEL_NAME", "phi4-mini-reasoning")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -71,14 +73,12 @@ async def main():
         2. Pull model: ollama pull phi4-mini-reasoning
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Model Hidden Reasoning — Thinking Parts vs Visible Response")
-    print("=" * 60)
-    print()
-    print("Note: thinking=True requires a model that supports it.")
-    print("If the model does not support thinking, the call will hang.")
-    print("A 60-second timeout is set to prevent indefinite waits.")
-    print()
+    log.debug("separator", width=60)
+    log.debug("section", title="Model Hidden Reasoning — Thinking Parts vs Visible Response")
+    log.debug("separator", width=60)
+    log.debug("note", message="thinking=True requires a model that supports it.")
+    log.debug("note", message="If the model does not support thinking, the call will hang.")
+    log.debug("note", message="A 60-second timeout is set to prevent indefinite waits.")
 
     agent = (
         ManagedAgent()
@@ -100,13 +100,9 @@ async def main():
             model_settings={"thinking": True},
         )
     except Exception as e:
-        print(f"  ❌ Agent run failed: {e}")
-        print()
-        print("  This model may not support thinking=True.")
-        print("  Try one of these Ollama models that support reasoning:")
-        print("    phi4-mini-reasoning")
-        print("    llama3.2")
-        print("    gpt-oss:20b")
+        log.debug("agent_run_failed", error=str(e))
+        log.debug("thinking_not_supported", model=MODEL_NAME)
+        log.debug("try_models", models="phi4-mini-reasoning, llama3.2, gpt-oss:20b")
         return
 
     # ── Separate thinking parts from visible text ───────────────
@@ -123,57 +119,41 @@ async def main():
                     response_blocks.append(part.content)
 
     # ── Display: visible answer ─────────────────────────────────
-    print()
-    print("─" * 60)
-    print("📝 FINAL OUTPUT")
-    print("   (what a user would see in a chat app)")
-    print("─" * 60)
-    print(result.output)
+    log.debug("separator", width=60)
+    log.debug("section", title="FINAL OUTPUT (what a user would see in a chat app)")
+    log.debug("separator", width=60)
+    log.debug("output", output=result.output)
 
     # ── Display: hidden reasoning ───────────────────────────────
-    print()
-    print("─" * 60)
-    print("🧠 HIDDEN REASONING")
-    print("   (what the model thought before answering)")
-    print("─" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="HIDDEN REASONING (what the model thought before answering)")
+    log.debug("separator", width=60)
 
     if thinking_blocks:
         for i, block in enumerate(thinking_blocks, 1):
-            print(f"\n  [Reasoning block {i} — {len(block)} chars]")
-            print(f"  {block}")
+            log.debug("reasoning_block", index=i, chars=len(block), content=block)
     else:
-        print()
-        print("  No thinking parts found.")
-        print("  The model you're using may not support thinking=True.")
-        print("  Try a model that supports reasoning, e.g. qwen2.5, deepseek-r1.")
+        log.debug("no_thinking_parts", message="The model you're using may not support thinking=True.")
+        log.debug("try_model", suggestion="qwen2.5, deepseek-r1")
 
     # ── Summary ─────────────────────────────────────────────────
     thinking_chars = sum(len(b) for b in thinking_blocks)
     response_chars = sum(len(b) for b in response_blocks)
 
-    print()
-    print("─" * 60)
-    print("📊 SUMMARY")
-    print("─" * 60)
-    print(f"  Reasoning blocks:  {len(thinking_blocks)}")
-    print(f"  Reasoning chars:   {thinking_chars}")
-    print(f"  Visible response:  {response_chars} chars")
+    log.debug("separator", width=60)
+    log.debug("section", title="SUMMARY")
+    log.debug("separator", width=60)
+    log.debug("summary", reasoning_blocks=len(thinking_blocks), reasoning_chars=thinking_chars, visible_response_chars=response_chars)
     if response_chars > 0:
         ratio = f"{thinking_chars}:{response_chars}"
-        print(f"  Think:Response:    {ratio}")
+        log.debug("think_response_ratio", ratio=ratio)
 
     # ── How agent_harness handles these ─────────────────────────
-    print()
-    print("─" * 60)
-    print("🔧 HOW AGENT_HARNESS STRIPS THINKING PARTS")
-    print("─" * 60)
-    print()
-    print("  Thinking parts are hidden in:")
-    print("    result.output       → extract_clean_output() removes them")
-    print("    TurnData.messages   → filter_thinking_parts() removes them")
-    print()
-    print("  Raw messages are preserved in:")
-    print("    result.new_messages → this is what we inspected above")
+    log.debug("separator", width=60)
+    log.debug("section", title="HOW AGENT_HARNESS STRIPS THINKING PARTS")
+    log.debug("separator", width=60)
+    log.debug("hidden_in", result_output="extract_clean_output() removes them", turn_data_messages="filter_thinking_parts() removes them")
+    log.debug("preserved_in", result_new_messages="this is what we inspected above")
 
 
 if __name__ == "__main__":

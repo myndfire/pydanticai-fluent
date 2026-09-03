@@ -42,6 +42,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -51,6 +52,7 @@ from agent_harness.guards import CircuitBreakerConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -64,7 +66,7 @@ CIRCUIT_BREAKER_TIMEOUT = int(os.getenv("CIRCUIT_BREAKER_TIMEOUT", "5"))
 
 def on_circuit_open(ctx):
     """Graceful fallback when the circuit breaker is open."""
-    print(f"  [on_error] Circuit is OPEN: {ctx.error_message}")
+    log.debug("circuit_open", error_message=ctx.error_message)
     return f"Service unavailable: {ctx.error_message}"
 
 
@@ -73,20 +75,20 @@ async def run_with_possible_failure(agent, prompt, session_id, memory, step_labe
     history = await MessageHistory().load(session_id, memory)
     try:
         result = await agent.run(prompt, history, session_id)
-        print(f"  [{step_label}] SUCCESS: {result.output[:80]}...")
+        log.debug("step_result", label=step_label, status="SUCCESS", output=result.output[:80])
         return True
     except RuntimeError as e:
-        print(f"  [{step_label}] BLOCKED: {e}")
+        log.debug("step_result", label=step_label, status="BLOCKED", error=str(e))
         return False
     except Exception as e:
-        print(f"  [{step_label}] ERROR: {type(e).__name__}: {e}")
+        log.debug("step_result", label=step_label, status="ERROR", exception=type(e).__name__, error=str(e))
         return False
 
 
 async def main():
-    print("=" * 60)
-    print("Circuit Breaker Guardrail")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Circuit Breaker Guardrail")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
@@ -99,8 +101,8 @@ async def main():
     )
 
     # ── Agent that will fail (invalid model) ───────────────────
-    print(f"\nCircuit config: threshold={cb.failure_threshold}, timeout={cb.circuit_timeout}s")
-    print("\nUsing an intentionally broken model to trigger failures...\n")
+    log.debug("circuit_config", threshold=cb.failure_threshold, timeout=cb.circuit_timeout)
+    log.debug("section", title="Using intentionally broken model to trigger failures")
 
     bad_agent = (
         ManagedAgent()
@@ -112,21 +114,21 @@ async def main():
     )
 
     # ── Generate failures to trip the circuit ──────────────────
-    print("--- Phase 1: Generating failures ---")
+    log.debug("example", example=1, title="Generating failures")
     for i in range(1, 6):
-        print(f"\nRequest {i}:")
+        log.debug("request", number=i)
         await run_with_possible_failure(
             bad_agent, "Hello", f"cb-demo-fail-{i}", memory, f"req-{i}"
         )
 
-    print("\n--- Phase 2: Circuit should be OPEN ---")
+    log.debug("example", example=2, title="Circuit should be OPEN")
 
     # ── Good agent, but circuit breaker is shared? No ──────────
     # The circuit breaker state is per GuardRunner instance.
     # Since bad_agent has its own GuardRunner, only its requests are blocked.
 
-    print("\n--- Phase 3: Demonstrate HALF-OPEN recovery ---")
-    print("Waiting for circuit timeout (5s)...")
+    log.debug("example", example=3, title="Demonstrate HALF-OPEN recovery")
+    log.debug("section", title="Waiting for circuit timeout (5s)")
     await asyncio.sleep(6)
 
     # After timeout, first request should be allowed (half-open)
@@ -140,15 +142,15 @@ async def main():
         )
     )
 
-    print("\nTrial request after timeout (half-open):")
+    log.debug("section", title="Trial request after timeout (half-open)")
     success = await run_with_possible_failure(
         good_agent, "What is 1+1?", "cb-demo-recover", memory, "half-open"
     )
 
     if success:
-        print("  Circuit is now CLOSED (recovered)")
+        log.debug("circuit_state", state="CLOSED (recovered)")
     else:
-        print("  Circuit is still OPEN")
+        log.debug("circuit_state", state="OPEN")
 
 
 if __name__ == "__main__":

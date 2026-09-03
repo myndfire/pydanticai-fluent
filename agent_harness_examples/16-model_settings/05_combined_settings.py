@@ -20,8 +20,11 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.prompts import StaticPrompts
 from pydantic_ai.settings import ModelSettings
+import structlog
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL = os.getenv("MODEL_NAME", "qwen2.5:3b")
 PROVIDER = os.getenv("PROVIDER", "ollama")
@@ -84,7 +87,7 @@ def build_factual_agent() -> ManagedAgent:
 
 
 async def main() -> None:
-    print("=== Combined Settings Demo ===\n")
+    log.debug("section_header", title="Combined Settings Demo")
 
     # --- 1. Creative writer ---
     creative = build_creative_agent()
@@ -94,8 +97,7 @@ async def main() -> None:
         history,
         "creative-1",
     )
-    print("  [creative writer] temperature=0.9, top_p=0.95, max_tokens=300")
-    print(f"  → {result.output}\n")
+    log.debug("run_result", label="creative writer", temperature=0.9, top_p=0.95, max_tokens=300, output=str(result.output))
 
     # --- 2. Factual analyst ---
     factual = build_factual_agent()
@@ -105,8 +107,7 @@ async def main() -> None:
         history,
         "factual-1",
     )
-    print("  [factual analyst] temperature=0.0, top_p=0.5, max_tokens=150, seed=42")
-    print(f"  → {result.output}\n")
+    log.debug("run_result", label="factual analyst", temperature=0.0, top_p=0.5, max_tokens=150, seed=42, output=str(result.output))
 
     # --- 3. Per-run override ---
     # Same agent, but override settings at run time
@@ -120,8 +121,7 @@ async def main() -> None:
             max_tokens=80,
         ),
     )
-    print("  [per-run override] creative agent with temperature=0.0, max_tokens=80")
-    print(f"  → {result.output}\n")
+    log.debug("run_result", label="per-run override", temperature=0.0, max_tokens=80, output=str(result.output))
 
 
 if __name__ == "__main__":

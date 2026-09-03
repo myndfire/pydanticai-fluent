@@ -37,6 +37,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -45,17 +46,18 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.evaluators import QualityCheck
 
 load_dotenv()
+log = structlog.get_logger()
 
 
 async def main():
-    print("=" * 60)
-    print("QualityCheck — LLM-as-Judge Evaluation")
-    print("=" * 60)
+    log.debug("separator", separator="=" * 60)
+    log.debug("section", title="QualityCheck — LLM-as-Judge Evaluation")
+    log.debug("separator", separator="=" * 60)
 
     memory = InMemoryProvider()
 
     # ── Example 1: Default threshold (7.0) ──────────────────────
-    print("\n--- Example 1: QualityCheck with default threshold (7.0) ---")
+    log.debug("example", example=1, title="QualityCheck with default threshold (7.0)")
 
     quality = QualityCheck(
         threshold=7.0,
@@ -68,9 +70,8 @@ async def main():
         .with_evaluators(quality)
     )
 
-    print(f"  Evaluator: QualityCheck(threshold={quality.threshold})")
-    print(f"  Judge model: {quality.judge_model}")
-    print()
+    log.debug("evaluator_config", evaluator="QualityCheck", threshold=quality.threshold)
+    log.debug("judge_model", judge_model=quality.judge_model)
 
     # Turn 1: should produce a high-quality answer
     history = await MessageHistory().load("quality-1", memory)
@@ -79,7 +80,7 @@ async def main():
         history,
         "quality-1",
     )
-    print(f"  Output: {result.output}")
+    log.debug("agent_output", output=result.output)
 
     # Turn 2: ask for a short answer (judge might rate differently)
     history2 = await MessageHistory().load("quality-2", memory)
@@ -88,10 +89,10 @@ async def main():
         history2,
         "quality-2",
     )
-    print(f"  Output: {result2.output[:80]}...")
+    log.debug("agent_output", output=result2.output[:80], truncated=True)
 
     # ── Example 2: Stricter threshold ───────────────────────────
-    print("\n--- Example 2: Stricter threshold (9.5) — almost always warns ---")
+    log.debug("example", example=2, title="Stricter threshold (9.5) — almost always warns")
 
     strict = QualityCheck(
         threshold=9.5,
@@ -110,10 +111,10 @@ async def main():
         history3,
         "quality-3",
     )
-    print(f"  Output: {result3.output}")
+    log.debug("agent_output", output=result3.output)
 
     # ── Example 3: Multiple QualityChecks with different thresholds ──
-    print("\n--- Example 3: Two QualityCheck evaluators ---")
+    log.debug("example", example=3, title="Two QualityCheck evaluators")
 
     lenient = QualityCheck(threshold=3.0, judge_model=os.getenv("QUALITY_CHECK_MODEL", "ollama:gpt-oss:20b"))
     moderate = QualityCheck(threshold=7.0, judge_model=os.getenv("QUALITY_CHECK_MODEL", "ollama:gpt-oss:20b"))
@@ -124,9 +125,8 @@ async def main():
         .with_evaluators(lenient, moderate)
     )
 
-    print(f"  Lenient:  threshold={lenient.threshold}")
-    print(f"  Moderate: threshold={moderate.threshold}")
-    print()
+    log.debug("evaluator_config", evaluator="lenient", threshold=lenient.threshold)
+    log.debug("evaluator_config", evaluator="moderate", threshold=moderate.threshold)
 
     history4 = await MessageHistory().load("quality-4", memory)
     result4 = await agent3.run(
@@ -134,15 +134,15 @@ async def main():
         history4,
         "quality-4",
     )
-    print(f"  Output: {result4.output}")
+    log.debug("agent_output", output=result4.output)
 
     # ── How it works ────────────────────────────────────────────
-    print("\n--- How QualityCheck works ---")
-    print("  1. After each agent.run(), the evaluator fires")
-    print("  2. It sends a second LLM call asking to rate the response 0-10")
-    print("  3. If score < threshold → log warning")
-    print("  4. If score >= threshold → log info")
-    print("  5. Never modifies the agent output — read-only observer")
+    log.debug("section", title="How QualityCheck works")
+    log.debug("explanation", step=1, description="After each agent.run(), the evaluator fires")
+    log.debug("explanation", step=2, description="It sends a second LLM call asking to rate the response 0-10")
+    log.debug("explanation", step=3, description="If score < threshold → log warning")
+    log.debug("explanation", step=4, description="If score >= threshold → log info")
+    log.debug("explanation", step=5, description="Never modifies the agent output — read-only observer")
 
 
 if __name__ == "__main__":

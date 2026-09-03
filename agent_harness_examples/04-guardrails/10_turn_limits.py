@@ -41,6 +41,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -50,6 +51,7 @@ from agent_harness.guards import TurnLimitsConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -62,7 +64,7 @@ TURN_LIMITS_EX3_MAX_TURNS = int(os.getenv("TURN_LIMITS_EX3_MAX_TURNS", "1"))
 def on_turn_limit_handler(ctx):
     """Graceful fallback when the turn limit is reached."""
     session = ctx.session_id or "unknown"
-    print(f"  [on_turn_limit] Session limit hit: {ctx.error_message}")
+    log.debug("turn_limit_exceeded", session=session, error_message=ctx.error_message)
     return (
         f"Session {session}: maximum turns reached. "
         f"({ctx.error_message})"
@@ -74,22 +76,22 @@ async def run_turn(agent, prompt, session_id, memory, label):
     history = await MessageHistory().load(session_id, memory)
     try:
         result = await agent.run(prompt, history, session_id)
-        print(f"  [{label}] Success: {str(result)[:80]}")
+        log.debug("turn_result", label=label, success=True, result=str(result)[:80])
         return True
     except RuntimeError as e:
-        print(f"  [{label}] Blocked: {e}")
+        log.debug("turn_result", label=label, success=False, blocked=str(e))
         return False
 
 
 async def main():
-    print("=" * 60)
-    print("Turn Limits Guardrail")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Turn Limits Guardrail")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
     # ── Example 1: Strict turn limit ────────────────────────────
-    print("\n--- Example 1: max_turns=3 on a single session ---")
+    log.debug("example", example=1, title="max_turns=3 on a single session")
     turn_config = (
         TurnLimitsConfig()
         .with_max_turns(TURN_LIMITS_EX1_MAX_TURNS)
@@ -102,11 +104,11 @@ async def main():
         .with_turn_limits(turn_config)
     )
 
-    print(f"Max turns: {turn_config.max_turns}")
+    log.debug("turn_config", max_turns=turn_config.max_turns)
     session = "turn-limit-demo-1"
 
     for i in range(1, 6):
-        print(f"\nTurn {i}:")
+        log.debug("turn", number=i)
         success = await run_turn(
             agent,
             f"Say 'turn number {i}' and nothing else.",
@@ -118,7 +120,7 @@ async def main():
             break
 
     # ── Example 2: Multi-session isolation ──────────────────────
-    print("\n--- Example 2: Multi-session isolation (max_turns=2) ---")
+    log.debug("example", example=2, title="Multi-session isolation (max_turns=2)")
     turn_config2 = TurnLimitsConfig().with_max_turns(TURN_LIMITS_EX2_MAX_TURNS)
 
     agent2 = (
@@ -128,7 +130,7 @@ async def main():
     )
 
     # Session A
-    print("\nSession A:")
+    log.debug("section", title="Session A")
     for i in range(1, 4):
         success = await run_turn(
             agent2,
@@ -139,7 +141,7 @@ async def main():
         )
 
     # Session B (separate counter — should start fresh)
-    print("\nSession B:")
+    log.debug("section", title="Session B")
     for i in range(1, 4):
         success = await run_turn(
             agent2,
@@ -150,7 +152,7 @@ async def main():
         )
 
     # ── Example 3: No callback (raises RuntimeError) ────────────
-    print("\n--- Example 3: No on_turn_limit callback (raises) ---")
+    log.debug("example", example=3, title="No on_turn_limit callback (raises)")
     turn_config3 = TurnLimitsConfig().with_max_turns(TURN_LIMITS_EX3_MAX_TURNS)
 
     agent3 = (
@@ -159,22 +161,22 @@ async def main():
         .with_turn_limits(turn_config3)
     )
 
-    print(f"Max turns: {turn_config3.max_turns}")
-    print("No on_turn_limit callback set — will raise RuntimeError...")
+    log.debug("turn_config", max_turns=turn_config3.max_turns)
+    log.debug("section", title="No on_turn_limit callback set - will raise RuntimeError")
 
     # First turn should pass
     await run_turn(agent3, "Say hi.", "raise-demo", memory, "t1")
 
     # Second turn should raise
-    print("\nTurn 2:")
+    log.debug("turn", number=2)
     try:
         history = await MessageHistory().load("raise-demo", memory)
         await agent3.run("Say hi again.", history, "raise-demo")
     except RuntimeError as e:
-        print(f"  Caught RuntimeError: {e}")
+        log.debug("exception", caught_runtime_error=str(e))
 
     # ── Example 4: Unlimited (no limit) ─────────────────────────
-    print("\n--- Example 4: Unlimited turns (max_turns=None) ---")
+    log.debug("example", example=4, title="Unlimited turns (max_turns=None)")
     turn_config4 = TurnLimitsConfig()
 
     agent4 = (
@@ -183,7 +185,7 @@ async def main():
         .with_turn_limits(turn_config4)
     )
 
-    print(f"Max turns: {turn_config4.max_turns} (unlimited)")
+    log.debug("turn_config", max_turns=turn_config4.max_turns, note="unlimited")
     for i in range(1, 4):
         await run_turn(
             agent4,
@@ -193,7 +195,9 @@ async def main():
             f"u{i}",
         )
 
-    print("\nAll turn limits examples complete.")
+    log.debug("separator")
+    log.debug("section", title="All turn limits examples complete.")
+    log.debug("separator")
 
 
 if __name__ == "__main__":

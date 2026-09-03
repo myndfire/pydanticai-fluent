@@ -63,6 +63,7 @@ import os
 import time
 from pathlib import Path
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -70,6 +71,7 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 
 # ── Protocol evaluator: JSON audit log ──────────────────────────────
@@ -109,7 +111,7 @@ class LatencyTracker:
     """Tracks and prints response latency per turn.
 
     Demonstrates:
-      - Using print() directly (no framework logging)
+      - Using structlog directly (no framework logging)
       - Accessing result.output for response content
       - Minimal evaluator implementation
     """
@@ -118,13 +120,10 @@ class LatencyTracker:
         self.start_time = None
 
     async def evaluate(self, prompt: str, result, context: dict) -> None:
-        # The agent.run() already measures duration.
-        # We can access it from the context or from the result
         session = context.get("session_id", "unknown")
         output = result.output if hasattr(result, "output") else str(result)
         output_len = len(output) if output else 0
-        print(f"  [latency_tracker] session={session} | "
-              f"response_length={output_len} chars")
+        log.debug("latency_tracker", session=session, response_length=output_len, unit="chars")
 
 
 # ── Protocol evaluator: PII scanner ─────────────────────────────────
@@ -134,7 +133,7 @@ class PiiScanner:
 
     Demonstrates:
       - Using standard library (re) for pattern matching
-      - Custom print formatting with emojis
+      - Custom structlog output with structured data
       - No framework dependency — pure Python regex
     """
 
@@ -161,23 +160,22 @@ class PiiScanner:
 
         if findings:
             session = context.get("session_id", "?")
-            print(f"  [pii_scanner] ⚠️ PII detected in session {session}: "
-                  f"{', '.join(findings)}")
+            log.warning("pii_detected", session=session, findings=findings)
         else:
-            print(f"  [pii_scanner] ✓ No PII detected")
+            log.debug("pii_scan_clean", note="No PII detected")
 
 
 # ── Main ────────────────────────────────────────────────────────────
 
 async def main():
-    print("=" * 60)
-    print("Protocol Evaluator — Direct Protocol Implementation")
-    print("=" * 60)
+    log.debug("separator", separator="=" * 60)
+    log.debug("section", title="Protocol Evaluator — Direct Protocol Implementation")
+    log.debug("separator", separator="=" * 60)
 
     memory = InMemoryProvider()
 
     # ── Example 1: Audit log evaluator ──────────────────────────
-    print("\n--- Example 1: AuditLogEvaluator (writes JSONL) ---")
+    log.debug("example", example=1, title="AuditLogEvaluator (writes JSONL)")
 
     audit = AuditLogEvaluator(log_path="audit_log.jsonl")
 
@@ -187,8 +185,7 @@ async def main():
         .with_evaluators(audit)
     )
 
-    print(f"  Evaluator: AuditLogEvaluator → {audit.log_path}")
-    print()
+    log.debug("evaluator_config", evaluator="AuditLogEvaluator", log_path=str(audit.log_path))
 
     history = await MessageHistory().load("proto-1", memory)
     result = await agent.run(
@@ -196,7 +193,7 @@ async def main():
         history,
         "proto-1",
     )
-    print(f"  Output: {result.output}")
+    log.debug("agent_output", output=result.output)
 
     history2 = await MessageHistory().load("proto-2", memory)
     result2 = await agent.run(
@@ -204,19 +201,18 @@ async def main():
         history2,
         "proto-2",
     )
-    print(f"  Output: {result2.output}")
+    log.debug("agent_output", output=result2.output)
 
     # Inspect the audit log
     if audit.log_path.exists():
         lines = audit.log_path.read_text().strip().split("\n")
-        print(f"\n  Audit log entries written: {len(lines)}")
+        log.debug("audit_log_info", entries_written=len(lines))
         for line in lines:
             entry = json.loads(line)
-            print(f"  [{entry['session_id']}] {entry['prompt'][:50]}... "
-                  f"→ {entry['response'][:50]}...")
+            log.debug("audit_entry", session_id=entry['session_id'], prompt=entry['prompt'][:50], response=entry['response'][:50])
 
     # ── Example 2: All three protocol evaluators ────────────────
-    print("\n--- Example 2: All three protocol evaluators ---")
+    log.debug("example", example=2, title="All three protocol evaluators")
 
     agent2 = (
         ManagedAgent()
@@ -228,8 +224,7 @@ async def main():
         )
     )
 
-    print("  Evaluators: AuditLog + LatencyTracker + PiiScanner")
-    print()
+    log.debug("evaluator_list", evaluators="AuditLog + LatencyTracker + PiiScanner")
 
     history3 = await MessageHistory().load("proto-3", memory)
     result3 = await agent2.run(
@@ -238,22 +233,16 @@ async def main():
         history3,
         "proto-3",
     )
-    print(f"  Output: {result3.output}")
+    log.debug("agent_output", output=result3.output)
 
     # ── The Protocol ────────────────────────────────────────────
-    print("\n--- The Evaluator Protocol ---")
-    print("  Any class with this method is an evaluator:")
-    print()
-    print("  class MyEvaluator:")
-    print("      async def evaluate(self, prompt: str, result: Any, context: dict) -> None:")
-    print("          # inspect prompt, result, context")
-    print("          # log, trace, store, alert — anything")
-    print("          # never modify result — read-only")
-    print()
-    print("  The context dict contains:")
-    print("    - session_id: str")
-    print("    - prompt_id: str")
-    print("    - model: str")
+    log.debug("section", title="The Evaluator Protocol")
+    log.debug("protocol_intro", description="Any class with this method is an evaluator:")
+    log.debug("protocol_method", class_name="MyEvaluator", method="async def evaluate(self, prompt: str, result: Any, context: dict) -> None")
+    log.debug("protocol_comment", comment="inspect prompt, result, context")
+    log.debug("protocol_comment", comment="log, trace, store, alert — anything")
+    log.debug("protocol_comment", comment="never modify result — read-only")
+    log.debug("context_keys", session_id="str", prompt_id="str", model="str")
 
 
 if __name__ == "__main__":

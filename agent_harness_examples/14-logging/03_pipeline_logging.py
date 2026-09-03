@@ -38,6 +38,8 @@ Setup
 import asyncio
 import os
 
+import structlog
+
 from agent_harness import (
     ManagedAgent,
     LogContext,
@@ -46,19 +48,24 @@ from agent_harness import (
 )
 from agent_harness.memory import InMemoryProvider
 from agent_harness.model_config import ModelConfig
-from agent_harness.observability import Observability
+from agent_harness.observability import Observability, ObservabilityBuilder
+
+log = structlog.get_logger()
 
 
 async def main():
-    print("=" * 60)
-    print("Log Enrichment — Pipeline with Auto-Logging")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Log Enrichment — Pipeline with Auto-Logging")
+    log.debug("separator")
 
     model = ModelConfig(
         provider=os.getenv("LOGGING_MODEL_PROVIDER", "ollama"),
         model_name=os.getenv("LOGGING_MODEL_NAME", "gpt-oss:20b"),
     )
-    obs = Observability()
+    obs = Observability(
+        builder=ObservabilityBuilder(service_name="pipeline-logging")
+        .with_otel_observability()
+    )
 
     # ── Agents with persistent enrichment ───────────────────────
     base = LogContext().with_(
@@ -107,19 +114,19 @@ async def main():
     )
 
     # ── Run the pipeline ────────────────────────────────────────
-    print("\n── Stage 1: Research ──")
+    log.debug("section", title="Stage 1: Research")
     r1 = await ctx.run_stage(
         researcher, "Research",
         "What are embeddings in machine learning? Give 2 key facts.",
     )
 
-    print("\n── Stage 2: Write ──")
+    log.debug("section", title="Stage 2: Write")
     r2 = await ctx.run_stage(
         writer, "Write",
         f"Write one sentence about: {r1.output}",
     )
 
-    print("\n── Stage 3: Edit ──")
+    log.debug("section", title="Stage 3: Edit")
     r3 = await ctx.run_stage(
         editor, "Edit",
         f"Polish this sentence: {r2.output}",
@@ -128,9 +135,9 @@ async def main():
     # ── Display trace ───────────────────────────────────────────
     ctx.display_trace()
 
-    print(f"\n✓ Each log entry carries: pipeline, agent_role, stage, host, env, pid")
-    print(f"✓ Auto-logged events: agent_run_started, token_usage, agent_run_completed")
-    print(f"✓ Pipeline events: pipeline_stage_completed for each stage")
+    log.debug("log_entry_fields", fields="pipeline, agent_role, stage, host, env, pid")
+    log.debug("auto_logged_events", events="agent_run_started, token_usage, agent_run_completed")
+    log.debug("pipeline_events", event="pipeline_stage_completed for each stage")
 
 
 if __name__ == "__main__":

@@ -15,12 +15,11 @@
 import os
 import asyncio
 from dotenv import load_dotenv
+import structlog
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.tools import ToolRegistry
 from agent_harness.prompts import StaticPrompts
-from agent_harness.observability import Observability
-from agent_harness.logging import ConsoleLogger
 from agent_harness.model_config import ModelConfig
 from agent_harness.errorhandling import ErrorHandlingConfig
 from agent_harness.evaluators import Evaluator
@@ -37,23 +36,24 @@ Setup
         uv sync
         uv run python agent_example-1.py
 """
-    print("[tool:repeat] params:", text)
+    log.debug("tool_repeat_params", text=text)
     return text
 
 
 def shout(text: str) -> str:
     """Simple shout tool that returns the text in uppercase."""
-    print("[tool:shout] params:", text)
+    log.debug("tool_shout_params", text=text)
     return text.upper()
 
 
 class PrintEvaluator(Evaluator):
     async def evaluate(self, prompt: str, result, context: dict) -> None:  # type: ignore[override]
-        print("[Evaluator] Prompt:", prompt)
-        print("[Evaluator] Result:", getattr(result, "output", result))
+        log.debug("evaluator_prompt", prompt=prompt)
+        log.debug("evaluator_result", result=getattr(result, "output", result))
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 
 async def main():
@@ -68,7 +68,6 @@ async def main():
         .with_long_term_memory(long_term)
         .with_tools(tools)
         .with_prompts(StaticPrompts("You are a helpful bot. Use the provided tools when instructed."))
-        .with_observability(Observability())
         .with_error_handling(ErrorHandlingConfig())
         .with_evaluators(PrintEvaluator())
     )
@@ -79,7 +78,7 @@ async def main():
         history,
         "demo-session",
     )
-    print("\nAgent response:", result.output)
+    log.debug("agent_response", output=result.output)
 
 if __name__ == "__main__":
     asyncio.run(main())

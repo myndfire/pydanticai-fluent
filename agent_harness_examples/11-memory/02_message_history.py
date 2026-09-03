@@ -36,6 +36,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -47,6 +48,7 @@ from agent_harness.memory import (
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MEMORY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -61,9 +63,9 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("MessageHistory — Conversation Context")
-    print("=" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="MessageHistory — Conversation Context")
+    log.debug("separator", width=60)
 
     memory = InMemoryProvider()
     agent = (
@@ -82,44 +84,44 @@ async def main():
         "Add 100 to the previous number you calculated. What is it?",
     ]
 
-    print("\nBuilding conversation history...")
+    log.debug("building_history")
     for i, prompt in enumerate(conversations, 1):
         # Load prior context before each turn
         history = await MessageHistory().load(session, memory)
         msg_count = len(history.messages)
-        print(f"\n--- Turn {i} ({msg_count} prior messages in context) ---")
-        print(f"  Prompt: {prompt}")
+        log.debug("turn", index=i, prior_messages=msg_count)
+        log.debug("prompt", prompt=prompt)
 
         result = await agent.run(prompt, history, session, save_to=[memory])
-        print(f"  Response: {result.output}")
+        log.debug("response", output=result.output)
 
     # ── Inspect the full history ────────────────────────────────
     full_history = await MessageHistory().load(session, memory)
-    print(f"\n--- Full History: {len(full_history.messages)} messages ---")
+    log.debug("full_history", messages=len(full_history.messages))
 
     for i, msg in enumerate(full_history.messages):
         kind = msg.__class__.__name__
         if kind == "ModelRequest":
             content = [p.content for p in msg.parts if hasattr(p, "content")]
-            print(f"  [{i}] Request: {content}")
+            log.debug("history_entry", index=i, kind="Request", content=content)
         elif kind == "ModelResponse":
             content = [p.content for p in msg.parts if hasattr(p, "content")]
-            print(f"  [{i}] Response: {content}")
+            log.debug("history_entry", index=i, kind="Response", content=content)
 
     # ── filter_thinking_parts demonstration ─────────────────────
-    print("\n--- filter_thinking_parts ---")
+    log.debug("section", title="filter_thinking_parts")
     serialized = filter_thinking_parts(full_history.messages)
-    print(f"  Messages after filtering: {len(serialized)}")
+    log.debug("filtered", messages=len(serialized))
     for m in serialized[:3]:
         kind = m.get("kind", "?")
         parts = m.get("parts", [])
         preview = [p.get("content", "")[:50] for p in parts[:2]]
-        print(f"  {kind}: {preview}")
+        log.debug("filtered_entry", kind=kind, preview=preview)
 
     # ── Fresh session (no prior context) ────────────────────────
-    print("\n--- Fresh session (no history) ---")
+    log.debug("section", title="Fresh session (no history)")
     fresh_history = await MessageHistory().load("brand-new-session", memory)
-    print(f"  Messages loaded: {len(fresh_history.messages)} (should be 0)")
+    log.debug("loaded", messages=len(fresh_history.messages), expected=0)
 
     fresh_result = await agent.run(
         "Say hello in exactly 3 words.",
@@ -127,7 +129,7 @@ async def main():
         "brand-new-session",
         save_to=[memory],
     )
-    print(f"  Response: {fresh_result.output}")
+    log.debug("response", output=fresh_result.output)
 
 
 if __name__ == "__main__":

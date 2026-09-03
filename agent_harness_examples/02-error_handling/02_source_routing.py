@@ -47,57 +47,61 @@ Setup
 
 import asyncio
 
+import structlog
+
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
 
+log = structlog.get_logger()
+
 
 # ── Per-source handlers ─────────────────────────────────────────────
 
 def on_llm(ctx: ErrorContext) -> str | None:
-    print(f"  [llm] {ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="llm", error_type=ctx.error_type, error_message=ctx.error_message[:60])
     return f"LLM fallback: model unavailable ({ctx.error_type})"
 
 def on_tool(ctx: ErrorContext) -> str | None:
-    print(f"  [tool] {ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="tool", error_type=ctx.error_type, error_message=ctx.error_message[:60])
     return f"Tool fallback: operation could not be completed"
 
 def on_validation(ctx: ErrorContext) -> str | None:
-    print(f"  [validation] {ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="validation", error_type=ctx.error_type, error_message=ctx.error_message[:60])
     return f"Validation fallback: response format was invalid"
 
 def on_guardrail(ctx: ErrorContext) -> str | None:
-    print(f"  [guardrail] {ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="guardrail", error_type=ctx.error_type, error_message=ctx.error_message[:60])
     return f"Guardrail fallback: request blocked ({ctx.error_type})"
 
 def on_memory(ctx: ErrorContext) -> str | None:
-    print(f"  [memory] {ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="memory", error_type=ctx.error_type, error_message=ctx.error_message[:60])
     # Memory errors: suppress (continue without persistence)
     return f"Memory fallback: persistence unavailable — continuing anyway"
 
 def on_prompt(ctx: ErrorContext) -> str | None:
-    print(f"  [prompt] {ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="prompt", error_type=ctx.error_type, error_message=ctx.error_message[:60])
     return None  # re-raise — prompts are critical
 
 def on_evaluator(ctx: ErrorContext) -> str | None:
-    print(f"  [evaluator] {ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="evaluator", error_type=ctx.error_type, error_message=ctx.error_message[:60])
     # Evaluator errors: suppress (non-critical)
     return f"Evaluator error: {ctx.error_type} — continuing"
 
 def on_output(ctx: ErrorContext) -> str | None:
-    print(f"  [output] {ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="output", error_type=ctx.error_type, error_message=ctx.error_message[:60])
     return f"Output processing fallback: {ctx.error_type}"
 
 def catch_all(ctx: ErrorContext) -> str | None:
-    print(f"  [catch-all] {ctx.source}/{ctx.error_type}: {ctx.error_message[:60]}")
+    log.debug("source_handler", source="catch-all", error_source=ctx.source, error_type=ctx.error_type, error_message=ctx.error_message[:60])
     return f"Unhandled: {ctx.source} error"
 
 
 async def main():
-    print("=" * 60)
-    print("Source Routing — Per-Source Error Handlers")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Source Routing — Per-Source Error Handlers")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
@@ -115,15 +119,15 @@ async def main():
         .on_error(catch_all)
     )
 
-    print("\n  Configured handlers:")
+    log.debug("status", message="Configured handlers")
     for name in ["on_llm_error", "on_tool_error", "on_validation_error",
                  "on_guardrail_error", "on_memory_error", "on_prompt_error",
                  "on_evaluator_error", "on_output_error", "on_error"]:
         present = getattr(config, f"_{name}") is not None
-        print(f"    {name}: {'✓' if present else '✗'}")
+        log.debug("handler_status", handler=name, present=present)
 
     # ── Demonstrate LLM error routing ───────────────────────────
-    print("\n--- LLM error (broken model) ---")
+    log.debug("example", title="LLM error (broken model)")
     agent = (
         ManagedAgent()
         .with_model(ModelConfig(
@@ -135,20 +139,18 @@ async def main():
 
     history = await MessageHistory().load("route-llm", memory)
     result = await agent.run("Hello.", history, "route-llm")
-    print(f"  Suppressed: {result.output}")
+    log.debug("result", suppressed=True, output=result.output)
 
     # ── Source reference ────────────────────────────────────────
-    print("\n--- Error source reference ---")
-    print("  Source       Set at")
-    print("  ───────────  ──────────────────────────────────")
-    print("  llm          agent.run() inside asyncio.wait_for")
-    print("  tool          tool function execution")
-    print("  validation   output validator ModelRetry")
-    print("  guardrail    circuit breaker, token/cost, content filter")
-    print("  memory       message_history.load(), save_to save_turn()")
-    print("  prompt       get_system_prompt(), Jinja2 render")
-    print("  evaluator    evaluator.evaluate()")
-    print("  output       usage parsing, TurnData, extract_clean_output")
+    log.debug("example", title="Error source reference")
+    log.debug("source_reference", source="llm", set_at="agent.run() inside asyncio.wait_for")
+    log.debug("source_reference", source="tool", set_at="tool function execution")
+    log.debug("source_reference", source="validation", set_at="output validator ModelRetry")
+    log.debug("source_reference", source="guardrail", set_at="circuit breaker, token/cost, content filter")
+    log.debug("source_reference", source="memory", set_at="message_history.load(), save_to save_turn()")
+    log.debug("source_reference", source="prompt", set_at="get_system_prompt(), Jinja2 render")
+    log.debug("source_reference", source="evaluator", set_at="evaluator.evaluate()")
+    log.debug("source_reference", source="output", set_at="usage parsing, TurnData, extract_clean_output")
 
 
 if __name__ == "__main__":

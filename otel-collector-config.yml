@@ -7,6 +7,11 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 exporters:
+  debug: {}
+  otlphttp/logfire:
+    endpoint: https://logfire-us.pydantic.dev
+    headers:
+      Authorization: "Bearer ${env:LOGFIRE_TOKEN}"
   otlphttp/elasticsearch:
     endpoint: http://elasticsearch:9200/_otlp
   otlphttp/prometheus:
@@ -20,10 +25,10 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      exporters: [otlp/jaeger, otlphttp/elasticsearch]
+      exporters: [otlp/jaeger, otlphttp/elasticsearch, otlphttp/logfire, debug]
     metrics:
       receivers: [otlp]
-      exporters: [otlphttp/prometheus]
+      exporters: [otlphttp/prometheus, otlphttp/logfire, debug]
     logs:
       receivers: [otlp]
-      exporters: [otlphttp/elasticsearch]
+      exporters: [otlphttp/elasticsearch, otlphttp/logfire, debug]

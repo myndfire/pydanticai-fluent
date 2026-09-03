@@ -36,10 +36,14 @@ Setup
 import asyncio
 from datetime import datetime
 
+import structlog
+
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
+
+log = structlog.get_logger()
 
 
 # ── Recovery state ──────────────────────────────────────────────────
@@ -57,16 +61,16 @@ def log_recovery(ctx: ErrorContext, action: str) -> None:
         "action": action,
     }
     error_log.append(entry)
-    print(f"  [recovery] #{len(error_log)}: {ctx.source}/{ctx.error_type} → {action}")
+    log.debug("recovery_action", count=len(error_log), source=ctx.source, error_type=ctx.error_type, action=action)
 
 
 def stack_inspector(ctx: ErrorContext) -> str | None:
     """Inspect the stack trace on an error."""
     stack = ctx.stack_trace or ""
     lines = stack.strip().split("\n")
-    print(f"  [stack] {len(lines)} frames in traceback")
+    log.debug("stack_trace", frame_count=len(lines))
     for line in lines[:4]:
-        print(f"      {line.strip()}")
+        log.debug("stack_frame", frame=line.strip())
     return None  # re-raise — stack inspection only, let other handlers decide
 
 
@@ -92,14 +96,14 @@ def output_recovery(ctx: ErrorContext) -> str | None:
 
 
 async def main():
-    print("=" * 60)
-    print("Custom Recovery — Fallback & Stack Traces")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Custom Recovery — Fallback & Stack Traces")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
     # ── Example 1: Full recovery config ─────────────────────────
-    print("\n--- Example 1: Per-source recovery ---")
+    log.debug("example", example=1, title="Per-source recovery")
 
     config = (
         ErrorHandlingConfig()
@@ -127,17 +131,13 @@ async def main():
         "recover-1",
     )
 
-    print(f"\n  Result: success={result.success}")
-    print(f"  Output: {result.output}")
+    log.debug("result", success=result.success, output=result.output)
     if result.error_context:
         ec = result.error_context
-        print(f"  ErrorContext:")
-        print(f"    error_type:    {ec.error_type}")
-        print(f"    error_message: {ec.error_message[:80]}")
-        print(f"    source:        {ec.source}")
+        log.debug("error_context", error_type=ec.error_type, error_message=ec.error_message[:80], source=ec.source)
 
     # ── Example 2: Multiple agent failures ──────────────────────
-    print("\n--- Example 2: Multiple failures (same config) ---")
+    log.debug("example", example=2, title="Multiple failures (same config)")
 
     for i in range(1, 4):
         agent_i = (
@@ -154,10 +154,10 @@ async def main():
             history_i,
             f"recover-multi-{i}",
         )
-        print(f"  Turn {i}: success={result_i.success}, output={result_i.output[:60]}...")
+        log.debug("result", turn=i, success=result_i.success, output=result_i.output[:60])
 
     # ── Example 3: Stack trace capture ──────────────────────────
-    print("\n--- Example 3: Stack trace capture ---")
+    log.debug("example", example=3, title="Stack trace capture")
 
     stack_config = (
         ErrorHandlingConfig()
@@ -176,13 +176,12 @@ async def main():
 
     history_s = await MessageHistory().load("recover-stack", memory)
     result_s = await stack_agent.run("Hello.", history_s, "recover-stack")
-    print(f"  Result: {result_s.output}")
+    log.debug("result", output=result_s.output)
 
     # ── Error log summary ───────────────────────────────────────
-    print(f"\n--- Recovery log ({len(error_log)} entries) ---")
+    log.debug("recovery_log_summary", entry_count=len(error_log))
     for entry in error_log:
-        print(f"  [{entry['timestamp'][:19]}] {entry['source']}: "
-              f"{entry['error_type']} → {entry['action']}")
+        log.debug("recovery_log_entry", timestamp=entry['timestamp'][:19], source=entry['source'], error_type=entry['error_type'], action=entry['action'])
 
 
 if __name__ == "__main__":

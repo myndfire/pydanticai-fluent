@@ -38,6 +38,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from pydantic import BaseModel
@@ -49,6 +50,7 @@ from agent_harness.guards import AgentRetryConfig, ResultValidatorRetryConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -67,9 +69,9 @@ class WeatherReport(BaseModel):
 
 
 async def main():
-    print("=" * 60)
-    print("Result Validator Retries with Structured Output")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Result Validator Retries with Structured Output")
+    log.debug("separator")
 
     # ── Setup ──────────────────────────────────────────────────
     memory = InMemoryProvider()
@@ -91,11 +93,11 @@ async def main():
     )
 
     # ── Run ────────────────────────────────────────────────────
-    print(f"\nOutput type: WeatherReport")
-    print(f"Validator max retries: {validator_retry.max_retries}")
-    print(f"Validator backoff: {validator_retry.backoff_multiplier}x")
-    print(f"\nSending prompt: 'What's the weather like in San Francisco? "
-          f"Return temperature, conditions, and humidity.'...\n")
+    log.debug("section", title="Configuration")
+    log.debug("validator_config", output_type="WeatherReport")
+    log.debug("validator_config", max_retries=validator_retry.max_retries)
+    log.debug("validator_config", backoff_multiplier=validator_retry.backoff_multiplier)
+    log.debug("section", title="Sending prompt: weather in San Francisco")
 
     result = await agent.run(
         "What's the weather like in San Francisco? "
@@ -105,12 +107,13 @@ async def main():
         "validator-demo",
     )
 
-    print(f"\nSuccess: {result.success}")
-    print(f"Output type: {type(result.output).__name__}")
+    log.debug("separator")
+    log.debug("result", success=result.success)
+    log.debug("result", output_type=type(result.output).__name__)
     if isinstance(result.output, WeatherReport):
-        print(f"  Temperature: {result.output.temperature_f}F")
-        print(f"  Conditions: {result.output.conditions}")
-        print(f"  Humidity: {result.output.humidity_percent}%")
+        log.debug("weather", temperature_f=result.output.temperature_f)
+        log.debug("weather", conditions=result.output.conditions)
+        log.debug("weather", humidity_percent=result.output.humidity_percent)
 
 
 if __name__ == "__main__":

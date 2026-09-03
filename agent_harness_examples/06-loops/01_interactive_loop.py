@@ -116,16 +116,19 @@ Tips
 import os
 import asyncio
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.prompts import StaticPrompts
-from agent_harness.observability import Observability
+
 
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5:3b")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "256"))
@@ -142,11 +145,11 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("Interactive Agent Loop")
-    print(f"Model: {MODEL_NAME}")
-    print("=" * 60)
-    print("Type 'quit', 'exit', or 'bye' to end the conversation.\n")
+    log.debug("separator")
+    log.debug("section", title="Interactive Agent Loop")
+    log.debug("model", name=MODEL_NAME)
+    log.debug("separator")
+    log.debug("instructions", message="Type 'quit', 'exit', or 'bye' to end the conversation.")
 
     memory = InMemoryProvider()
     session_id = "interactive-session"
@@ -160,7 +163,6 @@ async def main():
                 "Keep responses concise and conversational."
             )
         )
-        .with_observability(Observability())
         .with_short_term_memory(memory)
     )
 
@@ -176,10 +178,7 @@ async def main():
         # --- Exit conditions ---
         if user_input.lower() in {"quit", "exit", "bye"}:
             print("Agent: Goodbye! Have a great day.")
-            print("\n--- Session Summary ---")
-            print(f"  Total turns: {turn}")
-            print(f"  Memory retained: {turn_count} turn(s) in InMemoryProvider")
-            print("  Concepts: persistent memory, session management, async I/O")
+            log.debug("session_summary", total_turns=turn, memory_retained=f"{turn_count} turn(s) in InMemoryProvider", concepts="persistent memory, session management, async I/O")
             break
 
         if not user_input:
@@ -189,11 +188,11 @@ async def main():
         history = await MessageHistory().load(session_id, memory)
         turns = await memory.load_turns(session_id)
         turn_count = len(turns)
-        print(f"  [Memory] Loaded {turn_count} prior turn(s)")
+        log.debug("memory_loaded", turn_count=turn_count)
 
         # --- Run agent ---
         turn += 1
-        print(f"  [turn {turn}] thinking...")
+        log.debug("turn_thinking", turn=turn)
         result = await agent.run(user_input, history, session_id, model_settings={"max_tokens": MAX_TOKENS}, save_to=[memory])
 
         # --- Print response ---

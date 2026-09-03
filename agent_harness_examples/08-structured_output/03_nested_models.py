@@ -34,6 +34,7 @@ Setup
 import asyncio
 import os
 from dotenv import load_dotenv
+import structlog
 from pydantic import BaseModel, Field
 
 from agent_harness.agent import ManagedAgent
@@ -41,6 +42,8 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("STRUCTURED_OUTPUT_REASONING_MODEL", "phi4-mini-reasoning")
 MAX_TOKENS = int(os.getenv("STRUCTURED_OUTPUT_MAX_TOKENS", "512"))
@@ -78,9 +81,9 @@ async def main():
         2. Pull model: ollama pull phi4-mini-reasoning
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Nested Models — Hierarchical Structured Output")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="Nested Models — Hierarchical Structured Output")
+    log.debug("separator")
 
     agent = (
         ManagedAgent()
@@ -92,7 +95,7 @@ async def main():
     memory = InMemoryProvider()
 
     # ── Generate a recipe ───────────────────────────────────────
-    print("\n--- Chocolate chip cookies ---")
+    log.debug("section", title="Chocolate chip cookies")
     history = await MessageHistory().load("recipe-1", memory)
     result = await agent.run(
         "Give me a recipe for classic chocolate chip cookies. "
@@ -101,27 +104,27 @@ async def main():
     )
 
     recipe = result.output
-    print(f"\n  {recipe.title}")
-    print(f"  Prep: {recipe.prep_time_minutes} min | "
-          f"Cook: {recipe.cook_time_minutes} min | "
-          f"Servings: {recipe.servings}")
+    log.debug("field", field="title", value=recipe.title)
+    log.debug("field", field="prep", value=f"{recipe.prep_time_minutes} min")
+    log.debug("field", field="cook", value=f"{recipe.cook_time_minutes} min")
+    log.debug("field", field="servings", value=recipe.servings)
 
     # ── Ingredients ─────────────────────────────────────────────
-    print(f"\n  Ingredients ({len(recipe.ingredients)} items):")
+    log.debug("section", title="Ingredients", count=len(recipe.ingredients))
     for ing in recipe.ingredients:
-        print(f"    - {ing.amount} {ing.unit} {ing.name}")
+        log.debug("ingredient", amount=ing.amount, unit=ing.unit, name=ing.name)
 
     # ── Instructions ────────────────────────────────────────────
-    print(f"\n  Instructions ({len(recipe.instructions)} steps):")
+    log.debug("section", title="Instructions", count=len(recipe.instructions))
     for step in recipe.instructions:
-        print(f"    {step.step}. {step.action}")
+        log.debug("instruction", step=step.step, action=step.action)
 
     # ── Nested access ───────────────────────────────────────────
-    print(f"\n--- Nested access ---")
-    print(f"  recipe.ingredients[0] → {recipe.ingredients[0]}")
-    print(f"  recipe.ingredients[0].name → '{recipe.ingredients[0].name}'")
-    print(f"  recipe.instructions[-1] → {recipe.instructions[-1]}")
-    print(f"  All entries validated against Pydantic schemas")
+    log.debug("section", title="Nested access")
+    log.debug("field", field="ingredients[0]", value=str(recipe.ingredients[0]))
+    log.debug("field", field="ingredients[0].name", value=recipe.ingredients[0].name)
+    log.debug("field", field="instructions[-1]", value=str(recipe.instructions[-1]))
+    log.debug("info", message="All entries validated against Pydantic schemas")
 
 
 if __name__ == "__main__":

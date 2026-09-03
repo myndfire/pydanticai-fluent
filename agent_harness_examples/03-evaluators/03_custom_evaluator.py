@@ -54,6 +54,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -62,6 +63,7 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.evaluators import CustomEvaluator
 
 load_dotenv()
+log = structlog.get_logger()
 
 
 # ── Custom evaluator: response length ───────────────────────────────
@@ -169,14 +171,14 @@ class TurnCounterEvaluator(CustomEvaluator):
 # ── Main ────────────────────────────────────────────────────────────
 
 async def main():
-    print("=" * 60)
-    print("CustomEvaluator — Subclass with Logging Helpers")
-    print("=" * 60)
+    log.debug("separator", separator="=" * 60)
+    log.debug("section", title="CustomEvaluator — Subclass with Logging Helpers")
+    log.debug("separator", separator="=" * 60)
 
     memory = InMemoryProvider()
 
     # ── Example 1: Response length evaluator ────────────────────
-    print("\n--- Example 1: ResponseLengthEvaluator ---")
+    log.debug("example", example=1, title="ResponseLengthEvaluator")
 
     length_eval = ResponseLengthEvaluator(min_words=5, max_words=500)
 
@@ -186,8 +188,7 @@ async def main():
         .with_evaluators(length_eval)
     )
 
-    print(f"  Evaluator: ResponseLengthEvaluator(min_words=5, max_words=500)")
-    print()
+    log.debug("evaluator_config", evaluator="ResponseLengthEvaluator", min_words=5, max_words=500)
 
     # Short answer (may trigger too-short warning)
     history = await MessageHistory().load("custom-1", memory)
@@ -196,7 +197,7 @@ async def main():
         history,
         "custom-1",
     )
-    print(f"  Output: {result.output}")
+    log.debug("agent_output", output=result.output)
 
     # Longer answer
     history2 = await MessageHistory().load("custom-2", memory)
@@ -205,10 +206,10 @@ async def main():
         history2,
         "custom-2",
     )
-    print(f"  Output: {result2.output[:80]}...")
+    log.debug("agent_output", output=result2.output[:80], truncated=True)
 
     # ── Example 2: Keyword evaluator ────────────────────────────
-    print("\n--- Example 2: KeywordEvaluator ---")
+    log.debug("example", example=2, title="KeywordEvaluator")
 
     keyword_eval = KeywordEvaluator(
         keywords=["Paris", "France", "Eiffel"]
@@ -220,8 +221,7 @@ async def main():
         .with_evaluators(keyword_eval)
     )
 
-    print(f"  Evaluator: KeywordEvaluator(keywords=['Paris', 'France', 'Eiffel'])")
-    print()
+    log.debug("evaluator_config", evaluator="KeywordEvaluator", keywords=["Paris", "France", "Eiffel"])
 
     history3 = await MessageHistory().load("custom-3", memory)
     result3 = await agent2.run(
@@ -229,10 +229,10 @@ async def main():
         history3,
         "custom-3",
     )
-    print(f"  Output: {result3.output}")
+    log.debug("agent_output", output=result3.output)
 
     # ── Example 3: Multiple custom evaluators ───────────────────
-    print("\n--- Example 3: All three custom evaluators together ---")
+    log.debug("example", example=3, title="All three custom evaluators together")
 
     agent3 = (
         ManagedAgent()
@@ -244,8 +244,7 @@ async def main():
         )
     )
 
-    print("  Evaluators: ResponseLength + Keyword + TurnCounter")
-    print()
+    log.debug("evaluator_list", evaluators="ResponseLength + Keyword + TurnCounter")
 
     for i in range(1, 4):
         history4 = await MessageHistory().load("custom-4", memory)
@@ -254,7 +253,7 @@ async def main():
             history4,
             "custom-4",
         )
-        print(f"  Turn {i}: {result4.output[:60]}...")
+        log.debug("turn_output", turn=i, output=result4.output[:60], truncated=True)
 
 
 if __name__ == "__main__":

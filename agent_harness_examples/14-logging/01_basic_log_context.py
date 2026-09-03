@@ -18,7 +18,7 @@ Demonstrates:
   - with_log_enrichment() to attach persistent enrichment to an agent
   - Per-run enrichment via agent.run(enrichment=LogContext().with_(...))
   - Enriched log context flowing to _started, _completed, token_usage events
-  - ConsoleLogger output carrying pipeline, agent_role, and stage keys
+  - OTEL log records carrying pipeline, agent_role, and stage keys
 
 Usage:
     uv run python logging/01_basic_log_context.py
@@ -36,15 +36,19 @@ Setup
 import asyncio
 import os
 
+import structlog
+
 from agent_harness import ManagedAgent, LogContext, EnvEnricher
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
+log = structlog.get_logger()
+
 
 async def main():
-    print("=" * 60)
-    print("Log Enrichment — Basic LogContext")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Log Enrichment — Basic LogContext")
+    log.debug("separator")
 
     model = ModelConfig(
         provider=os.getenv("LOGGING_MODEL_PROVIDER", "ollama"),
@@ -67,15 +71,16 @@ async def main():
         )
     )
 
-    print("\nAgent enrichment providers:")
-    print(
-        f"  LogContext: pipeline={os.getenv('LOGGING_01_PIPELINE', 'content-qa')}, "
-        f"agent_role={os.getenv('LOGGING_01_AGENT_ROLE', 'assistant')}"
+    log.debug("section", title="Agent enrichment providers")
+    log.debug(
+        "enrichment_providers",
+        log_context=f"pipeline={os.getenv('LOGGING_01_PIPELINE', 'content-qa')}, "
+        f"agent_role={os.getenv('LOGGING_01_AGENT_ROLE', 'assistant')}",
     )
-    print(f"  EnvEnricher: host, env, pid (automatic)")
+    log.debug("enricher", name="EnvEnricher", details="host, env, pid (automatic)")
 
     # ── Run 1: with per-run enrichment (B) ──────────────────────
-    print("\n── Run 1: Per-run enrichment ──")
+    log.debug("section", title="Run 1: Per-run enrichment")
     h1 = await MessageHistory().load("log-1", memory)
     r1 = await agent.run(
         "What is 2+2? Answer in one word.",
@@ -85,10 +90,10 @@ async def main():
             "stage", os.getenv("LOGGING_01_STAGE_1", "math-check")
         ),
     )
-    print(f"  Output: {r1.output}")
+    log.debug("output", result=str(r1.output))
 
     # ── Run 2: different per-run context ────────────────────────
-    print("\n── Run 2: Different per-run context ──")
+    log.debug("section", title="Run 2: Different per-run context")
     h2 = await MessageHistory().load("log-2", memory)
     r2 = await agent.run(
         "What color is the sky? Answer in one word.",
@@ -98,13 +103,14 @@ async def main():
             "stage", os.getenv("LOGGING_01_STAGE_2", "knowledge-check")
         ),
     )
-    print(f"  Output: {r2.output}")
+    log.debug("output", result=str(r2.output))
 
-    print(f"\n✓ Done. Check the JSON log output above.")
-    print(
-        f"  Each entry carries: "
-        f"{os.getenv('LOGGING_01_PIPELINE', 'content-qa')}, "
-        f"{os.getenv('LOGGING_01_AGENT_ROLE', 'assistant')}, stage, host, env, pid"
+    log.debug("done", message="Check the JSON log output above.")
+    log.debug(
+        "entry_fields",
+        pipeline=os.getenv('LOGGING_01_PIPELINE', 'content-qa'),
+        agent_role=os.getenv('LOGGING_01_AGENT_ROLE', 'assistant'),
+        fields="stage, host, env, pid",
     )
 
 

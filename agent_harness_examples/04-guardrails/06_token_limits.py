@@ -37,6 +37,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -46,6 +47,7 @@ from agent_harness.guards import TokenLimitsConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -60,7 +62,7 @@ TOKEN_LIMITS_EX3_MAX_TOTAL = int(os.getenv("TOKEN_LIMITS_EX3_MAX_TOTAL", "5"))
 
 def on_token_limit_handler(ctx):
     """Graceful fallback when a token limit is hit."""
-    print(f"  [on_token_limit] {ctx.error_type}: {ctx.error_message}")
+    log.debug("token_limit_exceeded", error_type=ctx.error_type, error_message=ctx.error_message)
     return (
         f"Response truncated: token limit reached. "
         f"({ctx.error_type}: {ctx.error_message})"
@@ -68,15 +70,15 @@ def on_token_limit_handler(ctx):
 
 
 async def main():
-    print("=" * 60)
-    print("Token Limits Guardrail")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Token Limits Guardrail")
+    log.debug("separator")
 
     # ── Setup ──────────────────────────────────────────────────
     memory = InMemoryProvider()
 
     # ── Example 1: Strict total token limit ────────────────────
-    print("\n--- Example 1: Strict total token limit (50 tokens) ---")
+    log.debug("example", example=1, title="Strict total token limit (50 tokens)")
     limits = (
         TokenLimitsConfig()
         .with_max_total_tokens(TOKEN_LIMITS_EX1_MAX_TOTAL)
@@ -92,9 +94,9 @@ async def main():
 
     history = await MessageHistory().load("token-limit-demo-1", memory)
 
-    print(f"Max total tokens: {limits.max_total_tokens}")
-    print(f"Max output tokens: {limits.max_output_tokens}")
-    print("\nSending prompt: 'Explain quantum computing in detail.'...\n")
+    log.debug("token_limits", max_total_tokens=limits.max_total_tokens)
+    log.debug("token_limits", max_output_tokens=limits.max_output_tokens)
+    log.debug("section", title="Sending prompt: explain quantum computing")
 
     result = await agent.run(
         "Explain quantum computing in detail.",
@@ -102,11 +104,12 @@ async def main():
         "token-limit-demo-1",
     )
 
-    print(f"\nSuccess: {result.success}")
-    print(f"Output: {result.output}")
+    log.debug("separator")
+    log.debug("result", success=result.success)
+    log.debug("result", output=result.output)
 
     # ── Example 2: All limits set ──────────────────────────────
-    print("\n--- Example 2: Input + output + total limits ---")
+    log.debug("example", example=2, title="Input + output + total limits")
     limits2 = (
         TokenLimitsConfig()
         .with_max_input_tokens(TOKEN_LIMITS_EX2_MAX_INPUT)
@@ -123,10 +126,10 @@ async def main():
 
     history2 = await MessageHistory().load("token-limit-demo-2", memory)
 
-    print(f"Max input tokens: {limits2.max_input_tokens}")
-    print(f"Max output tokens: {limits2.max_output_tokens}")
-    print(f"Max total tokens: {limits2.max_total_tokens}")
-    print("\nSending prompt: 'List the 50 US state capitals.'...\n")
+    log.debug("token_limits", max_input_tokens=limits2.max_input_tokens)
+    log.debug("token_limits", max_output_tokens=limits2.max_output_tokens)
+    log.debug("token_limits", max_total_tokens=limits2.max_total_tokens)
+    log.debug("section", title="Sending prompt: list 50 US state capitals")
 
     result2 = await agent2.run(
         "List the 50 US state capitals.",
@@ -134,11 +137,12 @@ async def main():
         "token-limit-demo-2",
     )
 
-    print(f"\nSuccess: {result2.success}")
-    print(f"Output: {result2.output}")
+    log.debug("separator")
+    log.debug("result", success=result2.success)
+    log.debug("result", output=result2.output)
 
     # ── Example 3: Token limit without callback (raises) ───────
-    print("\n--- Example 3: Token limit exceeded (no callback, will raise) ---")
+    log.debug("example", example=3, title="Token limit exceeded (no callback, will raise)")
     limits3 = TokenLimitsConfig().with_max_total_tokens(TOKEN_LIMITS_EX3_MAX_TOTAL)
 
     agent3 = (
@@ -149,8 +153,8 @@ async def main():
 
     history3 = await MessageHistory().load("token-limit-demo-3", memory)
 
-    print(f"Max total tokens: {limits3.max_total_tokens}")
-    print("No on_token_limit callback set — will raise RuntimeError...\n")
+    log.debug("token_limits", max_total_tokens=limits3.max_total_tokens)
+    log.debug("section", title="No on_token_limit callback set - will raise RuntimeError")
 
     try:
         await agent3.run(
@@ -159,10 +163,10 @@ async def main():
             "token-limit-demo-3",
         )
     except Exception as e:
-        print(f"  Caught exception: {e}")
+        log.debug("exception", caught=str(e))
 
     # ── Example 4: Streaming with token limits ──────────────
-    print("\n--- Example 4: Streaming with token limits ---")
+    log.debug("example", example=4, title="Streaming with token limits")
 
     limits4 = (
         TokenLimitsConfig()
@@ -185,8 +189,8 @@ async def main():
 
     history4 = await MessageHistory().load("token-limit-demo-4", memory)
 
-    print(f"Output tokens limit: {limits4.max_output_tokens}")
-    print("Streaming response (tokens arrive in real-time)...\n")
+    log.debug("token_limits", max_output_tokens=limits4.max_output_tokens)
+    log.debug("section", title="Streaming response (tokens arrive in real-time)")
 
     collected = ""
     try:
@@ -196,10 +200,10 @@ async def main():
             "token-limit-demo-4",
         ):
             collected += chunk
-            print(f"  [{len(collected):3d} chars] {chunk!r}")
-        print(f"\nFull output: {collected}")
+            log.debug("stream_chunk", chars=len(collected), chunk=chunk)
+        log.debug("result", full_output=collected)
     except RuntimeError as e:
-        print(f"  Caught RuntimeError: {e}")
+        log.debug("exception", caught_runtime_error=str(e))
 
 
 if __name__ == "__main__":

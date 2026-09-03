@@ -24,9 +24,9 @@ from typing import Optional, Union
 from pydantic_settings import BaseSettings
 from dotenv import find_dotenv
 
-from .logging import Logger, ConsoleLogger, LogfireLogger
-from .tracing import Tracer, LogfireTracer, NoOpTracer
-from .metrics import MetricsCollector, NoOpMetrics, MetricNames, LogfireMetrics
+from .logging import Logger, ConsoleLogger, LogfireLogger, OTELLogger
+from .tracing import Tracer, LogfireTracer, NoOpTracer, OTELTracer
+from .metrics import MetricsCollector, NoOpMetrics, MetricNames, LogfireMetrics, OTELMetrics
 
 
 from pydantic import Field
@@ -131,6 +131,11 @@ class Observability:
             tracers=[LogfireTracer(...), OTELTracer(...)],
             metrics=[InMemoryMetrics(), OTELMetrics(...)],
         )
+
+    Or via builder injection (recommended):
+        obs = Observability(
+            builder=ObservabilityBuilder("agent").with_otel_observability()
+        )
     """
 
     def __init__(
@@ -143,6 +148,7 @@ class Observability:
         tracers: Optional[list[Tracer]] = None,
         metrics_list: Optional[list[MetricsCollector]] = None,
         traceback_frame_limit: Optional[int] = None,
+        builder: Optional["ObservabilityBuilder"] = None,
     ):
         """
         Initialize observability with pluggable backends.
@@ -156,8 +162,26 @@ class Observability:
             tracers: Multiple tracing backends
             metrics_list: Multiple metrics backends
             traceback_frame_limit: Max traceback frames (None = full)
+            builder: ObservabilityBuilder to pull backends from directly
         """
-        self.service_name = service_name
+        if builder:
+            self.service_name = builder.service_name
+            self._loggers: list[Logger] = list(builder._loggers)
+            self._tracers: list[Tracer] = list(builder._tracers)
+            self._metrics: list[MetricsCollector] = list(builder._metrics)
+        else:
+            self.service_name = service_name
+            # Build lists from single or multiple args
+            self._loggers = loggers or []
+            if logger:
+                self._loggers.append(logger)
+            self._tracers = tracers or []
+            if tracer:
+                self._tracers.append(tracer)
+            self._metrics = metrics_list or []
+            if metrics:
+                self._metrics.append(metrics)
+
         # Priority: passed arg > env var > None (full)
         self.traceback_frame_limit = (
             traceback_frame_limit
@@ -165,24 +189,13 @@ class Observability:
             else HARNESS_SETTINGS.traceback_frame_limit
         )
 
-        # Build lists from single or multiple args
-        self._loggers: list[Logger] = loggers or []
-        if logger:
-            self._loggers.append(logger)
+        # Apply OTEL defaults for empty lists
         if not self._loggers:
-            self._loggers = [ConsoleLogger()]
-
-        self._tracers: list[Tracer] = tracers or []
-        if tracer:
-            self._tracers.append(tracer)
+            self._loggers = [OTELLogger(service_name=self.service_name)]
         if not self._tracers:
-            self._tracers = [NoOpTracer()]
-
-        self._metrics: list[MetricsCollector] = metrics_list or []
-        if metrics:
-            self._metrics.append(metrics)
+            self._tracers = [OTELTracer(service_name=self.service_name)]
         if not self._metrics:
-            self._metrics = [NoOpMetrics()]
+            self._metrics = [OTELMetrics(service_name=self.service_name)]
 
         # Base context injected into every log entry
         self._base_context = {
@@ -465,7 +478,16 @@ class Observability:
 
 
 class ObservabilityBuilder:
-    """Fluent builder for observability configuration."""
+    """Fluent builder for observability configuration.
+
+    Provides two convenience methods for the supported observability stacks:
+
+    - ``with_otel_observability()`` — OpenTelemetry (logging + tracing + metrics)
+    - ``with_logfire_observability()`` — Logfire (logging + tracing + metrics)
+
+    All parameters are optional with sensible defaults; pass only what you
+    need to override.
+    """
 
     def __init__(self, service_name: str = "agent"):
         self.service_name = service_name
@@ -473,74 +495,55 @@ class ObservabilityBuilder:
         self._tracers: list[Tracer] = []
         self._metrics: list[MetricsCollector] = []
 
-    def with_console_logging(self) -> "ObservabilityBuilder":
-        from .logging import ConsoleLogger
-
-        self._loggers.append(ConsoleLogger())
-        return self
-
-    def with_elasticsearch_logging(
-        self, endpoint: str, index_prefix: str = "agent-logs"
-    ) -> "ObservabilityBuilder":
-        from .logging import ElasticsearchLogger
-
-        self._loggers.append(
-            ElasticsearchLogger(
-                endpoint=endpoint,
-                index_prefix=index_prefix,
-                service_name=self.service_name,
-            )
-        )
-        return self
-
-    def with_file_logging(self, log_file: str = "agent.log") -> "ObservabilityBuilder":
-        from .logging import FileLogger
-
-        self._loggers.append(FileLogger(log_file=log_file))
-        return self
-
-    def with_logfire_logging(self) -> "ObservabilityBuilder":
-        """Add Logfire as a logging backend."""
-        from .logging import LogfireLogger
-
-        self._loggers.append(LogfireLogger(service_name=self.service_name))
-        return self
-
-    def with_otel_logging(
-        self, otlp_endpoint: str = "localhost:4317"
-    ) -> "ObservabilityBuilder":
-        from .logging import OTELLogger
-
-        self._loggers.append(
-            OTELLogger(service_name=self.service_name, otlp_endpoint=otlp_endpoint)
-        )
-        return self
-
-    def with_logfire_tracing(
-        self,
-        send_to_logfire: bool = True,
-        instrument_pydantic_ai: bool = True,
-    ) -> "ObservabilityBuilder":
-        from .tracing import LogfireTracer
-
-        self._tracers.append(
-            LogfireTracer(
-                service_name=self.service_name,
-                send_to_logfire=send_to_logfire,
-                instrument_pydantic_ai=instrument_pydantic_ai,
-            )
-        )
-        return self
-
-    def with_otel_tracing(
+    def with_otel_observability(
         self,
         otlp_endpoint: str = "localhost:4317",
         sample_rate: float = 1.0,
         create_spans: bool = False,
         record_failures: bool = True,
+        headers: Optional[dict[str, str]] = None,
+        export_interval_ms: int = 5000,
+        flush_on_exit: bool = True,
+        shutdown_on_exit: bool = True,
     ) -> "ObservabilityBuilder":
-        from .tracing import OTELTracer
+        """Add complete OpenTelemetry observability (logging + tracing + metrics).
 
+        All signals are exported via OTLP gRPC to the same collector endpoint.
+
+        Args:
+            otlp_endpoint: OTel Collector OTLP gRPC endpoint
+            sample_rate: Trace sampling ratio (0.0–1.0, default 1.0)
+            create_spans: When True, export harness-owned spans in addition to
+                PydanticAI native spans (default False)
+            record_failures: Record exceptions in the trace stream (default True)
+            headers: Optional gRPC metadata headers for authenticated endpoints
+                (e.g. ``{"Authorization": "Bearer <token>"}``).  The standard
+                ``OTEL_EXPORTER_OTLP_HEADERS`` env var is also supported by the
+                SDK automatically.
+            export_interval_ms: BatchSpanProcessor export interval in
+                milliseconds (default 5000). Lower values make traces appear
+                in the backend faster during development.
+            flush_on_exit: Register atexit handlers that call ``force_flush()``
+                on all OTEL providers before exit (default True). Ensures
+                buffered telemetry is sent even for short-lived scripts.
+            shutdown_on_exit: Register atexit handlers that call ``shutdown()``
+                on all OTEL providers (default True). Implies ``flush_on_exit``.
+
+        Returns:
+            Self for chaining
+        """
+        from .logging import OTELLogger
+        from .tracing import OTELTracer
+        from .metrics import OTELMetrics
+
+        self._loggers.append(
+            OTELLogger(
+                service_name=self.service_name,
+                otlp_endpoint=otlp_endpoint,
+                flush_on_exit=flush_on_exit,
+                shutdown_on_exit=shutdown_on_exit,
+            )
+        )
         self._tracers.append(
             OTELTracer(
                 service_name=self.service_name,
@@ -548,100 +551,49 @@ class ObservabilityBuilder:
                 sample_rate=sample_rate,
                 create_spans=create_spans,
                 record_failures=record_failures,
+                export_interval_ms=export_interval_ms,
+                flush_on_exit=flush_on_exit,
+                shutdown_on_exit=shutdown_on_exit,
             )
         )
-        return self
-
-    def with_jaeger_tracing(
-        self, jaeger_host: str = "localhost", jaeger_port: int = 6831
-    ) -> "ObservabilityBuilder":
-        from .tracing import JaegerTracer
-
-        self._tracers.append(
-            JaegerTracer(
+        self._metrics.append(
+            OTELMetrics(
                 service_name=self.service_name,
-                jaeger_host=jaeger_host,
-                jaeger_port=jaeger_port,
+                otlp_endpoint=otlp_endpoint,
+                flush_on_exit=flush_on_exit,
+                shutdown_on_exit=shutdown_on_exit,
             )
         )
-        return self
-
-    def with_prometheus_metrics(
-        self, push_gateway: Optional[str] = None
-    ) -> "ObservabilityBuilder":
-        from .metrics import PrometheusMetrics
-
-        self._metrics.append(
-            PrometheusMetrics(namespace=self.service_name, push_gateway=push_gateway)
-        )
-        return self
-
-    def with_statsd_metrics(
-        self, host: str = "localhost", port: int = 8125
-    ) -> "ObservabilityBuilder":
-        from .metrics import StatsdMetrics
-
-        self._metrics.append(
-            StatsdMetrics(host=host, port=port, prefix=self.service_name)
-        )
-        return self
-
-    def with_in_memory_metrics(self) -> "ObservabilityBuilder":
-        from .metrics import InMemoryMetrics
-
-        self._metrics.append(InMemoryMetrics())
-        return self
-
-    def with_logfire_metrics(self) -> "ObservabilityBuilder":
-        """Add Logfire as a metrics backend."""
-        from .metrics import LogfireMetrics
-
-        self._metrics.append(LogfireMetrics(service_name=self.service_name))
         return self
 
     def with_logfire_observability(
         self,
         send_to_logfire: bool = True,
-        include_tracing: bool = True,
-        include_metrics: bool = True,
+        instrument_pydantic_ai: bool = True,
     ) -> "ObservabilityBuilder":
-        """
-        Add complete Logfire observability (logging, tracing, metrics).
+        """Add complete Logfire observability (logging + tracing + metrics).
 
         Args:
             send_to_logfire: Send to Logfire cloud or local only
-            include_tracing: Enable Logfire tracing
-            include_metrics: Enable Logfire metrics
+            instrument_pydantic_ai: Auto-instrument PydanticAI spans
 
         Returns:
             Self for chaining
         """
-        # Add Logfire logging (structured logging to Logfire)
+        from .logging import LogfireLogger
+        from .tracing import LogfireTracer
+        from .metrics import LogfireMetrics
+
         self._loggers.append(LogfireLogger(service_name=self.service_name))
-
-        # Add Logfire tracing
-        if include_tracing:
-            from .tracing import LogfireTracer
-
-            self._tracers.append(
-                LogfireTracer(
-                    service_name=self.service_name,
-                    send_to_logfire=send_to_logfire,
-                )
+        self._tracers.append(
+            LogfireTracer(
+                service_name=self.service_name,
+                send_to_logfire=send_to_logfire,
+                instrument_pydantic_ai=instrument_pydantic_ai,
             )
-
-        # Add Logfire metrics
-        if include_metrics:
-            from .metrics import LogfireMetrics
-
-            self._metrics.append(LogfireMetrics(service_name=self.service_name))
-
+        )
+        self._metrics.append(LogfireMetrics(service_name=self.service_name))
         return self
 
     def build(self) -> Observability:
-        return Observability(
-            service_name=self.service_name,
-            loggers=self._loggers or None,
-            tracers=self._tracers or None,
-            metrics_list=self._metrics or None,
-        )
+        return Observability(builder=self)

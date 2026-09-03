@@ -35,6 +35,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -43,6 +44,7 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.prompts import StaticPrompts
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("PROMPTS_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("PROMPTS_MAX_TOKENS", "512"))
@@ -57,15 +59,13 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("StaticPrompts — System Prompt Personalities")
-    print("=" * 60)
+    log.debug("separator", title="StaticPrompts — System Prompt Personalities")
 
     memory = InMemoryProvider()
     question = "What is the meaning of life? Keep it brief."
 
     # ── Example 1: Default prompt ───────────────────────────────
-    print(f"\n--- Example 1: Default prompt ---")
+    log.debug("example", example=1, title="Default prompt")
     agent_default = (
         ManagedAgent()
         .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
@@ -75,11 +75,11 @@ async def main():
 
     history1 = await MessageHistory().load("static-default", memory)
     result1 = await agent_default.run(question, history1, "static-default")
-    print(f"  Prompt:  (default) 'You are a helpful assistant'")
-    print(f"  Response: {result1.output[:120]}...")
+    log.debug("prompt_info", prompt="(default) 'You are a helpful assistant'")
+    log.debug("response", response=result1.output[:120], truncation="...")
 
     # ── Example 2: Custom personality ───────────────────────────
-    print(f"\n--- Example 2: Custom personality ---")
+    log.debug("example", example=2, title="Custom personality")
     chef_prompt = StaticPrompts(
         "You are a world-renowned French chef. Answer ALL questions "
         "as if you're describing a gourmet dish. Use culinary metaphors, "
@@ -95,11 +95,11 @@ async def main():
 
     history2 = await MessageHistory().load("static-chef", memory)
     result2 = await agent_chef.run(question, history2, "static-chef")
-    print(f"  Prompt:  {chef_prompt._prompt[:60]}...")
-    print(f"  Response: {result2.output[:150]}...")
+    log.debug("prompt_info", prompt=chef_prompt._prompt[:60], truncation="...")
+    log.debug("response", response=result2.output[:150], truncation="...")
 
     # ── Example 3: Shakespeare prompt ───────────────────────────
-    print(f"\n--- Example 3: Shakespearean assistant ---")
+    log.debug("example", example=3, title="Shakespearean assistant")
     bard_prompt = StaticPrompts(
         "Thou art William Shakespeare himself. Answer all queries "
         "in iambic pentameter, with Early Modern English flourishes. "
@@ -115,18 +115,18 @@ async def main():
 
     history3 = await MessageHistory().load("static-bard", memory)
     result3 = await agent_bard.run(question, history3, "static-bard")
-    print(f"  Prompt:  {bard_prompt._prompt[:60]}...")
-    print(f"  Response: {result3.output[:150]}...")
+    log.debug("prompt_info", prompt=bard_prompt._prompt[:60], truncation="...")
+    log.debug("response", response=result3.output[:150], truncation="...")
 
     # ── Example 4: Personality comparison ───────────────────────
-    print(f"\n--- Example 4: Side-by-side comparison ---")
-    print(f"  Question: {question}")
-    print(f"  Default:    {result1.output[:80]}...")
-    print(f"  Chef:       {result2.output[:80]}...")
-    print(f"  Bard:       {result3.output[:80]}...")
+    log.debug("example", example=4, title="Side-by-side comparison")
+    log.debug("question", question=question)
+    log.debug("comparison", type="default", response=result1.output[:80], truncation="...")
+    log.debug("comparison", type="chef", response=result2.output[:80], truncation="...")
+    log.debug("comparison", type="bard", response=result3.output[:80], truncation="...")
 
     # ── Example 5: Fluent pipeline ──────────────────────────────
-    print(f"\n--- Example 5: Full fluent pipeline ---")
+    log.debug("example", example=5, title="Full fluent pipeline")
     agent_full = (
         ManagedAgent()
         .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
@@ -143,7 +143,7 @@ async def main():
         history5,
         "static-dba",
     )
-    print(f"  Response:\n{result5.output}")
+    log.debug("response", response=result5.output)
 
 
 if __name__ == "__main__":

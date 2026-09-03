@@ -19,8 +19,11 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.prompts import StaticPrompts
 from pydantic_ai.settings import ModelSettings
+import structlog
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL = os.getenv("MODEL_NAME", "qwen2.5:3b")
 PROVIDER = os.getenv("PROVIDER", "ollama")
@@ -57,12 +60,11 @@ async def run_with_max_tokens(label: str, max_tokens: int) -> None:
     history = await MessageHistory().load(f"mt-{max_tokens}", agent._short_term_memory)
     result = await agent.run(PROMPT, history, f"mt-{max_tokens}")
     word_count = len(result.output.split())
-    print(f"  [{label}] max_tokens={max_tokens}  (response: ~{word_count} words)")
-    print(f"  → {result.output}\n")
+    log.debug("run_result", label=label, max_tokens=max_tokens, word_count=word_count, output=str(result.output))
 
 
 async def main() -> None:
-    print("=== Max Tokens Demo ===\n")
+    log.debug("section_header", title="Max Tokens Demo")
 
     await run_with_max_tokens("short", 30)
     await run_with_max_tokens("medium", 128)

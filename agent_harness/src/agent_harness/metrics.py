@@ -238,6 +238,8 @@ class OTELMetrics:
         self,
         service_name: str = "agent",
         otlp_endpoint: str = "localhost:4317",
+        flush_on_exit: bool = True,
+        shutdown_on_exit: bool = True,
     ):
         """
         Initialize OTEL metrics.
@@ -245,10 +247,19 @@ class OTELMetrics:
         Args:
             service_name: Service name for metrics
             otlp_endpoint: OTel Collector OTLP gRPC endpoint (default: localhost:4317)
+            flush_on_exit: Register an atexit handler that calls
+                ``force_flush()`` on the MeterProvider before exit (default True).
+            shutdown_on_exit: Register an atexit handler that calls
+                ``shutdown()`` on the MeterProvider (default True). Implies
+                ``flush_on_exit``.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
+        self._flush_on_exit = flush_on_exit or shutdown_on_exit
+        self._shutdown_on_exit = shutdown_on_exit
         self._meter = None
+        self._provider = None
+        self._shut_down = False
 
         self._setup_otlp()
 
@@ -279,11 +290,37 @@ class OTELMetrics:
             if _is_proxy_provider(existing):
                 metrics.set_meter_provider(provider)
                 self._meter = metrics.get_meter(self.service_name)
+                self._provider = provider
                 print(f"✅ OTLP metrics initialized: {self.otlp_endpoint}")
+                # Register atexit only for our own provider
+                if self._flush_on_exit or self._shutdown_on_exit:
+                    import atexit
+
+                    # The SDK's MeterProvider.__init__ registers its own
+                    # atexit handler. Unregister it to avoid "shutdown can
+                    # only be called once" when our handler also fires.
+                    if getattr(provider, "_atexit_handler", None) is not None:
+                        atexit.unregister(provider._atexit_handler)
+                        provider._atexit_handler = None
+
+                    def _cleanup():
+                        try:
+                            if self._shut_down:
+                                return
+                            if self._shutdown_on_exit:
+                                self._provider.shutdown()
+                            elif self._flush_on_exit:
+                                self._provider.force_flush()
+                        except Exception:
+                            pass
+
+                    atexit.register(_cleanup)
             else:
                 # A provider is already registered (e.g. by Logfire). We cannot
                 # retrofit our OTLP reader onto it, so attach to the existing one.
+                # Don't register atexit — the original owner already did.
                 self._meter = metrics.get_meter(self.service_name)
+                self._provider = existing
                 print(
                     f"✅ OTLP metrics attached to existing MeterProvider (reuse): "
                     f"{self.otlp_endpoint}"
@@ -336,6 +373,22 @@ class OTELMetrics:
     def summary(self, name: str, value: float, **labels):
         """Record a summary value (as histogram)."""
         self.histogram(name, value, **labels)
+
+    def shutdown(self):
+        """Explicitly flush and shut down the OTLP metrics provider.
+
+        Call this for deterministic cleanup in long-running processes or
+        when ``flush_on_exit=False``.
+        """
+        if self._provider:
+            try:
+                self._provider.force_flush()
+                self._provider.shutdown()
+            except Exception:
+                pass
+            self._provider = None
+            self._meter = None
+            self._shut_down = True
 
 
 class PrometheusMetrics:

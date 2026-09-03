@@ -37,6 +37,7 @@ Setup
 import asyncio
 import os
 from dotenv import load_dotenv
+import structlog
 from pydantic import BaseModel, Field
 
 from agent_harness.agent import ManagedAgent
@@ -44,6 +45,8 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("STRUCTURED_OUTPUT_MODEL_NAME", "phi4-mini")
 MAX_TOKENS = int(os.getenv("STRUCTURED_OUTPUT_MAX_TOKENS", "512"))
@@ -67,9 +70,9 @@ async def main():
         2. Pull model: ollama pull phi4-mini
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Structured Output — Typed Weather Report")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="Structured Output — Typed Weather Report")
+    log.debug("separator")
 
     agent = (
         ManagedAgent()
@@ -81,7 +84,7 @@ async def main():
     memory = InMemoryProvider()
 
     # ── Run 1: Tokyo ────────────────────────────────────────────
-    print("\n--- Tokyo ---")
+    log.debug("section", title="Tokyo")
     history = await MessageHistory().load("struct-tokyo", memory)
     result = await agent.run(
         "What is the current weather in Tokyo?",
@@ -89,14 +92,14 @@ async def main():
     )
 
     report = result.output
-    print(f"  City:      {report.city}")
-    print(f"  Temp:      {report.temperature_f}F")
-    print(f"  Conditions:{report.conditions}")
-    print(f"  Humidity:  {report.humidity_percent}%")
-    print(f"  Wind:      {report.wind_mph} mph")
+    log.debug("field", field="city", value=report.city)
+    log.debug("field", field="temp", value=f"{report.temperature_f}F")
+    log.debug("field", field="conditions", value=report.conditions)
+    log.debug("field", field="humidity", value=f"{report.humidity_percent}%")
+    log.debug("field", field="wind", value=f"{report.wind_mph} mph")
 
     # ── Run 2: London ───────────────────────────────────────────
-    print("\n--- London ---")
+    log.debug("section", title="London")
     history2 = await MessageHistory().load("struct-london", memory)
     result2 = await agent.run(
         "What is the current weather in London?",
@@ -104,15 +107,15 @@ async def main():
     )
 
     report2 = result2.output
-    print(f"  City:      {report2.city}")
-    print(f"  Temp:      {report2.temperature_f}F")
-    print(f"  Conditions:{report2.conditions}")
+    log.debug("field", field="city", value=report2.city)
+    log.debug("field", field="temp", value=f"{report2.temperature_f}F")
+    log.debug("field", field="conditions", value=report2.conditions)
 
     # ── Comparison ──────────────────────────────────────────────
-    print(f"\n--- Typed access ---")
-    print(f"  result.output is a WeatherReport: {isinstance(result.output, WeatherReport)}")
-    print(f"  Fields are typed: temperature_f is int = {report.temperature_f}")
-    print(f"  IDE autocomplete works on {type(report).__name__}")
+    log.debug("section", title="Typed access")
+    log.debug("type_check", is_weather_report=isinstance(result.output, WeatherReport))
+    log.debug("field", field="temperature_f", value=report.temperature_f, note="Fields are typed")
+    log.debug("field", field="type", value=type(report).__name__, note="IDE autocomplete works")
 
 
 if __name__ == "__main__":

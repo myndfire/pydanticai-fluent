@@ -44,6 +44,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -56,6 +57,7 @@ from agent_harness.memory import (
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MEMORY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -99,22 +101,21 @@ async def main():
         4. Start Redis: docker compose -f docker-compose.yml up -d redis
         5. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Combined Memory — Redis (short) + MongoDB (long)")
-    print("=" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="Combined Memory — Redis (short) + MongoDB (long)")
+    log.debug("separator", width=60)
 
     # ── Connection check ────────────────────────────────────────
-    print(f"\nChecking MongoDB at {MONGO_URI} ...")
+    log.debug("checking", service="MongoDB", uri=MONGO_URI)
     mongo_ok = await check_mongo(MONGO_URI)
-    print(f"  {'Reachable' if mongo_ok else 'NOT reachable'}")
+    log.debug("reachable", service="MongoDB", ok=mongo_ok)
 
-    print(f"Checking Redis at {REDIS_HOST}:{REDIS_PORT} ...")
+    log.debug("checking", service="Redis", host=REDIS_HOST, port=REDIS_PORT)
     redis_ok = await check_redis(REDIS_HOST, REDIS_PORT)
-    print(f"  {'Reachable' if redis_ok else 'NOT reachable'}")
+    log.debug("reachable", service="Redis", ok=redis_ok)
 
     if not (mongo_ok and redis_ok):
-        print("\n  Both services required. Start with:")
-        print("    docker compose -f docker-compose.yml up -d mongo redis")
+        log.debug("both_required", hint="docker compose -f docker-compose.yml up -d mongo redis")
         return
 
     # ── Setup providers ─────────────────────────────────────────
@@ -138,9 +139,9 @@ async def main():
         .with_long_term_memory(mongo)
     )
 
-    print(f"\n  Short-term: RedisMemory ({REDIS_HOST}:{REDIS_PORT})")
-    print(f"  Long-term:  MongoMemory ({MONGO_URI})")
-    print(f"  On each run(): agent loads context from BOTH providers (union)")
+    log.debug("short_term", provider=f"RedisMemory ({REDIS_HOST}:{REDIS_PORT})")
+    log.debug("long_term", provider=f"MongoMemory ({MONGO_URI})")
+    log.debug("context_union", message="On each run(): agent loads context from BOTH providers (union)")
 
     # ── Multi-turn conversation ─────────────────────────────────
     session = "combined-demo"
@@ -151,7 +152,7 @@ async def main():
         "Add 50 to the number you calculated earlier. What is the total?",
     ]
 
-    print(f"\n--- Multi-turn conversation (session: {session}) ---")
+    log.debug("section", title=f"Multi-turn conversation (session: {session})")
     for i, prompt in enumerate(conversations, 1):
         history = await MessageHistory().load(session, redis_mem)
         result = await agent.run(
@@ -160,17 +161,16 @@ async def main():
             session,
             save_to=[redis_mem, mongo],
         )
-        print(f"  Turn {i}: {result.output}")
+        log.debug("turn", index=i, output=result.output)
 
     # ── Provider comparison ─────────────────────────────────────
-    print("\n--- Provider comparison ---")
+    log.debug("section", title="Provider comparison")
     redis_turns = await redis_mem.load_turns(session)
     mongo_turns = await mongo.load_turns(session)
-    print(f"  Redis turns: {len(redis_turns)}")
-    print(f"  MongoDB turns: {len(mongo_turns)}")
+    log.debug("turn_counts", redis=len(redis_turns), mongodb=len(mongo_turns))
 
     # ── Context union verification ──────────────────────────────
-    print("\n--- Context union: load only from MongoDB ---")
+    log.debug("section", title="Context union: load only from MongoDB")
     agent2 = (
         ManagedAgent()
         .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
@@ -178,7 +178,7 @@ async def main():
     )
     # Load from Mongo only — proves Redis is not required for persistence
     mongo_only_history = await MessageHistory().load(session, mongo)
-    print(f"  Messages from MongoDB alone: {len(mongo_only_history.messages)}")
+    log.debug("loaded", source="MongoDB", messages=len(mongo_only_history.messages))
 
     result_union = await agent2.run(
         "Based on everything we discussed, what was the launch code "
@@ -186,29 +186,29 @@ async def main():
         mongo_only_history,
         session,
     )
-    print(f"  Response: {result_union.output}")
+    log.debug("response", output=result_union.output)
 
     # ── Cross-provider CRUD ─────────────────────────────────────
-    print("\n--- Cross-provider: delete from Redis, verify MongoDB still has it ---")
+    log.debug("section", title="Cross-provider: delete from Redis, verify MongoDB still has it")
     if mongo_turns:
         target_id = mongo_turns[0].turn_id
         redis_deleted = await redis_mem.delete_turn(session, target_id)
-        print(f"  Deleted from Redis: {redis_deleted}")
+        log.debug("deleted_from_redis", result=redis_deleted)
         mongo_still = await mongo.get_turn(session, target_id)
-        print(f"  MongoDB still has it: {mongo_still is not None}")
-        print(f"  Redis turns after delete: {len(await redis_mem.load_turns(session))}")
-        print(f"  MongoDB turns unchanged:  {len(await mongo.load_turns(session))}")
+        log.debug("mongodb_still_has", exists=mongo_still is not None)
+        log.debug("redis_turns_after_delete", count=len(await redis_mem.load_turns(session)))
+        log.debug("mongodb_turns_unchanged", count=len(await mongo.load_turns(session)))
 
     # ── Cleanup ─────────────────────────────────────────────────
-    print("\n--- Cleanup ---")
+    log.debug("section", title="Cleanup")
     answer = input("Delete demo data from both providers? (y/n) ").strip().lower()
     if answer == "y":
         await redis_mem.clear(session)
         await mongo.clear(session)
-        print(f"  Redis '{session}' remaining: {len(await redis_mem.load_turns(session))}")
-        print(f"  MongoDB '{session}' remaining: {len(await mongo.load_turns(session))}")
+        log.debug("remaining", provider="Redis", session=session, count=len(await redis_mem.load_turns(session)))
+        log.debug("remaining", provider="MongoDB", session=session, count=len(await mongo.load_turns(session)))
     else:
-        print("  Skipped cleanup. Data preserved.")
+        log.debug("skipped_cleanup")
 
 
 if __name__ == "__main__":

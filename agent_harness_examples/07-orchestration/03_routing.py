@@ -53,6 +53,7 @@ import os
 import asyncio
 from dataclasses import dataclass, field
 
+import structlog
 from dotenv import load_dotenv
 from pydantic_ai import RunContext
 
@@ -63,6 +64,7 @@ from agent_harness.tools import ToolRegistry
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-oss:20b")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
@@ -106,7 +108,7 @@ def classify_request(ctx: RunContext[SharedContext], text: str) -> str:
         category = "general"
 
     ctx.deps.classification = category
-    print(f"  [classify] \"{text[:60]}...\" → {category}")
+    log.debug("classify", text=text[:60], category=category)
     return category
 
 
@@ -123,9 +125,9 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("Pattern 3: Classify and Route")
-    print("=" * 60)
+    log.debug("separator", char="=", count=60)
+    log.debug("pattern", pattern=3, title="Classify and Route")
+    log.debug("separator", char="=", count=60)
 
     model = ModelConfig(provider=LLM_PROVIDER, model_name=MODEL_NAME)
     memory = InMemoryProvider()
@@ -164,11 +166,11 @@ async def main():
 
     for i, query in enumerate(queries):
         ctx = SharedContext()
-        print(f"\n{'─'*60}")
-        print(f"Turn {i+1}: {query}")
+        log.debug("separator", char="-", count=60)
+        log.debug("turn", turn=i + 1, query=query)
 
         # Step 1: Classify
-        print(f"\n  [Step 1] Router classifies...")
+        log.debug("step", step=1, action="Router classifies")
         h1 = await MessageHistory().load(f"route-r{i}", memory)
         await router.run(
             f"Classify this request: {query}",
@@ -185,7 +187,7 @@ async def main():
         }
         agent, label = specialist_map.get(ctx.classification, specialist_map["general"])
         ctx.specialist_used = label
-        print(f"\n  [Step 2] Routing to: {label}")
+        log.debug("step", step=2, action="Routing to specialist", label=label)
 
         h2 = await MessageHistory().load(f"route-s{i}", memory)
         r2 = await agent.run(
@@ -193,17 +195,17 @@ async def main():
             h2,
             f"route-s{i}",
         )
-        print(f"  Specialist output: {r2.output}")
+        log.debug("specialist_output", result=str(r2.output))
 
         # Record
         ctx.record(query, ctx.classification, label)
 
     # ── Summary ─────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print("Routing Log (from SharedContext)")
-    print("=" * 60)
+    log.debug("separator", char="=", count=60)
+    log.debug("section", title="Routing Log (from SharedContext)")
+    log.debug("separator", char="=", count=60)
     for entry in ctx.routing_log:
-        print(f"  [{entry['classification']}] → {entry['specialist']}")
+        log.debug("routing_entry", classification=entry['classification'], specialist=entry['specialist'])
 
 
 if __name__ == "__main__":

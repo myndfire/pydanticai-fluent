@@ -21,8 +21,11 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.prompts import StaticPrompts
 from pydantic_ai.settings import ModelSettings
+import structlog
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL = os.getenv("MODEL_NAME", "qwen2.5:3b")
 PROVIDER = os.getenv("PROVIDER", "ollama")
@@ -56,12 +59,11 @@ async def run_config(label: str, settings: dict) -> None:
     session = f"sampling-{label}"
     history = await MessageHistory().load(session, agent._short_term_memory)
     result = await agent.run(PROMPT, history, session)
-    print(f"  [{label}] {settings}")
-    print(f"  → {result.output}\n")
+    log.debug("run_result", label=label, settings=str(settings), output=str(result.output))
 
 
 async def main() -> None:
-    print("=== Sampling Controls Demo ===\n")
+    log.debug("section_header", title="Sampling Controls Demo")
 
     await run_config("top_p narrow", {"top_p": 0.1})
     await run_config("top_p wide", {"top_p": 1.0})

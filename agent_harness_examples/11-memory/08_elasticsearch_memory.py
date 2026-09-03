@@ -43,6 +43,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -50,6 +51,7 @@ from agent_harness.memory import InMemoryProvider, MessageHistory, Elasticsearch
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MEMORY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -80,18 +82,17 @@ async def main():
         3. Start Elasticsearch: docker compose -f docker-compose.yml up -d elasticsearch
         4. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("ElasticsearchMemory — Elasticsearch Long-Term Memory")
-    print("=" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="ElasticsearchMemory — Elasticsearch Long-Term Memory")
+    log.debug("separator", width=60)
 
     # ── Connection check ────────────────────────────────────────
-    print(f"\nChecking Elasticsearch at {ES_ENDPOINT} ...")
+    log.debug("checking", service="Elasticsearch", endpoint=ES_ENDPOINT)
     if not await check_elasticsearch(ES_ENDPOINT):
-        print(f"  Elasticsearch not reachable at {ES_ENDPOINT}")
-        print("  Start with:")
-        print("    docker compose -f docker-compose.yml up -d elasticsearch")
+        log.debug("not_reachable", service="Elasticsearch", endpoint=ES_ENDPOINT)
+        log.debug("start_hint", command="docker compose -f docker-compose.yml up -d elasticsearch")
         return
-    print("  Elasticsearch is reachable.")
+    log.debug("reachable", service="Elasticsearch")
 
     # ── Setup providers ─────────────────────────────────────────
     short_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "10")))
@@ -108,14 +109,10 @@ async def main():
         .with_long_term_memory(es_mem)
     )
 
-    print(f"  Short-term: InMemoryProvider(max_turns=10)")
-    print(f"  Long-term:  ElasticsearchMemory({ES_ENDPOINT}, index={ES_INDEX})")
-    print(f"  On first use, index '{ES_INDEX}' is auto-created with mappings:")
-    print(f"    session_id: keyword")
-    print(f"    turn_id:    keyword")
-    print(f"    timestamp:  date")
-    print(f"    turn_data:  object")
-    print(f"  Document ID format: {{session_id}}:{{turn_id}}")
+    log.debug("short_term", provider=f"InMemoryProvider(max_turns=10)")
+    log.debug("long_term", provider=f"ElasticsearchMemory({ES_ENDPOINT}, index={ES_INDEX})")
+    log.debug("auto_index", index=ES_INDEX, mappings="session_id: keyword, turn_id: keyword, timestamp: date, turn_data: object")
+    log.debug("document_id_format", format="{session_id}:{turn_id}")
 
     # ── Multi-turn conversation ─────────────────────────────────
     session = "es-demo"
@@ -126,7 +123,7 @@ async def main():
         "Now tell me: what year did World War II end?",
     ]
 
-    print(f"\n--- Multi-turn conversation (session: {session}) ---")
+    log.debug("section", title=f"Multi-turn conversation (session: {session})")
     for i, prompt in enumerate(conversations, 1):
         history = await MessageHistory().load(session, short_term)
         result = await agent.run(
@@ -135,17 +132,17 @@ async def main():
             session,
             save_to=[short_term, es_mem],
         )
-        print(f"  Turn {i}: {result.output}")
+        log.debug("turn", index=i, output=result.output)
 
     # ── Context restoration ─────────────────────────────────────
-    print("\n--- Context restoration (new agent, load from Elasticsearch) ---")
+    log.debug("section", title="Context restoration (new agent, load from Elasticsearch)")
     agent2 = (
         ManagedAgent()
         .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
         .with_model_settings({"max_tokens": MAX_TOKENS})
     )
     restored_history = await MessageHistory().load(session, es_mem)
-    print(f"  Messages loaded from Elasticsearch: {len(restored_history.messages)}")
+    log.debug("loaded", source="Elasticsearch", messages=len(restored_history.messages))
 
     result_restore = await agent2.run(
         "Based on our conversation history, summarize the facts "
@@ -153,38 +150,37 @@ async def main():
         restored_history,
         session,
     )
-    print(f"  Response: {result_restore.output}")
+    log.debug("response", output=result_restore.output)
 
     # ── CRUD operations ─────────────────────────────────────────
-    print("\n--- CRUD operations ---")
+    log.debug("section", title="CRUD operations")
 
     turns = await es_mem.load_turns(session)
-    print(f"  load_turns: {len(turns)} turns (sorted by timestamp asc)")
+    log.debug("load_turns", count=len(turns), sorted_by="timestamp asc")
 
     if turns:
         # get_turn by document ID
         target = turns[1]
         fetched = await es_mem.get_turn(session, target.turn_id)
-        print(f"  get_turn({target.turn_id[:12]}...): "
-              f"{'found' if fetched else 'NOT FOUND'}")
+        log.debug("get_turn", turn_id=target.turn_id[:12], found=fetched is not None)
 
         # delete_turn
         deleted = await es_mem.delete_turn(session, target.turn_id)
-        print(f"  delete_turn: {deleted}")
+        log.debug("delete_turn", result=deleted)
 
         # Verify via search
         remaining = await es_mem.load_turns(session)
-        print(f"  After delete: {len(remaining)} turns remain")
+        log.debug("after_delete", turns=len(remaining))
 
     # ── Cleanup ─────────────────────────────────────────────────
-    print("\n--- Cleanup ---")
+    log.debug("section", title="Cleanup")
     answer = input("Delete demo data from Elasticsearch? (y/n) ").strip().lower()
     if answer == "y":
         await es_mem.clear(session)
         remaining = await es_mem.load_turns(session)
-        print(f"  Remaining turns for '{session}': {len(remaining)}")
+        log.debug("remaining", session=session, count=len(remaining))
     else:
-        print("  Skipped cleanup. Data preserved.")
+        log.debug("skipped_cleanup")
 
 
 if __name__ == "__main__":

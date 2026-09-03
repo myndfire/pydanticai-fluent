@@ -129,16 +129,19 @@ import os
 import asyncio
 import re
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.prompts import StaticPrompts
-from agent_harness.observability import Observability
+
 
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5:3b")
 
@@ -213,14 +216,11 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("Goal-Seeking Loop")
-    print(f"Model: {MODEL_NAME}")
-    print("=" * 60)
-    print(
-        f"Goal: Find an animal whose typical lifespan is between "
-        f"{LIFESPAN_MIN} and {LIFESPAN_MAX} years.\n"
-    )
+    log.debug("separator")
+    log.debug("section", title="Goal-Seeking Loop")
+    log.debug("model", name=MODEL_NAME)
+    log.debug("separator")
+    log.debug("goal", min=LIFESPAN_MIN, max=LIFESPAN_MAX, message="Find an animal whose typical lifespan is between 7 and 12 years.")
 
     memory = InMemoryProvider()
     session_id = "goal-seeking-session"
@@ -236,7 +236,6 @@ async def main():
                 "Respond with a single animal name as your final answer."
             )
         )
-        .with_observability(Observability())
         .with_short_term_memory(memory)
     )
 
@@ -249,8 +248,8 @@ async def main():
     for attempt in range(1, MAX_ATTEMPTS + 1):
         turns = await memory.load_turns(session_id)
         turn_count = len(turns)
-        print(f"--- Attempt {attempt}/{MAX_ATTEMPTS} ---")
-        print(f"  [Memory] Loaded {turn_count} prior turn(s)")
+        log.debug("attempt", number=attempt, max_attempts=MAX_ATTEMPTS)
+        log.debug("memory_loaded", turn_count=turn_count)
 
         result = await agent.run(
             prompt,
@@ -259,27 +258,27 @@ async def main():
             model_settings={"max_tokens": MAX_TOKENS, "temperature": TEMPERATURE},
             save_to=[memory]
         )
-        print(f"  Agent guess: {result.output}")
+        log.debug("agent_guess", output=result.output)
 
         guess = extract_animal(result.output)
         if guess is None:
-            print("  Could not parse an animal name from the response.")
+            log.debug("parse_failed", message="Could not parse an animal name from the response.")
             feedback = (
                 "Your response did not contain a valid animal name. "
                 "Please reply with only a single animal name."
             )
         else:
             success, feedback = check_lifespan(guess)
-            print(f"  {feedback}")
+            log.debug("feedback", text=feedback)
             if success:
-                print(f"\n✓ Goal achieved on attempt {attempt}!")
-                print(f"\n{'=' * 60}")
-                print("CONCEPTS DEMONSTRATED")
-                print(f"{'=' * 60}")
-                print("✓ Program-controlled loop: Python decided when to stop")
-                print("✓ Closed-loop feedback: validation result injected into next prompt")
-                print("✓ Output parsing: regex extracted animal name for dictionary lookup")
-                print("✓ Constraint satisfaction: loop ended when range was met")
+                log.debug("goal_achieved", attempt=attempt)
+                log.debug("separator")
+                log.debug("section", title="CONCEPTS DEMONSTRATED")
+                log.debug("separator")
+                log.debug("concept", description="Program-controlled loop: Python decided when to stop")
+                log.debug("concept", description="Closed-loop feedback: validation result injected into next prompt")
+                log.debug("concept", description="Output parsing: regex extracted animal name for dictionary lookup")
+                log.debug("concept", description="Constraint satisfaction: loop ended when range was met")
                 break
 
         if "Too short" in feedback:
@@ -295,14 +294,14 @@ async def main():
         )
         history = await MessageHistory().load(session_id, memory)
     else:
-        print(f"\n✗ Goal not achieved after {MAX_ATTEMPTS} attempts.")
-        print(f"\n{'=' * 60}")
-        print("CONCEPTS DEMONSTRATED")
-        print(f"{'=' * 60}")
-        print("✓ Program-controlled loop: Python enforced MAX_ATTEMPTS cap")
-        print("✓ Closed-loop feedback: validation drove repeated attempts")
-        print("✓ Output parsing: regex extracted animal name for lookup")
-        print("✓ Constraint satisfaction: budget exhausted before goal met")
+        log.debug("goal_not_achieved", max_attempts=MAX_ATTEMPTS)
+        log.debug("separator")
+        log.debug("section", title="CONCEPTS DEMONSTRATED")
+        log.debug("separator")
+        log.debug("concept", description="Program-controlled loop: Python enforced MAX_ATTEMPTS cap")
+        log.debug("concept", description="Closed-loop feedback: validation drove repeated attempts")
+        log.debug("concept", description="Output parsing: regex extracted animal name for lookup")
+        log.debug("concept", description="Constraint satisfaction: budget exhausted before goal met")
 
 
 if __name__ == "__main__":

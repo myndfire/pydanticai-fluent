@@ -30,8 +30,11 @@ from agent_harness import ManagedAgent
 from agent_harness.model_config import ModelConfig
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.prompts import StaticPrompts
+import structlog
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 # Default to the reasoning model the user already has locally.
 # A non-reasoning model (e.g., phi4-mini, qwen2.5:3b) gives a short direct answer.
@@ -80,18 +83,12 @@ async def run_with_config(label: str, model_name: str, thinking=None) -> None:
     total_tokens = getattr(usage, "total_tokens", 0) or 0
     reasoning_tokens = getattr(usage, "reasoning_tokens", 0) or 0
 
-    print(f"  [{label}] model={model_name}, thinking={thinking!r}")
-    print(f"  Tokens — output: {output_tokens}, total: {total_tokens}, reasoning: {reasoning_tokens}")
-    print(f"  → {result.output}\n")
+    log.debug("run_result", label=label, model=model_name, thinking=thinking, output_tokens=output_tokens, total_tokens=total_tokens, reasoning_tokens=reasoning_tokens, output=str(result.output))
 
 
 async def main() -> None:
-    print("=== Reasoning / Thinking Demo (Ollama) ===\n")
-    print(
-        "Note: Ollama ignores the `thinking` parameter.\n"
-        "      Reasoning is determined by the model's training, not the setting.\n"
-        "      reasoning_tokens is always 0 on Ollama.\n"
-    )
+    log.debug("section_header", title="Reasoning / Thinking Demo (Ollama)")
+    log.debug("note", message="Ollama ignores the `thinking` parameter. Reasoning is determined by the model's training, not the setting. reasoning_tokens is always 0 on Ollama.")
 
     # 1. Regular model → short, direct answer
     await run_with_config("regular", REGULAR_MODEL)

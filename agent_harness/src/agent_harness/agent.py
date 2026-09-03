@@ -14,6 +14,7 @@
 
 """Core ManagedAgent with fluent API for crosscutting concerns."""
 
+import os
 import sys
 import time
 import uuid
@@ -34,7 +35,7 @@ from .memory import (
     filter_thinking_parts,
 )
 from .prompts import PromptProvider, StaticPrompts
-from .observability import Observability, HARNESS_SETTINGS, _truncate_traceback
+from .observability import Observability, ObservabilityBuilder, HARNESS_SETTINGS, _truncate_traceback
 from .tools import ToolRegistry
 from .guards import (
     GuardConfig,
@@ -189,18 +190,18 @@ class ManagedAgent:
         self._deps_type = deps_type
 
         self.prompts = prompts or StaticPrompts()
-        self.observability = observability or Observability()
-        self.tools = tools or ToolRegistry(self.observability)
+        self._observability = observability  # Could be None; created lazily via property
+        self.tools = tools or ToolRegistry(self._observability)
         self.evaluators = evaluators or []
         self.guards = guards or GuardConfig()
-        self.guards.observability = self.observability
+        self.guards.observability = self._observability  # defer; .with_observability() propagates later
         self.error_handling = ErrorHandlingConfig()
         self._enrichment: list[LogEnrichmentProvider] = []
         # Default from env var HARNESS_DEFAULT_TRACEBACK_FRAMES, or None (full)
         self.traceback_frame_limit = HARNESS_SETTINGS.default_traceback_frames
-        if self.traceback_frame_limit is not None:
-            self.observability.traceback_frame_limit = self.traceback_frame_limit
-            self.observability._base_context["traceback_frame_limit"] = self.traceback_frame_limit
+        if self.traceback_frame_limit is not None and self._observability is not None:
+            self._observability.traceback_frame_limit = self.traceback_frame_limit
+            self._observability._base_context["traceback_frame_limit"] = self.traceback_frame_limit
 
         self._guard_runner = GuardRunner(self.guards)
         self._error_handler = ErrorHandler(self.error_handling)
@@ -218,6 +219,22 @@ class ManagedAgent:
 
         if self.tools.get_tools():
             self.tools.register_to_agent(self._agent)
+
+    @property
+    def observability(self) -> Observability:
+        """Lazy-init observability: creates default OTEL backends on first access."""
+        if self._observability is None:
+            self._observability = Observability(
+                builder=ObservabilityBuilder(service_name="agent")
+                .with_otel_observability(
+                    otlp_endpoint=os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:4317"),
+                )
+            )
+        return self._observability
+
+    @observability.setter
+    def observability(self, value: Observability):
+        self._observability = value
 
     def with_model(
         self,
@@ -305,9 +322,16 @@ class ManagedAgent:
     def with_observability(self, observability: Observability) -> "ManagedAgent":
         """Set observability."""
         self.observability = observability
+        # Apply traceback_frame_limit if set before observability was provided
+        if self.traceback_frame_limit is not None:
+            self._observability.traceback_frame_limit = self.traceback_frame_limit
+            self._observability._base_context["traceback_frame_limit"] = self.traceback_frame_limit
         # Propagate observability to tools if already set
         if self.tools is not None:
             self.tools._observability = observability
+        # Propagate to guards
+        self.guards.observability = observability
+        self._guard_runner._observability = observability
         return self
 
     def with_tools(self, registry: ToolRegistry) -> "ManagedAgent":

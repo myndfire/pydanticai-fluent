@@ -42,6 +42,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -49,6 +50,7 @@ from agent_harness.memory import InMemoryProvider, MessageHistory, MongoMemory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MEMORY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -79,18 +81,17 @@ async def main():
         3. Start MongoDB: docker compose -f docker-compose.yml up -d mongo
         4. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("MongoMemory — MongoDB Long-Term Memory")
-    print("=" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="MongoMemory — MongoDB Long-Term Memory")
+    log.debug("separator", width=60)
 
     # ── Connection check ────────────────────────────────────────
-    print(f"\nChecking MongoDB at {MONGO_URI} ...")
+    log.debug("checking", service="MongoDB", uri=MONGO_URI)
     if not await check_mongo(MONGO_URI):
-        print(f"  MongoDB not reachable at {MONGO_URI}")
-        print("  Start with:")
-        print("    docker compose -f docker-compose.yml up -d mongo")
+        log.debug("not_reachable", service="MongoDB", uri=MONGO_URI)
+        log.debug("start_hint", command="docker compose -f docker-compose.yml up -d mongo")
         return
-    print("  MongoDB is reachable.")
+    log.debug("reachable", service="MongoDB")
 
     # ── Setup providers ─────────────────────────────────────────
     short_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "10")))
@@ -108,8 +109,8 @@ async def main():
         .with_long_term_memory(mongo)
     )
 
-    print(f"  Short-term: InMemoryProvider(max_turns=10)")
-    print(f"  Long-term:  MongoMemory({MONGO_URI}, db={MONGO_DATABASE}, coll={MONGO_COLLECTION})")
+    log.debug("short_term", provider=f"InMemoryProvider(max_turns=10)")
+    log.debug("long_term", provider=f"MongoMemory({MONGO_URI}, db={MONGO_DATABASE}, coll={MONGO_COLLECTION})")
 
     # ── Multi-turn conversation ─────────────────────────────────
     session = "mongo-demo"
@@ -119,7 +120,7 @@ async def main():
         "What is my name and where do I work?",
     ]
 
-    print(f"\n--- Multi-turn conversation (session: {session}) ---")
+    log.debug("section", title=f"Multi-turn conversation (session: {session})")
     for i, prompt in enumerate(conversations, 1):
         history = await MessageHistory().load(session, short_term)
         result = await agent.run(
@@ -128,10 +129,10 @@ async def main():
             session,
             save_to=[short_term, mongo],
         )
-        print(f"  Turn {i}: {result.output}")
+        log.debug("turn", index=i, output=result.output)
 
     # ── Context restoration ─────────────────────────────────────
-    print("\n--- Context restoration (new agent, load from MongoDB) ---")
+    log.debug("section", title="Context restoration (new agent, load from MongoDB)")
     new_agent = (
         ManagedAgent()
         .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
@@ -140,39 +141,39 @@ async def main():
     # Load only from mongo — prove persistence works independently
     history_restored = await MessageHistory().load(session, mongo)
     msg_count = len(history_restored.messages)
-    print(f"  Messages loaded from MongoDB: {msg_count}")
+    log.debug("loaded", source="MongoDB", messages=msg_count)
 
     result_restore = await new_agent.run(
         "Based on our conversation, what did I tell you my name was?",
         history_restored,
         session,
     )
-    print(f"  Response: {result_restore.output}")
+    log.debug("response", output=result_restore.output)
 
     # ── CRUD operations ─────────────────────────────────────────
-    print("\n--- CRUD operations ---")
+    log.debug("section", title="CRUD operations")
 
     turns = await mongo.load_turns(session)
-    print(f"  load_turns: {len(turns)} turns")
+    log.debug("load_turns", count=len(turns))
 
     if turns:
         target = turns[1]  # second turn
         fetched = await mongo.get_turn(session, target.turn_id)
-        print(f"  get_turn: {fetched.turn_id[:12] if fetched else 'NOT FOUND'}...")
+        log.debug("get_turn", turn_id=fetched.turn_id[:12] if fetched else "NOT FOUND")
 
         deleted = await mongo.delete_turn(session, target.turn_id)
-        print(f"  delete_turn: {deleted}")
-        print(f"  After delete: {len(await mongo.load_turns(session))} turns")
+        log.debug("delete_turn", result=deleted)
+        log.debug("after_delete", turns=len(await mongo.load_turns(session)))
 
     # ── Cleanup ─────────────────────────────────────────────────
-    print("\n--- Cleanup ---")
+    log.debug("section", title="Cleanup")
     answer = input("Delete demo data from MongoDB? (y/n) ").strip().lower()
     if answer == "y":
         await mongo.clear(session)
         remaining = await mongo.load_turns(session)
-        print(f"  Remaining turns for '{session}': {len(remaining)}")
+        log.debug("remaining", session=session, count=len(remaining))
     else:
-        print("  Skipped cleanup. Data preserved.")
+        log.debug("skipped_cleanup")
 
 
 if __name__ == "__main__":

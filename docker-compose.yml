@@ -99,6 +99,8 @@ services:
     ports:
       - "4317:4317"   # OTLP gRPC (standard OTLP port)
       - "4318:4318"   # OTLP HTTP (standard OTLP port)
+    environment:
+      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
     volumes:
       - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
     depends_on:

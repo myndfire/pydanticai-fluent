@@ -37,10 +37,14 @@ Setup
 import asyncio
 from typing import Optional
 
+import structlog
+
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory, TurnData, MemoryProvider
 from agent_harness.model_config import ModelConfig
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
+
+log = structlog.get_logger()
 
 
 # ── Mock MemoryProvider that raises on save ─────────────────────────
@@ -53,7 +57,7 @@ class FailingMemoryProvider:
         self._storage: dict[str, list[TurnData]] = {}
 
     async def save_turn(self, session_id: str, turn: TurnData) -> None:
-        print(f"  [memory:{self.name}] save_turn FAILING deliberately!")
+        log.debug("memory_save_fail", provider=self.name, session_id=session_id, message="save_turn FAILING deliberately!")
         raise ConnectionError(f"{self.name}: database connection refused")
 
     async def load_turns(self, session_id: str, limit: Optional[int] = None):
@@ -94,16 +98,18 @@ class FailingLoadProvider:
 
 def on_memory_failure(ctx: ErrorContext) -> str | None:
     """Handle memory failures — suppress, continue without persistence."""
-    print(f"\n  [on_memory_error] Memory failure detected!")
-    print(f"    Type:    {ctx.error_type}")
-    print(f"    Message: {ctx.error_message}")
-    print(f"    Session: {ctx.session_id}")
+    log.debug(
+        "memory_error_detected",
+        error_type=ctx.error_type,
+        error_message=ctx.error_message,
+        session_id=ctx.session_id,
+    )
     return None  # suppress — agent continues, just without persistence
 
 
 def on_memory_with_log(ctx: ErrorContext) -> str | None:
     """Handle memory failures with a warning message in the output."""
-    print(f"  [on_memory_error] {ctx.error_type}: {ctx.error_message[:80]}")
+    log.debug("memory_error_warning", error_type=ctx.error_type, error_message=ctx.error_message[:80])
     return (
         f"[Warning: persistence unavailable — {ctx.error_type}] "
         f"Agent will continue without saving this turn."
@@ -111,12 +117,12 @@ def on_memory_with_log(ctx: ErrorContext) -> str | None:
 
 
 async def main():
-    print("=" * 60)
-    print("Memory Errors — Handling Storage Failures")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Memory Errors — Handling Storage Failures")
+    log.debug("separator")
 
     # ── Example 1: save_turn() fails ────────────────────────────
-    print("\n--- Example 1: save_turn() fails (save_to provider raises) ---")
+    log.debug("example", example=1, title="save_turn() fails (save_to provider raises)")
 
     broken_save = FailingMemoryProvider("mongo-primary")
     short_term = InMemoryProvider(max_turns=10)
@@ -138,11 +144,10 @@ async def main():
         "mem-err-1",
         save_to=[broken_save],  # this will fail during save
     )
-    print(f"\n  Result: success={result1.success}")
-    print(f"  Output: {result1.output}")
+    log.debug("result", success=result1.success, output=result1.output)
 
     # ── Example 2: load_turns() fails ───────────────────────────
-    print("\n--- Example 2: load_turns() fails (history load raises) ---")
+    log.debug("example", example=2, title="load_turns() fails (history load raises)")
 
     broken_load = FailingLoadProvider()
 
@@ -163,11 +168,10 @@ async def main():
         history2,
         "mem-err-2",
     )
-    print(f"\n  Result: success={result2.success}")
-    print(f"  Output: {result2.output}")
+    log.debug("result", success=result2.success, output=result2.output)
 
     # ── Example 3: Save failure with fallback output ────────────
-    print("\n--- Example 3: Save failure with fallback output ---")
+    log.debug("example", example=3, title="Save failure with fallback output")
 
     broken_save2 = FailingMemoryProvider("redis-cache")
 
@@ -186,18 +190,12 @@ async def main():
         "mem-err-3",
         save_to=[broken_save2],
     )
-    print(f"\n  Result: success={result3.success}")
-    print(f"  Output: {result3.output}")
+    log.debug("result", success=result3.success, output=result3.output)
 
     # ── Summary ─────────────────────────────────────────────────
-    print("\n--- Memory error origination points ---")
-    print("  1. message_history.load(session_id, memory_provider)")
-    print("     → _error_source = 'memory'")
-    print("     → Routed to on_memory_error")
-    print()
-    print("  2. provider.save_turn(session_id, turn)")
-    print("     → _error_source = 'memory'")
-    print("     → Routed to on_memory_error")
+    log.debug("example", title="Memory error origination points")
+    log.debug("memory_origin", point=1, call="message_history.load(session_id, memory_provider)", source="memory", handler="on_memory_error")
+    log.debug("memory_origin", point=2, call="provider.save_turn(session_id, turn)", source="memory", handler="on_memory_error")
 
 
 if __name__ == "__main__":

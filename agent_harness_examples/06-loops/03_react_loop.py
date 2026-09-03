@@ -135,17 +135,20 @@ Tips
 import os
 import asyncio
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.prompts import StaticPrompts
-from agent_harness.observability import Observability
+
 from agent_harness.tools import ToolRegistry
 
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("REACT_MODEL_NAME", "qwen3.5:4b")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
@@ -159,7 +162,7 @@ def get_weather(city: str) -> str:
     Args:
         city: Name of the city to check weather for.
     """
-    print(f"    [tool:get_weather] city: {city}")
+    log.debug("tool_call", tool="get_weather", city=city)
     conditions = {
         "tokyo": "Clear skies, 22°C",
         "london": "Light rain, 15°C",
@@ -176,7 +179,7 @@ def calculator(expression: str) -> str:
     Args:
         expression: A mathematical expression like '(22 + 15 + 18) / 3'.
     """
-    print(f"    [tool:calculator] expression: {expression}")
+    log.debug("tool_call", tool="calculator", expression=expression)
     try:
         result = eval(expression, {"__builtins__": {}}, {})
         return f"Result: {result}"
@@ -197,10 +200,10 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("ReAct Loop — Reason, Act, Observe")
-    print(f"Model: {MODEL_NAME}")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="ReAct Loop — Reason, Act, Observe")
+    log.debug("model", name=MODEL_NAME)
+    log.debug("separator")
 
     memory = InMemoryProvider()
     session_id = "react-session"
@@ -219,7 +222,6 @@ async def main():
                 "Show your reasoning briefly, then give the final result clearly."
             )
         )
-        .with_observability(Observability())
         .with_short_term_memory(memory)
         .with_tools(tools)
     )
@@ -229,34 +231,34 @@ async def main():
         "Use the weather tool for each city, then calculate the average."
     )
 
-    print(f"\nTask: {task}\n")
-    print("Starting ReAct loop (agent will reason → act → observe → repeat)...\n")
+    log.debug("task", description=task)
+    log.debug("react_loop_start", message="Starting ReAct loop (agent will reason → act → observe → repeat)...")
 
     history = await MessageHistory().load(session_id, memory)
     turns = await memory.load_turns(session_id)
     turn_count = len(turns)
-    print(f"  [Memory] Loaded {turn_count} prior turn(s)")
+    log.debug("memory_loaded", turn_count=turn_count)
 
     # A single agent.run() call triggers the internal ReAct loop:
     #   LLM reasons → decides to call tool → tool executes →
     #   LLM observes → decides next tool or final answer → repeat
     result = await agent.run(task, history, session_id, model_settings={"max_tokens": MAX_TOKENS}, save_to=[memory])
 
-    print("\n--- ReAct cycle complete (single agent.run() call) ---")
+    log.debug("react_cycle_complete", message="Single agent.run() call triggered all internal reasoning cycles")
 
-    print(f"\n{'=' * 60}")
-    print("FINAL ANSWER")
-    print(f"{'=' * 60}")
-    print(result.output)
+    log.debug("separator")
+    log.debug("section", title="FINAL ANSWER")
+    log.debug("separator")
+    log.debug("final_answer", output=result.output)
 
-    print(f"\n{'=' * 60}")
-    print("CONCEPTS DEMONSTRATED")
-    print(f"{'=' * 60}")
-    print("✓ Agent-driven loop: LLM decided which tools to call and when")
-    print("✓ Multi-step reasoning: 3 weather lookups + 1 calculation")
-    print("✓ Tool registry: plain functions registered with .with_tools()")
-    print("✓ Context preservation: intermediate results saved to MessageHistory")
-    print("✓ Single agent.run() triggered all internal reasoning cycles")
+    log.debug("separator")
+    log.debug("section", title="CONCEPTS DEMONSTRATED")
+    log.debug("separator")
+    log.debug("concept", description="Agent-driven loop: LLM decided which tools to call and when")
+    log.debug("concept", description="Multi-step reasoning: 3 weather lookups + 1 calculation")
+    log.debug("concept", description="Tool registry: plain functions registered with .with_tools()")
+    log.debug("concept", description="Context preservation: intermediate results saved to MessageHistory")
+    log.debug("concept", description="Single agent.run() triggered all internal reasoning cycles")
 
 
 if __name__ == "__main__":

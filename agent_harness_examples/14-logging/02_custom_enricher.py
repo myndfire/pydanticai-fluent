@@ -39,10 +39,14 @@ import contextvars
 import os
 import uuid
 
+import structlog
+
 from agent_harness import ManagedAgent, LogContext, EnvEnricher
 from agent_harness.log_enrichment import LogEnrichmentProvider
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
+
+log = structlog.get_logger()
 
 # ── Request ID context variable (simulating web framework context) ───
 
@@ -74,9 +78,9 @@ class VersionEnricher:
 # ── Main ────────────────────────────────────────────────────────────
 
 async def main():
-    print("=" * 60)
-    print("Log Enrichment — Custom Providers")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Log Enrichment — Custom Providers")
+    log.debug("separator")
 
     model = ModelConfig(
         provider=os.getenv("LOGGING_MODEL_PROVIDER", "ollama"),
@@ -102,37 +106,41 @@ async def main():
 
     # ── Run 1: simulate a request with a request ID ─────────────
     request_id_var.set(f"req-{uuid.uuid4().hex[:8]}")
-    print(f"\n── Run 1: request_id={request_id_var.get()} ──")
+    log.debug("section", title=f"Run 1: request_id={request_id_var.get()}")
     h1 = await MessageHistory().load("enrich-1", memory)
     r1 = await agent.run(
         "Say hello in one word.",
         h1,
         "enrich-1",
     )
-    print(f"  Output: {r1.output}")
+    log.debug("output", result=str(r1.output))
 
     # ── Run 2: simulate a DIFFERENT request ─────────────────────
     request_id_var.set(f"req-{uuid.uuid4().hex[:8]}")
-    print(f"\n── Run 2: request_id={request_id_var.get()} ──")
+    log.debug("section", title=f"Run 2: request_id={request_id_var.get()}")
     h2 = await MessageHistory().load("enrich-2", memory)
     r2 = await agent.run(
         "Say goodbye in one word.",
         h2,
         "enrich-2",
     )
-    print(f"  Output: {r2.output}")
+    log.debug("output", result=str(r2.output))
 
     # ── Summary ─────────────────────────────────────────────────
-    print(f"\n✓ Every log entry carries:")
-    print(
-        f"  pipeline={os.getenv('LOGGING_02_PIPELINE', 'enrichment-demo')} (from LogContext)"
+    log.debug("summary", message="Every log entry carries:")
+    log.debug(
+        "provider",
+        name="LogContext",
+        pipeline=os.getenv('LOGGING_02_PIPELINE', 'enrichment-demo'),
     )
-    print(f"  host, env, pid (from EnvEnricher)")
-    print(
-        f"  version={os.getenv('LOGGING_02_APP_VERSION', '2.1.0')} (from VersionEnricher)"
+    log.debug("provider", name="EnvEnricher", fields="host, env, pid")
+    log.debug(
+        "provider",
+        name="VersionEnricher",
+        version=os.getenv('LOGGING_02_APP_VERSION', '2.1.0'),
     )
-    print(f"  request_id=<uuid> (from RequestIdEnricher)")
-    print(f"\n  Custom providers implement: def enrich(self) -> dict[str, str]")
+    log.debug("provider", name="RequestIdEnricher", request_id="<uuid>")
+    log.debug("protocol", method="def enrich(self) -> dict[str, str]")
 
 
 if __name__ == "__main__":

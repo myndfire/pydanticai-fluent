@@ -37,6 +37,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -47,6 +48,7 @@ from agent_harness.tools import ToolRegistry
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -59,20 +61,20 @@ TOOL_RETRIES_BACKOFF = float(os.getenv("TOOL_RETRIES_BACKOFF", "1.5"))
 
 def echo(text: str) -> str:
     """Echo the given text back."""
-    print(f"  [tool:echo] received: {text}")
+    log.debug("tool", tool="echo", received=text)
     return f"Echo: {text}"
 
 
 def reverse(text: str) -> str:
     """Reverse the given text."""
-    print(f"  [tool:reverse] received: {text}")
+    log.debug("tool", tool="reverse", received=text)
     return text[::-1]
 
 
 async def main():
-    print("=" * 60)
-    print("Tool-Level Retries")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Tool-Level Retries")
+    log.debug("separator")
 
     # ── Setup ──────────────────────────────────────────────────
     memory = InMemoryProvider()
@@ -96,11 +98,11 @@ async def main():
     )
 
     # ── Run ────────────────────────────────────────────────────
-    print(f"\nTool max retries: {tool_retry.max_retries}")
-    print(f"Tool backoff: {tool_retry.backoff_multiplier}x")
-    print(f"Agent max retries: {agent_retry.max_retries}")
-    print(f"\nSending prompt: 'Use the echo tool to repeat hello world, "
-          f"then use the reverse tool on the result.'...\n")
+    log.debug("section", title="Configuration")
+    log.debug("tool_retry", max_retries=tool_retry.max_retries)
+    log.debug("tool_retry", backoff_multiplier=tool_retry.backoff_multiplier)
+    log.debug("agent_retry", max_retries=agent_retry.max_retries)
+    log.debug("section", title="Sending prompt: Use echo then reverse on result")
 
     result = await agent.run(
         "Use the echo tool to repeat 'hello world', "
@@ -109,8 +111,9 @@ async def main():
         "tool-retry-demo",
     )
 
-    print(f"\nSuccess: {result.success}")
-    print(f"Output: {result.output}")
+    log.debug("separator")
+    log.debug("result", success=result.success)
+    log.debug("result", output=result.output)
 
 
 if __name__ == "__main__":

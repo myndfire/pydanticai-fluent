@@ -36,6 +36,7 @@ import asyncio
 import os
 import re
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -45,6 +46,7 @@ from agent_harness.guards import PIIDetectionConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -75,14 +77,14 @@ def redact_pii(text: str) -> str:
 
 def on_redact_error(ctx):
     """Fallback when the redaction callback raises an exception."""
-    print(f"  [on_error] Redaction failed: {ctx.error_message}")
+    log.debug("redact_error", error_message=ctx.error_message)
     return f"[PII redaction error]: {ctx.error_message}"
 
 
 async def main():
-    print("=" * 60)
-    print("PII Detection Guardrail")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="PII Detection Guardrail")
+    log.debug("separator")
 
     # ── Setup ──────────────────────────────────────────────────
     memory = InMemoryProvider()
@@ -101,9 +103,8 @@ async def main():
     )
 
     # ── Run ────────────────────────────────────────────────────
-    print(f"\nPII detection active: {pii_config._on_redact is not None}")
-    print(f"\nSending prompt: 'Generate a fake user profile with name, "
-          f"email, phone, SSN, and credit card number.'...\n")
+    log.debug("pii_config", active=pii_config._on_redact is not None)
+    log.debug("section", title="Sending prompt: generate fake user profile with PII")
 
     result = await agent.run(
         "Generate a fake user profile for a character named Jane Smith. "
@@ -115,13 +116,13 @@ async def main():
         "pii-demo",
     )
 
-    print(f"\nSuccess: {result.success}")
-    print(f"Redacted output:\n{result.output}")
-    print()
+    log.debug("separator")
+    log.debug("result", success=result.success)
+    log.debug("result", redacted_output=result.output)
 
     # ── Demonstrate that PII was redacted ──────────────────────
-    print("-" * 40)
-    print("Verification: checking for redacted patterns...")
+    log.debug("separator")
+    log.debug("section", title="Verification: checking for redacted patterns")
     raw = result.output or ""
     checks = {
         "No raw emails": "jane.smith@example.com" not in raw,
@@ -133,7 +134,7 @@ async def main():
         "Has [PHONE]": "[PHONE]" in raw,
     }
     for label, passed in checks.items():
-        print(f"  {'PASS' if passed else 'FAIL'}: {label}")
+        log.debug("pii_check", result="PASS" if passed else "FAIL", check=label)
 
 
 if __name__ == "__main__":

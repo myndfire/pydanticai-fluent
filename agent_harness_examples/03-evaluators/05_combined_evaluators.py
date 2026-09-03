@@ -40,6 +40,7 @@ import json
 import os
 from pathlib import Path
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -49,6 +50,7 @@ from agent_harness.evaluators import QualityCheck, CustomEvaluator
 from agent_harness.errorhandling import ErrorHandlingConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 
 # ── Protocol evaluator: timing logger ───────────────────────────────
@@ -60,9 +62,7 @@ class TimingLogger:
         output = result.output if hasattr(result, "output") else str(result)
         chars = len(output) if output else 0
         words = len(output.split()) if output else 0
-        print(f"  [timing] {words} words, {chars} chars | "
-              f"model={context.get('model')} "
-              f"session={context.get('session_id')}")
+        log.debug("timing", words=words, chars=chars, model=context.get('model'), session=context.get('session_id'))
 
 
 # ── Custom evaluator: response diversity ────────────────────────────
@@ -101,9 +101,9 @@ class DiversityEvaluator(CustomEvaluator):
 # ── Main ────────────────────────────────────────────────────────────
 
 async def main():
-    print("=" * 60)
-    print("Combined Evaluators — All Types Together")
-    print("=" * 60)
+    log.debug("separator", separator="=" * 60)
+    log.debug("section", title="Combined Evaluators — All Types Together")
+    log.debug("separator", separator="=" * 60)
 
     memory = InMemoryProvider()
 
@@ -127,11 +127,11 @@ async def main():
         )
     )
 
-    print("\n  Evaluators (4 total):")
-    print("    1. QualityCheck(threshold=6.0)    — LLM-as-judge")
-    print("    2. DiversityEvaluator()           — duplicate detection")
-    print("    3. TimingLogger()                 — word/char counts")
-    print("  Error handler: on_evaluator_error → suppress")
+    log.debug("evaluator_overview", total=4)
+    log.debug("evaluator_list", evaluator="QualityCheck(threshold=6.0)", role="LLM-as-judge")
+    log.debug("evaluator_list", evaluator="DiversityEvaluator()", role="duplicate detection")
+    log.debug("evaluator_list", evaluator="TimingLogger()", role="word/char counts")
+    log.debug("error_handler", strategy="on_evaluator_error → suppress")
 
     # ── Multi-turn conversation ─────────────────────────────────
     session = "combined-eval"
@@ -143,31 +143,29 @@ async def main():
         "Give me a practical example of machine learning in healthcare.",
     ]
 
-    print(f"\n--- Multi-turn ({len(prompts)} turns) ---")
+    log.debug("multi_turn_start", total_turns=len(prompts))
     for i, prompt in enumerate(prompts, 1):
         history = await MessageHistory().load(session, memory)
         result = await agent.run(prompt, history, session, save_to=[memory])
-        print(f"\n  Turn {i}: {result.output[:100]}...")
+        log.debug("turn_output", turn=i, output=result.output[:100], truncated=True)
 
     # ── Example 2: Builder-style evaluator chain ────────────────
-    print(f"\n--- Example 2: Builder-style chain ---")
-    print("  Evaluators are just objects — build them fluently:")
-    print()
-    print("  agent.with_evaluators(")
-    print("      QualityCheck(threshold=7.0),")
-    print("      DiversityEvaluator(),")
-    print("      TimingLogger(),")
-    print("  )")
+    log.debug("example", example=2, title="Builder-style chain")
+    log.debug("builder_info", description="Evaluators are just objects — build them fluently:")
+    log.debug("builder_chain", step=1, code="agent.with_evaluators(")
+    log.debug("builder_chain", step=2, code="    QualityCheck(threshold=7.0),")
+    log.debug("builder_chain", step=3, code="    DiversityEvaluator(),")
+    log.debug("builder_chain", step=4, code="    TimingLogger(),")
+    log.debug("builder_chain", step=5, code=")")
 
     # ── Evaluator execution order ───────────────────────────────
-    print(f"\n--- Execution order ---")
-    print("  Evaluators run sequentially in the order they are registered:")
-    print("    1st → QualityCheck runs")
-    print("    2nd → DiversityEvaluator runs")
-    print("    3rd → TimingLogger runs")
-    print()
-    print("  Each receives the same (prompt, result, context).")
-    print("  Evaluators are read-only observers — they cannot modify the output.")
+    log.debug("section", title="Execution order")
+    log.debug("execution_order_intro", description="Evaluators run sequentially in the order they are registered:")
+    log.debug("execution_order", order=1, evaluator="QualityCheck")
+    log.debug("execution_order", order=2, evaluator="DiversityEvaluator")
+    log.debug("execution_order", order=3, evaluator="TimingLogger")
+    log.debug("execution_order_note", description="Each receives the same (prompt, result, context).")
+    log.debug("execution_order_note", description="Evaluators are read-only observers — they cannot modify the output.")
 
 
 if __name__ == "__main__":

@@ -243,7 +243,20 @@ class ConsoleLogger:
     """Simple console logger (default)."""
 
     def __init__(self):
-        """Initialize console logger."""
+        """Initialize console logger with clean human-readable output."""
+        import structlog.dev
+
+        structlog.configure(
+            processors=[
+                structlog.contextvars.merge_contextvars,
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ],
+            context_class=dict,
+            logger_factory=structlog.PrintLoggerFactory(),
+            cache_logger_on_first_use=True,
+        )
         self.logger = structlog.get_logger()
 
     def debug(self, message: str, **context):
@@ -453,6 +466,8 @@ class OTELLogger:
         self,
         service_name: str = "agent",
         otlp_endpoint: str = "localhost:4317",
+        flush_on_exit: bool = True,
+        shutdown_on_exit: bool = True,
     ):
         """
         Initialize OTEL logging.
@@ -460,11 +475,19 @@ class OTELLogger:
         Args:
             service_name: Service name for log records
             otlp_endpoint: OTel Collector OTLP gRPC endpoint (default: localhost:4317)
+            flush_on_exit: Register an atexit handler that calls
+                ``force_flush()`` on the LoggerProvider before exit (default True).
+            shutdown_on_exit: Register an atexit handler that calls
+                ``shutdown()`` on the LoggerProvider (default True). Implies
+                ``flush_on_exit``.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
+        self._flush_on_exit = flush_on_exit or shutdown_on_exit
+        self._shutdown_on_exit = shutdown_on_exit
         self._provider = None
         self._logger = None
+        self._shut_down = False
 
         self._setup_otlp()
 
@@ -496,6 +519,29 @@ class OTELLogger:
             }
 
             print(f"✅ OTEL logging initialized: {self.otlp_endpoint}")
+
+            if self._flush_on_exit or self._shutdown_on_exit:
+                import atexit
+
+                # The SDK's LoggerProvider.__init__ registers its own
+                # atexit handler. Unregister it to avoid duplicate shutdown
+                # when our handler also fires.
+                if getattr(self._provider, "_at_exit_handler", None) is not None:
+                    atexit.unregister(self._provider._at_exit_handler)
+                    self._provider._at_exit_handler = None
+
+                def _cleanup():
+                    try:
+                        if self._shut_down:
+                            return
+                        if self._shutdown_on_exit:
+                            self._provider.shutdown()
+                        elif self._flush_on_exit:
+                            self._provider.force_flush()
+                    except Exception:
+                        pass
+
+                atexit.register(_cleanup)
 
         except Exception as e:
             print(f"⚠️  Failed to setup OTEL logging: {str(e)}")
@@ -536,9 +582,22 @@ class OTELLogger:
     def close(self):
         """Flush and shut down the OTLP log provider."""
         if self._provider:
-            self._provider.shutdown()
+            try:
+                self._provider.force_flush()
+                self._provider.shutdown()
+            except Exception:
+                pass
             self._provider = None
             self._logger = None
+            self._shut_down = True
+
+    def shutdown(self):
+        """Explicitly flush and shut down the OTLP log provider.
+
+        Call this for deterministic cleanup in long-running processes or
+        when ``flush_on_exit=False``.
+        """
+        self.close()
 
 
 class CompositeLogger:

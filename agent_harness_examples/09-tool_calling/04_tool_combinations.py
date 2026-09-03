@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 from dotenv import load_dotenv
 
+import structlog
+
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 
@@ -57,6 +59,7 @@ from agent_harness.guards import (
 from agent_harness.evaluators import Evaluator
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("TOOL_CALLING_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("TOOL_CALLING_MAX_TOKENS", "512"))
@@ -70,7 +73,7 @@ def search_docs(query: str) -> str:
     Args:
         query: The search query string.
     """
-    print(f"  [tool:search_docs] query: {query}")
+    log.debug("tool_search_docs", query=query)
     docs = {
         "flask": "Flask is a micro web framework for Python.",
         "fastapi": "FastAPI is a modern, fast web framework for Python 3.7+.",
@@ -88,7 +91,7 @@ def calculate_rating(reviews: str) -> str:
     Args:
         reviews: Comma-separated numeric ratings, e.g. '4,5,3,5'.
     """
-    print(f"  [tool:calculate_rating] reviews: {reviews}")
+    log.debug("tool_calculate_rating", reviews=reviews)
     try:
         scores = [int(r.strip()) for r in reviews.split(",")]
         avg = sum(scores) / len(scores)
@@ -120,12 +123,7 @@ def search_with_context(
     """
     deps = ctx.deps
     deps.queries_made += 1
-    print(
-        f"  [tool:search_with_context] "
-        f"engine={deps.search_engine}, "
-        f"query={query}, "
-        f"queries_so_far={deps.queries_made}"
-    )
+    log.debug("tool_search_with_context", engine=deps.search_engine, query=query, queries_so_far=deps.queries_made)
     docs = {
         "python": "Python is a high-level programming language.",
         "rust": "Rust is a systems programming language focused on safety.",
@@ -161,9 +159,9 @@ class ToolUsageEvaluator(Evaluator):
 
     async def evaluate(self, prompt: str, result, context: dict) -> None:  # type: ignore[override]
         output_text = getattr(result, "output", str(result))
-        print(f"  [evaluator] Prompt: {prompt[:60]}...")
-        print(f"  [evaluator] Output length: {len(output_text or '')} chars")
-        print(f"  [evaluator] Session: {context.get('session_id', 'unknown')}")
+        log.debug("evaluator_prompt", prompt=prompt[:60])
+        log.debug("evaluator_output_length", length=len(output_text or ''))
+        log.debug("evaluator_session", session_id=context.get('session_id', 'unknown'))
 
 
 # ── Main ────────────────────────────────────────────────────────────
@@ -177,9 +175,9 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Tools + Guards + Evaluators + Structured Output")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="Tools + Guards + Evaluators + Structured Output")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
@@ -225,13 +223,13 @@ async def main():
     )
 
     # ── Print configuration ─────────────────────────────────────
-    print(f"\nTools registered: {len(tools.get_tools())}")
+    log.debug("tools_registered", count=len(tools.get_tools()))
     for t in tools.get_tools():
         has_ctx = "RunContext" in str(next(iter(t.__annotations__.values()), ""))
-        print(f"  - {t.__name__} {'(context-aware)' if has_ctx else '(plain)'}")
+        log.debug("tool_info", name=t.__name__, type="context-aware" if has_ctx else "plain")
 
     # ── Run 1: Plain tool via search_docs ───────────────────────
-    print("\n--- Run 1: Search documentation ---")
+    log.debug("section", section="Run 1: Search documentation")
     history1 = await MessageHistory().load("combo-1", memory)
     result1 = await agent.run(
         "What is Flask? Search the docs.",
@@ -239,10 +237,10 @@ async def main():
         "combo-1",
         deps=deps,
     )
-    print(f"  Output: {result1.output}")
+    log.debug("output", result=result1.output)
 
     # ── Run 2: Context-aware tool ───────────────────────────────
-    print("\n--- Run 2: Context-aware search ---")
+    log.debug("section", section="Run 2: Context-aware search")
     history2 = await MessageHistory().load("combo-2", memory)
     result2 = await agent.run(
         "Search for information about Rust.",
@@ -250,10 +248,10 @@ async def main():
         "combo-2",
         deps=deps,
     )
-    print(f"  Output: {result2.output}")
+    log.debug("output", result=result2.output)
 
     # ── Run 3: Calculate rating tool ────────────────────────────
-    print("\n--- Run 3: Calculate ratings ---")
+    log.debug("section", section="Run 3: Calculate ratings")
     history3 = await MessageHistory().load("combo-3", memory)
     result3 = await agent.run(
         "Calculate the average of these review scores: 4, 5, 3, 5, 4, 2",
@@ -261,10 +259,10 @@ async def main():
         "combo-3",
         deps=deps,
     )
-    print(f"  Output: {result3.output}")
+    log.debug("output", result=result3.output)
 
     # ── Run 4: Tool that triggers content filter ────────────────
-    print("\n--- Run 4: Content filter demonstration ---")
+    log.debug("section", section="Run 4: Content filter demonstration")
     history4 = await MessageHistory().load("combo-4", memory)
     result4 = await agent.run(
         "Is Flask definitely a good framework? Search the docs for 'definitely'.",
@@ -272,10 +270,10 @@ async def main():
         "combo-4",
         deps=deps,
     )
-    print(f"  Output: {result4.output}")
+    log.debug("output", result=result4.output)
 
     # ── Summary ─────────────────────────────────────────────────
-    print(f"\nTotal context-aware queries: {deps.queries_made}")
+    log.debug("summary", total_context_aware_queries=deps.queries_made)
 
 
 if __name__ == "__main__":

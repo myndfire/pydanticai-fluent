@@ -37,6 +37,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -45,17 +46,18 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.evaluators import SafetyCheck
 
 load_dotenv()
+log = structlog.get_logger()
 
 
 async def main():
-    print("=" * 60)
-    print("SafetyCheck — OpenAI Moderation API")
-    print("=" * 60)
+    log.debug("separator", separator="=" * 60)
+    log.debug("section", title="SafetyCheck — OpenAI Moderation API")
+    log.debug("separator", separator="=" * 60)
 
     memory = InMemoryProvider()
 
     # ── SafetyCheck setup ───────────────────────────────────────
-    print("\n--- SafetyCheck setup ---")
+    log.debug("section", title="SafetyCheck setup")
 
     safety = SafetyCheck()
 
@@ -65,24 +67,23 @@ async def main():
         .with_evaluators(safety)
     )
 
-    print("  Evaluator: SafetyCheck()")
-    print("  Checks both prompt and response via OpenAI moderation API")
-    print("  Categories checked: hate, harassment, self-harm, sexual, violence")
-    print()
+    log.debug("evaluator_config", evaluator="SafetyCheck()")
+    log.debug("evaluator_info", description="Checks both prompt and response via OpenAI moderation API")
+    log.debug("evaluator_info", description="Categories checked: hate, harassment, self-harm, sexual, violence")
 
     # ── Example 1: Safe content ─────────────────────────────────
-    print("--- Example 1: Safe content ---")
+    log.debug("example", example=1, title="Safe content")
     history = await MessageHistory().load("safety-1", memory)
     result = await agent.run(
         "What is the capital of France?",
         history,
         "safety-1",
     )
-    print(f"  Output: {result.output}")
-    print(f"  (If OpenAI is available, moderation API checked both prompt and response)")
+    log.debug("agent_output", output=result.output)
+    log.debug("note", description="If OpenAI is available, moderation API checked both prompt and response")
 
     # ── Example 2: Potentially sensitive topic ──────────────────
-    print("\n--- Example 2: Potentially sensitive topic ---")
+    log.debug("example", example=2, title="Potentially sensitive topic")
     history2 = await MessageHistory().load("safety-2", memory)
     result2 = await agent.run(
         "Explain what happens to the human body during extreme physical trauma. "
@@ -90,11 +91,11 @@ async def main():
         history2,
         "safety-2",
     )
-    print(f"  Output: {result2.output}")
-    print(f"  (Moderation API checks for violence/self-harm categories)")
+    log.debug("agent_output", output=result2.output)
+    log.debug("note", description="Moderation API checks for violence/self-harm categories")
 
     # ── Example 3: Multiple turns with safety check ─────────────
-    print("\n--- Example 3: Multi-turn conversation ---")
+    log.debug("example", example=3, title="Multi-turn conversation")
 
     agent3 = (
         ManagedAgent()
@@ -111,25 +112,25 @@ async def main():
     for i, prompt in enumerate(prompts, 1):
         history3 = await MessageHistory().load("safety-3", memory)
         result3 = await agent3.run(prompt, history3, "safety-3")
-        print(f"  Turn {i}: {result3.output[:80]}...")
+        log.debug("turn_output", turn=i, output=result3.output[:80], truncated=True)
 
     # ── How it works ────────────────────────────────────────────
-    print("\n--- How SafetyCheck works ---")
-    print("  1. After each agent.run(), the evaluator fires")
-    print("  2. Calls openai.moderations.create(input=[prompt, response])")
-    print("  3. For each flagged category → log warning with category names")
-    print("  4. If categories are clean → log debug")
-    print("  5. If openai not installed → log warning and skip")
-    print("  6. Never modifies output — read-only observer")
+    log.debug("section", title="How SafetyCheck works")
+    log.debug("explanation", step=1, description="After each agent.run(), the evaluator fires")
+    log.debug("explanation", step=2, description="Calls openai.moderations.create(input=[prompt, response])")
+    log.debug("explanation", step=3, description="For each flagged category → log warning with category names")
+    log.debug("explanation", step=4, description="If categories are clean → log debug")
+    log.debug("explanation", step=5, description="If openai not installed → log warning and skip")
+    log.debug("explanation", step=6, description="Never modifies output — read-only observer")
 
-    print("\n--- Checking OpenAI availability ---")
+    log.debug("section", title="Checking OpenAI availability")
     try:
         import openai
-        print("  openai package is installed")
+        log.debug("openai_status", installed=True)
     except ImportError:
-        print("  openai package is NOT installed — safety checks will be skipped")
-        print("  Install: uv add openai")
-        print("  Set key: export OPENAI_API_KEY=sk-...")
+        log.debug("openai_status", installed=False, note="safety checks will be skipped")
+        log.debug("install_hint", command="uv add openai")
+        log.debug("env_hint", env_var="OPENAI_API_KEY", value="sk-...")
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -47,6 +48,7 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.prompts import StaticPrompts
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("PROMPTS_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("PROMPTS_MAX_TOKENS", "512"))
@@ -61,15 +63,13 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Prompt Variables — prompt_id & kwargs Flow")
-    print("=" * 60)
+    log.debug("separator", title="Prompt Variables — prompt_id & kwargs Flow")
 
     memory = InMemoryProvider()
 
     # ── Example 1: Default prompt_id behavior ───────────────────
-    print(f"\n--- Example 1: Default prompt_id ('default') ---")
-    print("  No prompt_id in kwargs → uses 'default'")
+    log.debug("example", example=1, title="Default prompt_id ('default')")
+    log.debug("api_info", description="No prompt_id in kwargs → uses 'default'")
 
     agent1 = (
         ManagedAgent()
@@ -85,11 +85,11 @@ async def main():
         history1,
         "var-default",
     )
-    print(f"  Response: {result1.output}")
+    log.debug("response", response=result1.output)
 
     # ── Example 2: prompt_id switching ──────────────────────────
-    print(f"\n--- Example 2: prompt_id switching mid-session ---")
-    print("  Same agent, different prompt_id each turn")
+    log.debug("example", example=2, title="prompt_id switching mid-session")
+    log.debug("api_info", description="Same agent, different prompt_id each turn")
 
     # StaticPrompts ignores the template variables,
     # but demonstrates how prompt_id flows through
@@ -109,7 +109,7 @@ async def main():
         save_to=[memory],
         prompt_id="formal",  # selects a different prompt
     )
-    print(f"  Turn 1 (prompt_id='formal'): {result2a.output[:80]}...")
+    log.debug("turn", turn=1, prompt_id="formal", response=result2a.output[:80], truncation="...")
 
     # Turn 2: Use "casual" prompt_id
     history2b = await MessageHistory().load("var-switch", memory)
@@ -120,7 +120,7 @@ async def main():
         save_to=[memory],
         prompt_id="casual",
     )
-    print(f"  Turn 2 (prompt_id='casual'): {result2b.output[:80]}...")
+    log.debug("turn", turn=2, prompt_id="casual", response=result2b.output[:80], truncation="...")
 
     # Turn 3: Back to default
     history2c = await MessageHistory().load("var-switch", memory)
@@ -130,34 +130,21 @@ async def main():
         "var-switch",
         save_to=[memory],
     )
-    print(f"  Turn 3 (prompt_id=default): {result2c.output[:80]}...")
+    log.debug("turn", turn=3, prompt_id="default", response=result2c.output[:80], truncation="...")
 
     # ── Example 3: Variables flow into prompts ──────────────────
-    print(f"\n--- Example 3: Variables flow (conceptual with StaticPrompts) ---")
-    print("  With MongoPrompts, kwargs become Jinja2 template variables.")
-    print("  Example API pattern:")
-    print("    agent.run(")
-    print("        'What is the weather?',")
-    print("        history,")
-    print("        session_id,")
-    print("        prompt_id='weather_expert',")
-    print("        city='Tokyo',           # → {{city}} in template")
-    print("        units='metric',          # → {{units}} in template")
-    print("        format='concise_report', # → {{format}} in template")
-    print("    )")
+    log.debug("example", example=3, title="Variables flow (conceptual with StaticPrompts)")
+    log.debug("api_info", description="With MongoPrompts, kwargs become Jinja2 template variables")
+    log.debug("api_example", pattern="agent.run('What is the weather?', history, session_id, prompt_id='weather_expert', city='Tokyo', units='metric', format='concise_report')")
 
     # ── Example 4: Structured data as variables ─────────────────
-    print(f"\n--- Example 4: Structured data (lists, dicts) as template vars ---")
-    print("  Jinja2 supports complex variables in templates:")
-    print("    Template: 'You support these languages: {% for lang in languages %}- {{lang}}{% endfor %}'")
-    print("    kwargs: languages=['Python', 'Rust', 'TypeScript']")
-    print()
-    print("    Template: 'Your config: endpoint={{config.host}}:{{config.port}}'")
-    print("    kwargs: config={'host': 'api.example.com', 'port': 443}")
+    log.debug("example", example=4, title="Structured data (lists, dicts) as template vars")
+    log.debug("template_example", template="You support these languages: {% for lang in languages %}- {{lang}}{% endfor %}", kwargs="languages=['Python', 'Rust', 'TypeScript']")
+    log.debug("template_example", template="Your config: endpoint={{config.host}}:{{config.port}}", kwargs="config={'host': 'api.example.com', 'port': 443}")
 
     # ── Example 5: Variables ignored by StaticPrompts ───────────
-    print(f"\n--- Example 5: Variables ignored by StaticPrompts ---")
-    print("  StaticPrompts ignores template variables — they don't cause errors.")
+    log.debug("example", example=5, title="Variables ignored by StaticPrompts")
+    log.debug("api_info", description="StaticPrompts ignores template variables — they don't cause errors")
 
     agent5 = (
         ManagedAgent()
@@ -178,15 +165,12 @@ async def main():
         language="simple",
         any_key="any_value",
     )
-    print(f"  Response: {result5.output}")
-    print(f"  (Extra kwargs passed but ignored — no errors)")
+    log.debug("response", response=result5.output, note="Extra kwargs passed but ignored — no errors")
 
     # ── Example 6: Reserved kwargs ──────────────────────────────
-    print(f"\n--- Example 6: Reserved kwargs ---")
-    print("  These kwargs are consumed by run() and NOT passed as template vars:")
-    print("    - prompt_id   : selects the prompt template")
-    print("    - _prefix keys: prefixed with underscore, filtered out")
-    print("  All other kwargs → template rendering variables")
+    log.debug("example", example=6, title="Reserved kwargs")
+    log.debug("api_info", description="These kwargs are consumed by run() and NOT passed as template vars: prompt_id (selects prompt), _prefix keys (filtered out)")
+    log.debug("api_info", description="All other kwargs → template rendering variables")
 
     agent6 = (
         ManagedAgent()
@@ -204,8 +188,8 @@ async def main():
         role="engineer",          # template var
         _internal_meta="hidden", # underscore-prefixed → filtered out
     )
-    print(f"  prompt_id='custom-id', role='engineer', _internal_meta='hidden' → filtered")
-    print(f"  Response: {result6.output}")
+    log.debug("kwargs_filtered", prompt_id="custom-id", role="engineer", _internal_meta="hidden")
+    log.debug("response", response=result6.output)
 
 
 if __name__ == "__main__":

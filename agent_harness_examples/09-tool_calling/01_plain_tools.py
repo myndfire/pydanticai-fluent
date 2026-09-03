@@ -42,12 +42,15 @@ import math
 import os
 from dotenv import load_dotenv
 
+import structlog
+
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.tools import ToolRegistry
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("TOOL_CALLING_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("TOOL_CALLING_MAX_TOKENS", "512"))
@@ -61,7 +64,7 @@ def calculator(expression: str) -> str:
     Args:
         expression: A mathematical expression like '2 + 3 * 4'.
     """
-    print(f"  [tool:calculator] evaluating: {expression}")
+    log.debug("tool_calculator", expression=expression)
     try:
         allowed = set("0123456789+-*/().% sqrtpi")
         sanitized = expression.lower()
@@ -79,7 +82,7 @@ def get_weather(city: str) -> str:
     Args:
         city: Name of the city to check weather for.
     """
-    print(f"  [tool:get_weather] city: {city}")
+    log.debug("tool_get_weather", city=city)
     conditions = {
         "new york": "Partly cloudy, 72F",
         "london": "Rain, 58F",
@@ -97,7 +100,7 @@ def convert_currency(amount: float, from_currency: str, to_currency: str) -> str
         from_currency: Three-letter currency code (e.g., USD).
         to_currency: Three-letter currency code (e.g., EUR).
     """
-    print(f"  [tool:convert_currency] {amount} {from_currency} -> {to_currency}")
+    log.debug("tool_convert_currency", amount=amount, from_currency=from_currency, to_currency=to_currency)
     rates = {
         ("USD", "EUR"): 0.92,
         ("USD", "GBP"): 0.79,
@@ -125,14 +128,14 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Plain Function Tools")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="Plain Function Tools")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
     # ── Example 1: Single tool with .add() ──────────────────────
-    print("\n--- Example 1: Single tool ---")
+    log.debug("section", section="Example 1: Single tool")
     tools1 = ToolRegistry().add(calculator)
 
     agent1 = (
@@ -148,15 +151,13 @@ async def main():
         history1,
         "tools-ex1",
     )
-    print(f"  Output: {result1.output}")
+    log.debug("output", result=result1.output)
 
     # ── Example 2: Multiple tools with .add_many() ──────────────
-    print("\n--- Example 2: add_many() - multiple tools ---")
+    log.debug("section", section="Example 2: add_many() - multiple tools")
     tools2 = ToolRegistry().add_many(calculator, get_weather, convert_currency)
 
-    print(f"  Registered {len(tools2.get_tools())} tools:")
-    for t in tools2.get_tools():
-        print(f"    - {t.__name__}")
+    log.debug("tools_registered", count=len(tools2.get_tools()), tools=[t.__name__ for t in tools2.get_tools()])
 
     agent2 = (
         ManagedAgent()
@@ -171,16 +172,16 @@ async def main():
         history2,
         "tools-ex2",
     )
-    print(f"  Output: {result2.output}")
+    log.debug("output", result=result2.output)
 
     # ── Example 3: Fluent chaining (add + add_many) ─────────────
-    print("\n--- Example 3: Fluent chaining ---")
+    log.debug("section", section="Example 3: Fluent chaining")
     tools3 = (
         ToolRegistry()
         .add(calculator)
         .add_many(get_weather, convert_currency)
     )
-    print(f"  Registered {len(tools3.get_tools())} tools via chaining")
+    log.debug("tools_registered_via_chaining", count=len(tools3.get_tools()))
 
     agent3 = (
         ManagedAgent()
@@ -195,16 +196,16 @@ async def main():
         history3,
         "tools-ex3",
     )
-    print(f"  Output: {result3.output}")
+    log.debug("output", result=result3.output)
 
     # ── Example 4: Clear and rebuild tools ──────────────────────
-    print("\n--- Example 4: clear() then rebuild ---")
+    log.debug("section", section="Example 4: clear() then rebuild")
     tools4 = ToolRegistry().add_many(calculator, get_weather)
-    print(f"  Before clear: {len(tools4.get_tools())} tools")
+    log.debug("before_clear", count=len(tools4.get_tools()))
     tools4.clear()
-    print(f"  After clear: {len(tools4.get_tools())} tools")
+    log.debug("after_clear", count=len(tools4.get_tools()))
     tools4.add(convert_currency)
-    print(f"  After re-add: {len(tools4.get_tools())} tools")
+    log.debug("after_re_add", count=len(tools4.get_tools()))
 
 
 if __name__ == "__main__":

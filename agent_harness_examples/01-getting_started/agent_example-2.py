@@ -18,12 +18,10 @@ import uuid
 
 from colorama import init as colorama_init
 from dotenv import load_dotenv
+import structlog
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import MessageHistory, InMemoryProvider, MongoMemory
-from agent_harness.observability import Observability
-from agent_harness.logging import ConsoleLogger
-from agent_harness.tracing import LogfireTracer, OTELTracer
-from agent_harness.metrics import OTELMetrics
+from agent_harness.observability import Observability, ObservabilityBuilder
 from agent_harness.prompts import StaticPrompts
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
 from agent_harness.model_config import ModelConfig
@@ -32,6 +30,7 @@ from pydantic_ai.settings import ModelSettings
 
 load_dotenv()
 colorama_init()
+log = structlog.get_logger()
 
 
 def create_memory_providers():
@@ -56,14 +55,18 @@ class AgentErrorHandler:
         self._obs = obs
 
     def __call__(self, ctx: ErrorContext) -> str | None:
-        print(
-            f"[ERROR] {ctx.source}: {ctx.error_type} - {ctx.error_message}"
+        log.debug(
+            "agent_error",
+            source=ctx.source,
+            error_type=ctx.error_type,
+            error_message=ctx.error_message,
         )
-        print(f"  Session: {ctx.session_id}")
-        print(
-            f"  Prompt: {ctx.prompt[:100]}..."
-            if ctx.prompt and len(ctx.prompt) > 100
-            else f"  Prompt: {ctx.prompt}"
+        log.debug("error_session", session_id=ctx.session_id)
+        log.debug(
+            "error_prompt",
+            prompt=(ctx.prompt[:100] + "..."
+                    if ctx.prompt and len(ctx.prompt) > 100
+                    else ctx.prompt),
         )
 
         if hasattr(self._obs, "tracer"):
@@ -92,23 +95,10 @@ async def main():
     )
 
     obs = Observability(
-        tracer=LogfireTracer(service_name="agent_example-2_service"),
-        loggers=[ConsoleLogger()],
-        tracers=[
-            OTELTracer(
-                service_name="agent_example-2_service",
-                otlp_endpoint="localhost:4317",
-                sample_rate=1.0,
-            ),
-        ],
-        metrics_list=[
-            OTELMetrics(
-                service_name="agent_example-2_service",
-                otlp_endpoint="localhost:4317",
-            ),
-        ],
+        builder=ObservabilityBuilder(service_name="agent_example-2_service")
+        .with_otel_observability(otlp_endpoint="localhost:4317")
     )
-    obs.logger.info("Starting agent execution")
+    obs.info("Starting agent execution")
 
     agent = (
         ManagedAgent()
@@ -132,7 +122,7 @@ async def main():
         save_to,
         model_settings=model_settings,
     )
-    print(f"Agent 1 run 1: {output1}")
+    log.debug("agent_step", step="agent_1_run_1", output=output1)
 
     output2 = await run_agent_step(
         agent,
@@ -141,7 +131,7 @@ async def main():
         save_to,
         model_settings=model_settings,
     )
-    print(f"Agent 1 run 2: {output2}")
+    log.debug("agent_step", step="agent_1_run_2", output=output2)
 
     output3 = await run_agent_step(
         agent,
@@ -149,9 +139,9 @@ async def main():
         session_id,
         save_to,
     )
-    print(f"Agent 2, run 1: {output3}")
+    log.debug("agent_step", step="agent_2_run_1", output=output3)
 
-    obs.logger.info("Agent execution completed")
+    obs.info("Agent execution completed")
 
 
 async def run_agent_step(agent, prompt, session_id, save_to, model_settings=None):

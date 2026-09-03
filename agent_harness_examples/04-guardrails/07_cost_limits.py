@@ -41,6 +41,7 @@ Setup
 import asyncio
 import os
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -50,6 +51,7 @@ from agent_harness.guards import CostLimitsConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -64,7 +66,7 @@ COST_LIMITS_EX3_MAX_TOTAL = float(os.getenv("COST_LIMITS_EX3_MAX_TOTAL", "0.0000
 
 def on_cost_limit_handler(ctx):
     """Graceful fallback when a cost limit is hit."""
-    print(f"  [on_cost_limit] {ctx.error_type}: {ctx.error_message}")
+    log.debug("cost_limit_exceeded", error_type=ctx.error_type, error_message=ctx.error_message)
     return (
         f"Response unavailable: cost limit exceeded. "
         f"({ctx.error_type}: {ctx.error_message})"
@@ -72,9 +74,9 @@ def on_cost_limit_handler(ctx):
 
 
 async def main():
-    print("=" * 60)
-    print("Cost Limits Guardrail")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Cost Limits Guardrail")
+    log.debug("separator")
 
     # ── Setup ──────────────────────────────────────────────────
     memory = InMemoryProvider()
@@ -85,12 +87,12 @@ async def main():
     INPUT_COST = COST_LIMITS_INPUT_COST
     OUTPUT_COST = COST_LIMITS_OUTPUT_COST
 
-    print("\nPricing (GPT-4o approx):")
-    print(f"  Input:  ${INPUT_COST:.7f} per token")
-    print(f"  Output: ${OUTPUT_COST:.7f} per token")
+    log.debug("section", title="Pricing (GPT-4o approx)")
+    log.debug("pricing", cost_per_input_token=INPUT_COST)
+    log.debug("pricing", cost_per_output_token=OUTPUT_COST)
 
     # ── Example 1: Strict total cost limit ─────────────────────
-    print("\n--- Example 1: Total cost limit ($0.005) ---")
+    log.debug("example", example=1, title="Total cost limit ($0.005)")
     limits1 = (
         CostLimitsConfig()
         .with_cost_per_input_token(INPUT_COST)
@@ -107,8 +109,8 @@ async def main():
 
     history1 = await MessageHistory().load("cost-limit-demo-1", memory)
 
-    print(f"Max total cost: ${limits1.max_total_cost}")
-    print("\nSending prompt: 'Explain the theory of relativity.'...\n")
+    log.debug("cost_limits", max_total_cost=limits1.max_total_cost)
+    log.debug("section", title="Sending prompt: explain theory of relativity")
 
     result1 = await agent1.run(
         "Explain Einstein's theory of relativity in detail.",
@@ -116,11 +118,12 @@ async def main():
         "cost-limit-demo-1",
     )
 
-    print(f"\nSuccess: {result1.success}")
-    print(f"Output: {result1.output}")
+    log.debug("separator")
+    log.debug("result", success=result1.success)
+    log.debug("result", output=result1.output)
 
     # ── Example 2: Separate input/output cost limits ───────────
-    print("\n--- Example 2: Separate input + output cost limits ---")
+    log.debug("example", example=2, title="Separate input + output cost limits")
     limits2 = (
         CostLimitsConfig()
         .with_cost_per_input_token(INPUT_COST)
@@ -138,9 +141,9 @@ async def main():
 
     history2 = await MessageHistory().load("cost-limit-demo-2", memory)
 
-    print(f"Max input cost: ${limits2.max_input_cost}")
-    print(f"Max output cost: ${limits2.max_output_cost}")
-    print("\nSending prompt: 'Write a short poem about the ocean.'...\n")
+    log.debug("cost_limits", max_input_cost=limits2.max_input_cost)
+    log.debug("cost_limits", max_output_cost=limits2.max_output_cost)
+    log.debug("section", title="Sending prompt: write a short poem about the ocean")
 
     result2 = await agent2.run(
         "Write a short poem about the ocean.",
@@ -148,11 +151,12 @@ async def main():
         "cost-limit-demo-2",
     )
 
-    print(f"\nSuccess: {result2.success}")
-    print(f"Output: {result2.output}")
+    log.debug("separator")
+    log.debug("result", success=result2.success)
+    log.debug("result", output=result2.output)
 
     # ── Example 3: Extremely tight budget (will trigger) ───────
-    print("\n--- Example 3: Extremely tight budget ($0.000001) ---")
+    log.debug("example", example=3, title="Extremely tight budget ($0.000001)")
     limits3 = (
         CostLimitsConfig()
         .with_cost_per_input_token(INPUT_COST)
@@ -169,8 +173,8 @@ async def main():
 
     history3 = await MessageHistory().load("cost-limit-demo-3", memory)
 
-    print(f"Max total cost: ${limits3.max_total_cost}")
-    print("No on_cost_limit callback set — will raise RuntimeError...\n")
+    log.debug("cost_limits", max_total_cost=limits3.max_total_cost)
+    log.debug("section", title="No on_cost_limit callback set - will raise RuntimeError")
 
     result3 = await agent3.run(
         "Say hello.",
@@ -178,8 +182,9 @@ async def main():
         "cost-limit-demo-3",
     )
 
-    print(f"\nSuccess: {result3.success}")
-    print(f"Output: {result3.output}")
+    log.debug("separator")
+    log.debug("result", success=result3.success)
+    log.debug("result", output=result3.output)
 
 
 if __name__ == "__main__":

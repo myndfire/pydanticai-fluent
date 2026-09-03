@@ -9,9 +9,9 @@ example-1: Tools              example-2: Observability       example-3: Structur
 ┌──────────┐                  ┌──────────┐                   ┌──────────┐
 │  Agent   │                  │  Agent   │                   │  Agent   │
 │          │                  │          │                   │          │
-│ ┌──────┐ │                  │ Tracer ──┼──▶ Logfire        │ .with_   │
-│ │repeat│ │                  │ Logger ──┼──▶ Console        │ output() │
-│ │shout │ │                  │ Metrics ─┼──▶ OTLP           │ (Invoice)│
+│ ┌──────┐ │                  │ Tracer ──┼──▶ OTEL (OTLP)     │ .with_   │
+│ │repeat│ │                  │ Logger ──┼──▶ OTEL (OTLP)     │ output() │
+│ │shout │ │                  │ Metrics ─┼──▶ OTEL (OTLP)     │ (Invoice)│
 │ └──────┘ │                  │ Memory ──┼──▶ MongoDB (opt)  └──────────┘
 └──────────┘                  └──────────┘                        │
                                                                   ▼
@@ -34,9 +34,7 @@ example-1: Tools              example-2: Observability       example-3: Structur
 
 | Requirement | Purpose | Setup |
 |---|---|---|
-| **Logfire** | Tracing and logging dashboard | Set `LOGFIRE_TOKEN` in `../.env` (token from [logfire.pydantic.dev](https://logfire.pydantic.dev)) |
-| **OTLP Collector** | Distributed tracing backend | Run a collector (e.g., Jaeger) on `localhost:4317` (gRPC) |
-| **OTLP Metrics** | Metrics export | Run a metrics receiver on `localhost:4317` (OTel Collector) |
+| **OTel Collector** | Logs, traces, and metrics backend | Run collector on `localhost:4317` (gRPC) |
 | **MongoDB** | Persistent long-term memory | Set `MONGODB_URI` in `../.env`; if unset, falls back to in-memory storage |
 
 ## Environment Variables
@@ -46,7 +44,7 @@ All variables are read from `../.env`.
 | Variable | Required | Default | Used By | Description |
 |---|---|---|---|---|
 | `MODEL_NAME` | Yes | `qwen2.5:3b` | all | Ollama model identifier |
-| `LOGFIRE_TOKEN` | No | - | example-2, example-3 | Pydantic Logfire API token |
+| `OTEL_COLLECTOR_ENDPOINT` | No | `localhost:4317` | example-2, example-3 | OTel Collector OTLP gRPC endpoint |
 | `MONGODB_URI` | No | - | example-2 | MongoDB connection string (e.g., `mongodb://localhost:27017`) |
 | `MONGODB_DATABASE` | No | `agent_memory` | example-2 | MongoDB database name |
 | `MONGODB_COLLECTION` | No | `conversations` | example-2 | MongoDB collection name |
@@ -88,16 +86,16 @@ Agent (LLM)
 uv run python 1-getting_started/agent_example-2.py
 ```
 
-Full observability stack: Logfire tracer, OTLP trace/metrics export, console logger. Runs three sequential prompts in the same session to demonstrate conversation continuity. Optionally uses MongoDB for persistent long-term memory.
+Full observability stack: OTEL logging, tracing, and metrics. Runs three sequential prompts in the same session to demonstrate conversation continuity. Optionally uses MongoDB for persistent long-term memory.
 
 ```
 Observability stack:
 ┌─────────────────────────────────────────────────┐
 │  Observability                                  │
-│  ├── tracer: LogfireTracer ──▶ logfire.pydantic │
-│  ├── tracers: [OTELTracer]  ──▶ localhost:4317  │
-│  ├── metrics: [OTELMetrics] ──▶ localhost:4317  │
-│  └── loggers: [ConsoleLogger]                   │
+│  ├── logger:  OTELLogger   ──▶ localhost:4317   │
+│  ├── tracer:  OTELTracer   ──▶ localhost:4317   │
+│  ├── metrics: OTELMetrics  ──▶ localhost:4317   │
+│  └── memory:  MongoDB (optional)                │
 └─────────────────────────────────────────────────┘
 
 Session flow (3 turns, same session_id):
@@ -117,7 +115,7 @@ Memory:
 uv run python 1-getting_started/agent_example-3.py
 ```
 
-Generates an invoice from natural language, then extracts structured data from a markdown invoice file using a Pydantic `Invoice` model. Requires Logfire and a `data/invoice.md` file relative to the working directory.
+Generates an invoice from natural language, then extracts structured data from a markdown invoice file using a Pydantic `Invoice` model. Requires a `data/invoice.md` file relative to the working directory.
 
 ```
 Prompt 1: "generate invoice for Acme Inc..."

@@ -36,23 +36,29 @@ Setup
 
 import asyncio
 
+import structlog
+
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
+
+log = structlog.get_logger()
 
 
 # ── Handler: suppress LLM errors ────────────────────────────────────
 
 def suppress_llm_handler(ctx: ErrorContext) -> str | None:
     """Suppress the LLM error and return a graceful failure message."""
-    print(f"\n  [on_llm_error] Error intercepted:")
-    print(f"    Source:      {ctx.source}")
-    print(f"    Type:        {ctx.error_type}")
-    print(f"    Message:     {ctx.error_message}")
-    print(f"    Session:     {ctx.session_id}")
-    print(f"    Prompt:      {ctx.prompt}")
-    print(f"    Has stack:   {ctx.stack_trace is not None}")
+    log.debug(
+        "error_intercepted",
+        source="llm",
+        error_type=ctx.error_type,
+        error_message=ctx.error_message,
+        session_id=ctx.session_id,
+        prompt=ctx.prompt,
+        has_stack=ctx.stack_trace is not None,
+    )
     return f"Graceful fallback: LLM call failed ({ctx.error_type})"
 
 
@@ -60,22 +66,24 @@ def suppress_llm_handler(ctx: ErrorContext) -> str | None:
 
 def re_raise_handler(ctx: ErrorContext) -> str | None:
     """Log the error but allow it to propagate."""
-    print(f"\n  [on_error] Logging but will RE-RAISE:")
-    print(f"    Source:  {ctx.source}")
-    print(f"    Type:    {ctx.error_type}")
-    print(f"    Message: {ctx.error_message[:100]}")
+    log.debug(
+        "error_re_raise",
+        source=ctx.source,
+        error_type=ctx.error_type,
+        error_message=ctx.error_message[:100],
+    )
     return None  # re-raise
 
 
 async def main():
-    print("=" * 60)
-    print("Error Handling — Per-Source Callbacks")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Error Handling — Per-Source Callbacks")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
     # ── Example 1: Suppress LLM errors (return a value) ─────────
-    print("\n--- Example 1: Suppress LLM errors (return value) ---")
+    log.debug("example", example=1, title="Suppress LLM errors (return value)")
 
     config = (
         ErrorHandlingConfig()
@@ -94,14 +102,13 @@ async def main():
     history1 = await MessageHistory().load("err-llm", memory)
     result1 = await bad_agent.run("Say hello.", history1, "err-llm")
 
-    print(f"\n  Result: success={result1.success}")
-    print(f"  Output: {result1.output}")
+    log.debug("result", success=result1.success, output=result1.output)
     if result1.error_context:
         ec = result1.error_context
-        print(f"  Error: {ec.error_type}: {ec.error_message}")
+        log.debug("error_context", error_type=ec.error_type, error_message=ec.error_message)
 
     # ── Example 2: Re-raise (return None) ───────────────────────
-    print("\n--- Example 2: Re-raise (return None) ---")
+    log.debug("example", example=2, title="Re-raise (return None)")
 
     re_raise_config = ErrorHandlingConfig().on_llm_error(re_raise_handler)
 
@@ -114,15 +121,15 @@ async def main():
         .with_error_handling(re_raise_config)
     )
 
-    print("  About to run an agent that will fail...")
+    log.debug("status", message="About to run an agent that will fail...")
     try:
         history2 = await MessageHistory().load("err-re-raise", memory)
         await bad_agent2.run("Say hello.", history2, "err-re-raise")
     except Exception as e:
-        print(f"  Exception re-raised: {type(e).__name__}: {e}")
+        log.debug("exception_caught", exception_type=type(e).__name__, message=str(e))
 
     # ── Example 3: Catch-all on_error ───────────────────────────
-    print("\n--- Example 3: Catch-all on_error ---")
+    log.debug("example", example=3, title="Catch-all on_error")
 
     catch_all_config = ErrorHandlingConfig().on_error(
         lambda ctx: f"Caught {ctx.source} error: {ctx.error_message[:50]}"
@@ -139,10 +146,10 @@ async def main():
 
     history3 = await MessageHistory().load("err-catchall", memory)
     result3 = await agent3.run("Hello.", history3, "err-catchall")
-    print(f"  Suppressed: success={result3.success}, output={result3.output}")
+    log.debug("result", suppressed=True, success=result3.success, output=result3.output)
 
     # ── Example 4: Successful run (handler not triggered) ───────
-    print("\n--- Example 4: Successful run (handler not triggered) ---")
+    log.debug("example", example=4, title="Successful run (handler not triggered)")
 
     good_config = ErrorHandlingConfig().on_llm_error(suppress_llm_handler)
 
@@ -154,11 +161,10 @@ async def main():
 
     history4 = await MessageHistory().load("err-good", memory)
     result4 = await good_agent.run("What is 2+2?", history4, "err-good")
-    print(f"  Success: {result4.success}")
-    print(f"  Output: {result4.output}")
+    log.debug("result", success=result4.success, output=result4.output)
 
     # ── Example 5: Per-source routing ───────────────────────────
-    print("\n--- Example 5: Per-source routing ---")
+    log.debug("example", example=5, title="Per-source routing")
 
     routing_config = (
         ErrorHandlingConfig()
@@ -182,7 +188,7 @@ async def main():
 
     history5 = await MessageHistory().load("err-routing", memory)
     result5 = await agent5.run("Hi", history5, "err-routing")
-    print(f"  Routed through on_llm_error: {result5.output}")
+    log.debug("result", routed_to="on_llm_error", output=result5.output)
 
 
 if __name__ == "__main__":

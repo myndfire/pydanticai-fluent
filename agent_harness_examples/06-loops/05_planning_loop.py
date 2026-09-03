@@ -161,6 +161,7 @@ import os
 import asyncio
 import json
 
+import structlog
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
@@ -168,11 +169,13 @@ from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.prompts import StaticPrompts
-from agent_harness.observability import Observability
+
 from agent_harness.tools import ToolRegistry
 
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("PLANNING_MODEL_NAME", os.getenv("MODEL_NAME", "llama3.1:8b"))
 MAX_PLAN_STEPS = int(os.getenv("PLAN_MAX_STEPS", "6"))
@@ -200,7 +203,7 @@ def search_docs(topic: str) -> str:
     Args:
         topic: The topic to search for.
     """
-    print(f"    [tool:search_docs] topic: {topic}")
+    log.debug("tool_call", tool="search_docs", topic=topic)
     docs = {
         "flask": "Flask: micro framework, 4.2/5",
         "fastapi": "FastAPI: async framework, 4.7/5",
@@ -216,7 +219,7 @@ def calculate_average(values: str) -> str:
     Args:
         values: Comma-separated numbers, e.g. '4.2, 4.7, 4.5'.
     """
-    print(f"    [tool:calculate_average] values: {values}")
+    log.debug("tool_call", tool="calculate_average", values=values)
     try:
         nums = [float(v.strip()) for v in values.split(",")]
         avg = sum(nums) / len(nums)
@@ -239,12 +242,11 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("Planning Loop — Plan → Execute → Adapt")
-    print(f"Model: {MODEL_NAME}")
-    print("=" * 60)
-    print("\nTask: Research three Python web frameworks (Flask, FastAPI, Django)")
-    print("      and calculate their average rating.")
+    log.debug("separator")
+    log.debug("section", title="Planning Loop — Plan → Execute → Adapt")
+    log.debug("model", name=MODEL_NAME)
+    log.debug("separator")
+    log.debug("task", description="Research three Python web frameworks (Flask, FastAPI, Django) and calculate their average rating.")
 
     memory = InMemoryProvider()
     session_id = "planning-session"
@@ -252,7 +254,7 @@ async def main():
     tools = ToolRegistry().add_many(search_docs, calculate_average)
 
     # Phase 1: Agent creates a structured plan
-    print("\n--- Phase 1: Creating plan (planner agent, no tools) ---")
+    log.debug("phase", number=1, title="Creating plan (planner agent, no tools)")
 
     planner_agent = (
         ManagedAgent()
@@ -265,7 +267,6 @@ async def main():
                 "Do not include any text outside the JSON."
             )
         )
-        .with_observability(Observability())
         .with_short_term_memory(memory)
         .with_output(AgentPlan)
     )
@@ -279,35 +280,33 @@ async def main():
     plan_result = await planner_agent.run(plan_prompt, plan_history, session_id, model_settings={"max_tokens": MAX_TOKENS}, save_to=[memory])
     plan: AgentPlan = plan_result.output
 
-    print(f"  Plan created with {len(plan.steps)} steps:")
+    log.debug("plan_created", step_count=len(plan.steps))
     for i, step in enumerate(plan.steps, 1):
-        print(f"    {i}. {step.action}: {step.target}")
+        log.debug("plan_step", number=i, action=step.action, target=step.target)
 
     # Phase 2: Execute the plan step by step
     # We directly call the tools in Python rather than routing through the LLM.
     # This eliminates JSON hallucinations and is instant — the separation of
     # concerns is still clear: planner (LLM) thinks, executor (code) acts.
-    print("\n--- Phase 2: Executing plan (direct tool calls) ---")
+    log.debug("phase", number=2, title="Executing plan (direct tool calls)")
 
     accumulated_results: list[str] = []
     step_idx = 0
 
     for step in plan.steps:
         step_idx += 1
-        print(f"\n  [Step {step_idx}/{len(plan.steps)}] {step.action}: {step.target}")
+        log.debug("step", number=step_idx, total=len(plan.steps), action=step.action, target=step.target)
 
         # Show memory state (planner turn is persisted; executor acts directly)
         turns = await memory.load_turns(session_id)
         turn_count = len(turns)
-        print(f"    [Memory] Loaded {turn_count} prior turn(s)")
+        log.debug("memory_loaded", turn_count=turn_count)
 
         # Show accumulated context
         if accumulated_results:
-            print("    Accumulated context so far:")
-            for r in accumulated_results:
-                print(f"      • {r[:80]}{'...' if len(r) > 80 else ''}")
+            log.debug("accumulated_context", count=len(accumulated_results), results=[r[:80] + ("..." if len(r) > 80 else "") for r in accumulated_results])
         else:
-            print("    Accumulated context: (none yet — this is the first step)")
+            log.debug("accumulated_context", message="none yet — this is the first step")
 
         # Direct tool dispatch — no LLM involved
         if step.action == "search":
@@ -338,17 +337,17 @@ async def main():
         else:
             output = f"Unknown action: {step.action}"
 
-        print(f"    Result: {output}")
+        log.debug("step_result", step=step_idx, output=output)
         accumulated_results.append(f"Step {step_idx} ({step.action} {step.target}): {output}")
 
         if step_idx >= MAX_PLAN_STEPS:
-            print(f"\n  Max steps ({MAX_PLAN_STEPS}) reached. Stopping.")
+            log.debug("max_steps_reached", limit=MAX_PLAN_STEPS)
             break
 
     # Phase 3: Synthesize final answer
     # We generate the summary in code rather than via LLM to avoid JSON
     # hallucinations and keep the example fast and deterministic.
-    print("\n--- Phase 3: Final synthesis ---")
+    log.debug("phase", number=3, title="Final synthesis")
 
     # Extract ratings from accumulated results
     ratings_found: dict[str, str] = {}
@@ -374,19 +373,19 @@ async def main():
         else "\n\n(Could not compute average — calculate step may have failed.)"
     )
 
-    print(f"\n{'=' * 60}")
-    print("FINAL ANSWER")
-    print(f"{'=' * 60}")
-    print(final_answer)
+    log.debug("separator")
+    log.debug("section", title="FINAL ANSWER")
+    log.debug("separator")
+    log.debug("final_answer", content=final_answer)
 
-    print(f"\n{'=' * 60}")
-    print("CONCEPTS DEMONSTRATED")
-    print(f"{'=' * 60}")
-    print("✓ Planner agent produced structured JSON plan (AgentPlan)")
-    print(f"✓ Executor agent called tools across {step_idx} steps")
-    print(f"✓ Context accumulated: {len(accumulated_results)} results fed forward")
-    print("✓ Final synthesis combined all results into coherent answer")
-    print("✓ Two-phase design: planner (LLM) plans, executor (code) acts")
+    log.debug("separator")
+    log.debug("section", title="CONCEPTS DEMONSTRATED")
+    log.debug("separator")
+    log.debug("concept", description="Planner agent produced structured JSON plan (AgentPlan)")
+    log.debug("concept", description="Executor agent called tools across steps", steps=step_idx)
+    log.debug("concept", description="Context accumulated: results fed forward", results=len(accumulated_results))
+    log.debug("concept", description="Final synthesis combined all results into coherent answer")
+    log.debug("concept", description="Two-phase design: planner (LLM) plans, executor (code) acts")
 
 
 if __name__ == "__main__":

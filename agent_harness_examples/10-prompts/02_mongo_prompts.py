@@ -53,6 +53,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -61,6 +62,7 @@ from agent_harness.model_config import ModelConfig
 from agent_harness.prompts import MongoPrompts
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("PROMPTS_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("PROMPTS_MAX_TOKENS", "512"))
@@ -90,18 +92,14 @@ async def main():
         3. Start MongoDB: docker compose -f docker-compose.yml up -d mongo
         4. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("MongoPrompts — MongoDB Jinja2 Templates")
-    print("=" * 60)
+    log.debug("separator", title="MongoPrompts — MongoDB Jinja2 Templates")
 
     # ── Connection check ────────────────────────────────────────
-    print(f"\nChecking MongoDB at {MONGO_URI} ...")
+    log.debug("connection_check", uri=MONGO_URI)
     if not await check_mongo(MONGO_URI):
-        print(f"  MongoDB not reachable at {MONGO_URI}")
-        print("  Start with:")
-        print("    docker compose -f docker-compose.yml up -d mongo")
+        log.debug("connection_failed", uri=MONGO_URI, hint="Start with: docker compose -f docker-compose.yml up -d mongo")
         return
-    print("  MongoDB is reachable.")
+    log.debug("connection_ok", uri=MONGO_URI)
 
     # ── Initialize MongoPrompts ─────────────────────────────────
     prompts = MongoPrompts(
@@ -111,7 +109,7 @@ async def main():
     )
 
     # ── Seed templates ──────────────────────────────────────────
-    print(f"\n--- Seeding prompt templates ---")
+    log.debug("section", title="Seeding prompt templates")
 
     await prompts.create_prompt(
         prompt_id="doctor",
@@ -124,7 +122,7 @@ async def main():
         version=1,
         metadata={"category": "healthcare", "tone": "professional"},
     )
-    print("  Created: 'doctor' (healthcare template with specialty + language vars)")
+    log.debug("prompt_created", prompt_id="doctor", category="healthcare", description="healthcare template with specialty + language vars")
 
     await prompts.create_prompt(
         prompt_id="coder",
@@ -136,7 +134,7 @@ async def main():
         version=1,
         metadata={"category": "engineering", "tone": "technical"},
     )
-    print("  Created: 'coder' (engineering template with language, years, rules vars)")
+    log.debug("prompt_created", prompt_id="coder", category="engineering", description="engineering template with language, years, rules vars")
 
     await prompts.create_prompt(
         prompt_id="poet",
@@ -147,23 +145,23 @@ async def main():
         version=1,
         metadata={"category": "creative", "tone": "artistic"},
     )
-    print("  Created: 'poet' (creative template with style, meter, tone vars)")
+    log.debug("prompt_created", prompt_id="poet", category="creative", description="creative template with style, meter, tone vars")
 
     # ── list_prompts ────────────────────────────────────────────
-    print(f"\n--- Available prompts ---")
+    log.debug("section", title="Available prompts")
     all_prompts = await prompts.list_prompts(active_only=True)
     for p in all_prompts:
-        print(f"  - {p['prompt_id']} (v{p['version']}, {p['metadata'].get('category', '?')})")
+        log.debug("prompt_listed", prompt_id=p['prompt_id'], version=p['version'], category=p['metadata'].get('category', '?'))
 
     # ── Render templates directly ───────────────────────────────
-    print(f"\n--- Rendering templates (direct) ---")
+    log.debug("section", title="Rendering templates (direct)")
 
     doctor_prompt = await prompts.get_system_prompt(
         prompt_id="doctor",
         specialty="cardiology",
         language="simple",
     )
-    print(f"  Doctor prompt (rendered):\n      {doctor_prompt[:150]}...")
+    log.debug("prompt_rendered", prompt_id="doctor", preview=doctor_prompt[:150], truncation="...")
 
     coder_prompt = await prompts.get_system_prompt(
         prompt_id="coder",
@@ -175,14 +173,14 @@ async def main():
             "Write docstrings for all functions",
         ],
     )
-    print(f"  Coder prompt (rendered):\n      {coder_prompt[:200]}...")
+    log.debug("prompt_rendered", prompt_id="coder", preview=coder_prompt[:200], truncation="...")
 
     # ── update_prompt (cache invalidation) ──────────────────────
-    print(f"\n--- Updating prompt (cache invalidation) ---")
+    log.debug("section", title="Updating prompt (cache invalidation)")
 
     # First render to populate cache
     await prompts.get_system_prompt(prompt_id="poet", style="haiku", meter="5-7-5", tone="serene")
-    print(f"  Cache before update: {'poet' in prompts._cache} (should be True)")
+    log.debug("cache_check", prompt_id="poet", in_cache='poet' in prompts._cache, expected=True)
 
     # Update the template
     await prompts.update_prompt(
@@ -192,10 +190,10 @@ async def main():
             "Use {{meter}} meter. The mood should be {{tone}} and {{mood}}."
         ),
     )
-    print(f"  Template updated (added 'mood' variable)")
+    log.debug("template_updated", prompt_id="poet", change="added 'mood' variable")
 
     # Cache should be invalidated
-    print(f"  Cache after update: {'poet' in prompts._cache} (should be False)")
+    log.debug("cache_check", prompt_id="poet", in_cache='poet' in prompts._cache, expected=False)
 
     # Render again with new variable
     poet_prompt = await prompts.get_system_prompt(
@@ -205,11 +203,11 @@ async def main():
         tone="serene",
         mood="reflective",
     )
-    print(f"  Poet prompt (updated, rendered):\n      {poet_prompt}")
+    log.debug("prompt_rendered", prompt_id="poet", preview=poet_prompt)
 
     # ── Integration with agent.run() ────────────────────────────
-    print(f"\n--- Integration with agent.run() ---")
-    print("  run() pops 'prompt_id' from kwargs, passes remaining kwargs as template vars")
+    log.debug("section", title="Integration with agent.run()")
+    log.debug("api_info", description="run() pops 'prompt_id' from kwargs, passes remaining kwargs as template vars")
 
     memory = InMemoryProvider()
     agent = (
@@ -234,19 +232,17 @@ async def main():
             "Include unit tests as doctests",
         ],
     )
-    print(f"\n  Prompt ID used: coder")
-    print(f"  Template vars: language=Python, years=5, rules=[...]")
-    print(f"  Response:\n{result.output[:200]}...")
+    log.debug("agent_result", prompt_id="coder", template_vars="language=Python, years=5, rules=[...]", response=result.output[:200], truncation="...")
 
     # ── clear_cache ─────────────────────────────────────────────
-    print(f"\n--- Cache management ---")
+    log.debug("section", title="Cache management")
     cache_size = len(prompts._cache)
-    print(f"  Cache entries before clear: {cache_size}")
+    log.debug("cache_entries", count=cache_size, label="before clear")
     prompts.clear_cache()
-    print(f"  Cache entries after clear: {len(prompts._cache)}")
+    log.debug("cache_entries", count=len(prompts._cache), label="after clear")
 
     # ── Cleanup ─────────────────────────────────────────────────
-    print(f"\n--- Cleanup ---")
+    log.debug("section", title="Cleanup")
     answer = input("Delete demo prompts from MongoDB? (y/n) ").strip().lower()
     if answer == "y":
         for pid in ["doctor", "coder", "poet"]:
@@ -254,9 +250,9 @@ async def main():
                 await prompts.update_prompt(pid, active=False)
             except ValueError:
                 pass
-        print("  Demo prompts deactivated.")
+        log.debug("cleanup", action="prompts deactivated")
     else:
-        print("  Skipped cleanup. Data preserved.")
+        log.debug("cleanup", action="skipped", data="preserved")
 
 
 if __name__ == "__main__":

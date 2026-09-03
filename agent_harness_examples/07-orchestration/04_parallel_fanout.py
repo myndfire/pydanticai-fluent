@@ -48,6 +48,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 
+import structlog
 from dotenv import load_dotenv
 from pydantic_ai import RunContext
 
@@ -58,6 +59,7 @@ from agent_harness.tools import ToolRegistry
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-oss:20b")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
@@ -91,9 +93,9 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("Pattern 4: Parallel Fan-Out / Fan-In")
-    print("=" * 60)
+    log.debug("separator", char="=", count=60)
+    log.debug("pattern", pattern=4, title="Parallel Fan-Out / Fan-In")
+    log.debug("separator", char="=", count=60)
 
     model = ModelConfig(provider=LLM_PROVIDER, model_name=MODEL_NAME)
 
@@ -123,10 +125,10 @@ async def main():
         Args:
             question: The question to ask all specialists.
         """
-        print(f"\n  [fan-out] Asking 3 specialists: \"{question}\"")
+        log.debug("fan_out", question=question)
 
         async def ask_legal():
-            print("  [fan-out] → Legal Analyst (running)...")
+            log.debug("fan_out", specialist="Legal Analyst", status="running")
             h = await MessageHistory().load(f"sub-l-{uuid.uuid4().hex[:6]}", memory)
             r = await legal.run(
                 f"You are a legal analyst. Give one paragraph: {question}",
@@ -136,7 +138,7 @@ async def main():
             return ("Legal", str(r.output or ""))
 
         async def ask_tech():
-            print("  [fan-out] → Tech Analyst (running)...")
+            log.debug("fan_out", specialist="Tech Analyst", status="running")
             h = await MessageHistory().load(f"sub-t-{uuid.uuid4().hex[:6]}", memory)
             r = await tech.run(
                 f"You are a technology analyst. Give one paragraph: {question}",
@@ -146,7 +148,7 @@ async def main():
             return ("Technical", str(r.output or ""))
 
         async def ask_business():
-            print("  [fan-out] → Business Analyst (running)...")
+            log.debug("fan_out", specialist="Business Analyst", status="running")
             h = await MessageHistory().load(f"sub-b-{uuid.uuid4().hex[:6]}", memory)
             r = await business.run(
                 f"You are a business analyst. Give one paragraph: {question}",
@@ -162,7 +164,7 @@ async def main():
         report_parts = []
         for label, output in results:
             ctx.deps.record(label, question, output)
-            print(f"  [fan-in] ← {label}: {output[:100]}...")
+            log.debug("fan_in", specialist=label, output=output[:100])
             report_parts.append(f"### {label} Perspective\n{output}")
 
         return "\n\n".join(report_parts)
@@ -179,7 +181,7 @@ async def main():
 
     # ── Turn 1 ───────────────────────────────────────────────────
     ctx1 = SharedContext()
-    print("\n── Turn 1: Remote Work Policy ──")
+    log.debug("turn", turn=1, title="Remote Work Policy")
     h1 = await MessageHistory().load("fan-r1", memory)
     r1 = await coordinator.run(
         "We're considering a permanent remote work policy. "
@@ -188,11 +190,11 @@ async def main():
         "fan-r1",
         deps=ctx1,
     )
-    print(f"\n  Coordinator final answer:\n{r1.output}")
+    log.debug("coordinator_answer", result=str(r1.output))
 
     # ── Turn 2 ───────────────────────────────────────────────────
     ctx2 = SharedContext()
-    print("\n── Turn 2: AI in Customer Support ──")
+    log.debug("turn", turn=2, title="AI in Customer Support")
     h2 = await MessageHistory().load("fan-r2", memory)
     r2 = await coordinator.run(
         "Should we replace our customer support team with AI chatbots? "
@@ -201,13 +203,13 @@ async def main():
         "fan-r2",
         deps=ctx2,
     )
-    print(f"\n  Coordinator final answer:\n{r2.output}")
+    log.debug("coordinator_answer", result=str(r2.output))
 
     # ── Summary ─────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print("SharedContext summary:")
+    log.debug("separator", char="=", count=60)
+    log.debug("section", title="SharedContext summary")
     for p in ctx2.perspectives:
-        print(f"  [{p['specialist']}] {p['question'][:60]}...")
+        log.debug("perspective", specialist=p['specialist'], question=p['question'][:60])
 
 
 if __name__ == "__main__":

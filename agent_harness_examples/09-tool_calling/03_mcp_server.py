@@ -44,12 +44,15 @@ import asyncio
 import os
 from dotenv import load_dotenv
 
+import structlog
+
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.tools import ToolRegistry
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("TOOL_CALLING_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("TOOL_CALLING_MAX_TOKENS", "512"))
@@ -61,7 +64,7 @@ MCP_COMPLEX_URL = os.getenv("MCP_COMPLEX_URL", "https://mcpplaygroundonline.com/
 
 def echo(message: str) -> str:
     """Echo a message back."""
-    print(f"  [tool:echo] {message}")
+    log.debug("tool_echo", message=message)
     return f"Echo: {message}"
 
 
@@ -76,17 +79,16 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("MCP Server Integration")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="MCP Server Integration")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
     # ── Example 1: Single MCP server ────────────────────────────
-    print("\n--- Example 1: Single MCP server ---")
-    print("  NOTE: MCP server must be running at the given URL.")
-    print("  This example shows the fluent API pattern.")
-    print()
+    log.debug("section", section="Example 1: Single MCP server")
+    log.debug("note", message="MCP server must be running at the given URL.")
+    log.debug("info", message="This example shows the fluent API pattern.")
 
     # In production, replace with a real MCP server URL:
     #   agent.with_mcp_server("MCP_HTTP_URL")
@@ -103,31 +105,20 @@ async def main():
     #     .with_mcp_server("MCP_HTTP_URL/mcp/filesystem")
     # )
 
-    print("  API: agent.with_mcp_server(\"MCP_HTTP_URL/mcp/filesystem\")")
+    log.debug("api_pattern", pattern='agent.with_mcp_server("MCP_HTTP_URL/mcp/filesystem")')
 
     # ── Example 2: Multiple MCP servers ─────────────────────────
-    print("\n--- Example 2: Multiple MCP servers ---")
-    print("  API: agent.with_mcp_servers(\n"
-          "    \"MCP_HTTP_URL/mcp/filesystem\",\n"
-          "    \"http://localhost:8001/mcp/postgres\",\n"
-          "    \"http://localhost:8002/mcp/github\",\n"
-          "  )")
+    log.debug("section", section="Example 2: Multiple MCP servers")
+    log.debug("api_pattern", pattern="agent.with_mcp_servers(MCP_HTTP_URL/mcp/filesystem, http://localhost:8001/mcp/postgres, http://localhost:8002/mcp/github)")
 
     # ── Example 3: MCP with tool_prefix for disambiguation ──────
-    print("\n--- Example 3: tool_prefix for disambiguation ---")
-    print("  Use tool_prefix to avoid name collisions when multiple")
-    print("  servers expose tools with the same name.\n")
-    print("  API: agent.with_mcp_server(\n"
-          "    \"MCP_HTTP_URL/mcp/filesystem\",\n"
-          "    tool_prefix=\"fs_\"\n"
-          "  )")
-    print("  API: agent.with_mcp_server(\n"
-          "    \"http://localhost:8001/mcp/s3\",\n"
-          "    tool_prefix=\"s3_\"\n"
-          "  )")
+    log.debug("section", section="Example 3: tool_prefix for disambiguation")
+    log.debug("tool_prefix_note", message="Use tool_prefix to avoid name collisions when multiple servers expose tools with the same name.")
+    log.debug("api_pattern", pattern="agent.with_mcp_server(MCP_HTTP_URL/mcp/filesystem, tool_prefix=fs_)")
+    log.debug("api_pattern", pattern="agent.with_mcp_server(http://localhost:8001/mcp/s3, tool_prefix=s3_)")
 
     # ── Example 4: MCP + custom tools ───────────────────────────
-    print("\n--- Example 4: MCP toolsets + custom tools ---")
+    log.debug("section", section="Example 4: MCP toolsets + custom tools")
     # Combine two MCP servers with custom ToolRegistry tools.
     # Context7 provides library documentation tools.
     # Complex server provides data/user/order tools.
@@ -141,15 +132,13 @@ async def main():
         .with_mcp_server(MCP_HTTP_URL, tool_prefix="ctx7_")
         .with_mcp_server(MCP_COMPLEX_URL, tool_prefix="complex_")
     )
-    print("  API: agent.with_tools(ToolRegistry().add(echo))\n"
-          "       .with_mcp_server(MCP_HTTP_URL, tool_prefix=\"ctx7_\")\n"
-          "       .with_mcp_server(MCP_COMPLEX_URL, tool_prefix=\"complex_\")")
-    print("  Tools available: ctx7_*, complex_*, echo")
+    log.debug("api_pattern", pattern="agent.with_tools(ToolRegistry().add(echo)).with_mcp_server(MCP_HTTP_URL, tool_prefix=ctx7_).with_mcp_server(MCP_COMPLEX_URL, tool_prefix=complex_)")
+    log.debug("tools_available", tools=["ctx7_*", "complex_*", "echo"])
 
     # ── Example 5: Run agent with MCP + custom tool (live demo) ─
-    print("\n" + "=" * 60)
-    print("Live Demo: Agent with MCP + custom tool")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="Live Demo: Agent with MCP + custom tool")
+    log.debug("separator")
 
     custom_tools = ToolRegistry().add(echo)
 
@@ -167,19 +156,18 @@ async def main():
         history,
         "mcp-demo-live",
     )
-    print(f"\n  Output: {result.output}")
+    log.debug("output", result=result.output)
 
     # ── Example 6: MCP server discovery (placeholder) ───────────
-    print("\n--- Example 6: MCP server discovery ---")
+    log.debug("section", section="Example 6: MCP server discovery")
     from agent_harness.tools import discover_mcp_servers, get_mcp_server_info
 
     servers = discover_mcp_servers()
-    print(f"  Discoverable servers: {servers}")
+    log.debug("discoverable_servers", servers=servers)
     for server in servers:
         info = get_mcp_server_info(server)
-        print(f"    {info['name']}: {info['description']} "
-              f"(endpoint: {info['endpoint']}, available: {info['available']})")
-    print("  NOTE: These are placeholder stubs for future MCP SDK integration.")
+        log.debug("server_info", name=info['name'], description=info['description'], endpoint=info['endpoint'], available=info['available'])
+    log.debug("note", message="These are placeholder stubs for future MCP SDK integration.")
 
 
 if __name__ == "__main__":

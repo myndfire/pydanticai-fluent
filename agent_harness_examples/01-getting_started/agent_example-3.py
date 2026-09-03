@@ -16,15 +16,14 @@ import os
 import asyncio
 import uuid
 from pathlib import Path
-import logfire
 from dotenv import load_dotenv
+import structlog
 
 # Fluent agent imports
 from agent_harness import (
     ManagedAgent,
     ModelConfig,
     StaticPrompts,
-    Observability,
     MessageHistory,
     InMemoryProvider,
 )
@@ -58,16 +57,15 @@ class Invoice(BaseModel):
 
 
 load_dotenv()
-logfire.configure()
+
+log = structlog.get_logger()
 
 # Build the agent using the fluent API
-obs = Observability()
 short_term = InMemoryProvider(max_turns=10)
 agent = (
     ManagedAgent()
     .with_model(ModelConfig(provider="ollama", model_name=os.getenv("MODEL_NAME", "qwen2.5:3b")))
     .with_prompts(StaticPrompts("You are a helpful assistant"))
-    .with_observability(obs)
     .with_short_term_memory(short_term)
     .with_long_term_memory(None)
     .with_output(Invoice)
@@ -92,8 +90,7 @@ async def main():
         message_history=MessageHistory(),
         session_id=session_id,
     )
-    logfire.notice("Text prompt LLM results: {result}", result=str(result.output))
-    logfire.info("Result type: {result}", result=type(result.output))
+    log.debug("text_prompt_result", result=result.output, result_type=str(type(result.output)))
 
     # Read the markdown file generated previously (or any sample file)
     with open(Path(__file__).parent.parent / "data" / "invoice.md", "r") as file:
@@ -107,10 +104,7 @@ async def main():
         message_history=MessageHistory(),
         session_id=session_id2,
     )
-    logfire.notice(
-        "Invoice markdown prompt LLM results: {result}", result=str(result2.output)
-    )
-    logfire.info("Result type: {result}", result=type(result2.output))
+    log.debug("markdown_prompt_result", result=result2.output, result_type=str(type(result2.output)))
 
 
 if __name__ == "__main__":

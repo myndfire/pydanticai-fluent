@@ -23,9 +23,9 @@ Flow:
     │
     ▼
   Researcher Agent ──(facts)──▶ Writer Agent ──(draft)──▶ Editor Agent
-                                                                   │
-                                                                   ▼
-                                                          Final polished answer
+                                                               │
+                                                               ▼
+                                                      Final polished answer
 
 A SharedContext dataclass holds intermediate outputs at each stage.
 
@@ -46,6 +46,7 @@ import os
 import asyncio
 from dataclasses import dataclass, field
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -54,6 +55,7 @@ from agent_harness.model_config import ModelConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-oss:20b")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
@@ -82,9 +84,9 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("Pattern 2: Sequential Pipeline Chain")
-    print("=" * 60)
+    log.debug("separator", char="=", count=60)
+    log.debug("pattern", pattern=2, title="Sequential Pipeline Chain")
+    log.debug("separator", char="=", count=60)
 
     model = ModelConfig(provider=LLM_PROVIDER, model_name=MODEL_NAME)
 
@@ -111,8 +113,8 @@ async def main():
     question = "What is vector search and why is it important for RAG systems?"
 
     # Stage 1: Research
-    print(f"\n── Stage 1: Researcher ──")
-    print(f"  Input: {question}")
+    log.debug("stage", stage=1, title="Researcher")
+    log.debug("input", value=question)
     h1 = await MessageHistory().load("pipe-r", memory)
     r1 = await researcher.run(
         f"Research and list 3-5 key facts about this topic. Be concise: {question}",
@@ -120,10 +122,10 @@ async def main():
         "pipe-r",
     )
     ctx.research = str(r1.output or "")
-    print(f"  Research output: {ctx.research[:200]}...")
+    log.debug("research_output", value=ctx.research[:200])
 
     # Stage 2: Write
-    print(f"\n── Stage 2: Writer ──")
+    log.debug("stage", stage=2, title="Writer")
     h2 = await MessageHistory().load("pipe-w", memory)
     r2 = await writer.run(
         f"Write a 2-paragraph explanation using these research notes:\n\n{ctx.research}",
@@ -131,10 +133,10 @@ async def main():
         "pipe-w",
     )
     ctx.draft = str(r2.output or "")
-    print(f"  Draft output: {ctx.draft[:200]}...")
+    log.debug("draft_output", value=ctx.draft[:200])
 
     # Stage 3: Edit
-    print(f"\n── Stage 3: Editor ──")
+    log.debug("stage", stage=3, title="Editor")
     h3 = await MessageHistory().load("pipe-e", memory)
     r3 = await editor.run(
         f"Edit the following draft for clarity and conciseness. "
@@ -144,10 +146,9 @@ async def main():
     )
     ctx.final = str(r3.output or "")
 
-    print(f"\n{'='*60}")
-    print("FINAL OUTPUT (after Researcher → Writer → Editor)")
-    print("=" * 60)
-    print(ctx.final)
+    log.debug("separator", char="=", count=60)
+    log.debug("final_output", title="FINAL OUTPUT (after Researcher -> Writer -> Editor)")
+    log.debug("result", value=ctx.final)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ import asyncio
 import os
 import re
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -56,6 +57,7 @@ from agent_harness.guards import (
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -92,7 +94,7 @@ def redact_pii(text: str) -> str:
 
 
 def on_retry_callback(ctx):
-    print(f"  [on_retry] {ctx.error_type} (attempt {ctx.attempt}/{ctx.max_attempts})")
+    log.debug("retry_callback", error_type=ctx.error_type, attempt=ctx.attempt, max_attempts=ctx.max_attempts)
 
 
 def on_retry_error(ctx):
@@ -120,9 +122,9 @@ def on_circuit_error(ctx):
 
 
 async def main():
-    print("=" * 60)
-    print("All Guardrails Combined")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="All Guardrails Combined")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
@@ -175,17 +177,17 @@ async def main():
     )
 
     # ── Print configuration ────────────────────────────────────
-    print("\nGuard Configuration:")
-    print(f"  Agent retries: {agent.guards.agent.max_retries} (timeout: {agent.guards.agent.timeout}s)")
-    print(f"  Content filter: {agent.guards.content_filter is not None}")
-    print(f"  PII detection:  {agent.guards.pii_detection is not None}")
-    print(f"  Token limits:   {agent.guards.token_limits is not None}")
-    print(f"  Cost limits:    {agent.guards.cost_limits is not None}")
-    print(f"  Circuit breaker:{agent.guards.circuit_breaker is not None}")
-    print(f"  Circuit threshold: {agent.guards.circuit_breaker.failure_threshold if agent.guards.circuit_breaker else 'N/A'}")
+    log.debug("section", title="Guard Configuration")
+    log.debug("guard_config", agent_retries=agent.guards.agent.max_retries, timeout=agent.guards.agent.timeout)
+    log.debug("guard_config", content_filter=agent.guards.content_filter is not None)
+    log.debug("guard_config", pii_detection=agent.guards.pii_detection is not None)
+    log.debug("guard_config", token_limits=agent.guards.token_limits is not None)
+    log.debug("guard_config", cost_limits=agent.guards.cost_limits is not None)
+    log.debug("guard_config", circuit_breaker=agent.guards.circuit_breaker is not None)
+    log.debug("guard_config", circuit_threshold=agent.guards.circuit_breaker.failure_threshold if agent.guards.circuit_breaker else "N/A")
 
     # ── Run 1: Simple prompt ───────────────────────────────────
-    print("\n--- Run 1: Simple greeting ---")
+    log.debug("example", example=1, title="Simple greeting")
     history = await MessageHistory().load("all-guards-1", memory)
 
     result = await agent.run(
@@ -193,11 +195,11 @@ async def main():
         history,
         "all-guards-1",
     )
-    print(f"  Success: {result.success}")
-    print(f"  Output: {result.output}")
+    log.debug("result", success=result.success)
+    log.debug("result", output=result.output)
 
     # ── Run 2: Content that triggers filters ───────────────────
-    print("\n--- Run 2: Profile with PII and strong language ---")
+    log.debug("example", example=2, title="Profile with PII and strong language")
     history2 = await MessageHistory().load("all-guards-2", memory)
 
     result2 = await agent.run(
@@ -206,11 +208,11 @@ async def main():
         history2,
         "all-guards-2",
     )
-    print(f"  Success: {result2.success}")
-    print(f"  Output: {result2.output}")
+    log.debug("result", success=result2.success)
+    log.debug("result", output=result2.output)
 
     # ── Run 3: Using with_guardrails bulk setter ────────────────
-    print("\n--- Run 3: Bulk guardrail setter ---")
+    log.debug("example", example=3, title="Bulk guardrail setter")
     agent2 = (
         ManagedAgent()
         .with_model(ModelConfig(provider=GUARDRAILS_MODEL_PROVIDER, model_name=GUARDRAILS_MODEL_NAME))
@@ -233,12 +235,12 @@ async def main():
         history3,
         "all-guards-3",
     )
-    print(f"  Success: {result3.success}")
-    print(f"  Output: {result3.output}")
+    log.debug("result", success=result3.success)
+    log.debug("result", output=result3.output)
 
-    print("\n" + "=" * 60)
-    print("All guardrail demonstrations complete.")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="All guardrail demonstrations complete.")
+    log.debug("separator")
 
 
 if __name__ == "__main__":

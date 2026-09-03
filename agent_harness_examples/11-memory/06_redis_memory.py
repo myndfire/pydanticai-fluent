@@ -42,6 +42,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -49,6 +50,7 @@ from agent_harness.memory import InMemoryProvider, MessageHistory, RedisMemory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MEMORY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -80,18 +82,17 @@ async def main():
         3. Start Redis: docker compose -f docker-compose.yml up -d redis
         4. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("RedisMemory — Redis Long-Term Memory")
-    print("=" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="RedisMemory — Redis Long-Term Memory")
+    log.debug("separator", width=60)
 
     # ── Connection check ────────────────────────────────────────
-    print(f"\nChecking Redis at {REDIS_HOST}:{REDIS_PORT} ...")
+    log.debug("checking", service="Redis", host=REDIS_HOST, port=REDIS_PORT)
     if not await check_redis(REDIS_HOST, REDIS_PORT):
-        print(f"  Redis not reachable at {REDIS_HOST}:{REDIS_PORT}")
-        print("  Start with:")
-        print("    docker compose -f docker-compose.yml up -d redis")
+        log.debug("not_reachable", service="Redis", host=REDIS_HOST, port=REDIS_PORT)
+        log.debug("start_hint", command="docker compose -f docker-compose.yml up -d redis")
         return
-    print("  Redis is reachable.")
+    log.debug("reachable", service="Redis")
 
     # ── Setup providers ─────────────────────────────────────────
     short_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "10")))
@@ -109,8 +110,8 @@ async def main():
         .with_long_term_memory(redis_mem)
     )
 
-    print(f"  Short-term: InMemoryProvider(max_turns=10)")
-    print(f"  Long-term:  RedisMemory({REDIS_HOST}:{REDIS_PORT}, key_prefix={REDIS_KEY_PREFIX})")
+    log.debug("short_term", provider=f"InMemoryProvider(max_turns=10)")
+    log.debug("long_term", provider=f"RedisMemory({REDIS_HOST}:{REDIS_PORT}, key_prefix={REDIS_KEY_PREFIX})")
 
     # ── Multi-turn conversation ─────────────────────────────────
     session = "redis-demo"
@@ -120,7 +121,7 @@ async def main():
         "What was the project codename I told you?",
     ]
 
-    print(f"\n--- Multi-turn conversation (session: {session}) ---")
+    log.debug("section", title=f"Multi-turn conversation (session: {session})")
     for i, prompt in enumerate(conversations, 1):
         history = await MessageHistory().load(session, short_term)
         result = await agent.run(
@@ -129,42 +130,42 @@ async def main():
             session,
             save_to=[short_term, redis_mem],
         )
-        print(f"  Turn {i}: {result.output}")
+        log.debug("turn", index=i, output=result.output)
 
     # ── Key prefix inspection ───────────────────────────────────
-    print(f"\n--- Key prefix inspection ---")
-    print(f"  Prefix: {REDIS_KEY_PREFIX}")
-    print(f"  This session's Redis key: {REDIS_KEY_PREFIX}{session}")
-    print(f"  Each session gets its own Redis list, isolated by prefix.")
+    log.debug("section", title="Key prefix inspection")
+    log.debug("prefix", prefix=REDIS_KEY_PREFIX)
+    log.debug("redis_key", key=f"{REDIS_KEY_PREFIX}{session}")
+    log.debug("isolation_note", message="Each session gets its own Redis list, isolated by prefix.")
 
     # Verify isolation — another session should be empty
     other_turns = await redis_mem.load_turns("other-session")
-    print(f"  'other-session' turns: {len(other_turns)} (should be 0)")
+    log.debug("isolation_check", session="other-session", turns=len(other_turns), expected=0)
 
     # ── CRUD operations ─────────────────────────────────────────
-    print("\n--- CRUD operations ---")
+    log.debug("section", title="CRUD operations")
 
     turns = await redis_mem.load_turns(session)
-    print(f"  load_turns: {len(turns)} turns")
+    log.debug("load_turns", count=len(turns))
 
     if turns:
         target = turns[1]
         fetched = await redis_mem.get_turn(session, target.turn_id)
-        print(f"  get_turn: {fetched.turn_id[:12] if fetched else 'NOT FOUND'}...")
+        log.debug("get_turn", turn_id=fetched.turn_id[:12] if fetched else "NOT FOUND")
 
         deleted = await redis_mem.delete_turn(session, target.turn_id)
-        print(f"  delete_turn: {deleted}")
-        print(f"  After delete: {len(await redis_mem.load_turns(session))} turns")
+        log.debug("delete_turn", result=deleted)
+        log.debug("after_delete", turns=len(await redis_mem.load_turns(session)))
 
     # ── Cleanup ─────────────────────────────────────────────────
-    print("\n--- Cleanup ---")
+    log.debug("section", title="Cleanup")
     answer = input("Delete demo data from Redis? (y/n) ").strip().lower()
     if answer == "y":
         await redis_mem.clear(session)
         remaining = await redis_mem.load_turns(session)
-        print(f"  Remaining turns for '{session}': {len(remaining)}")
+        log.debug("remaining", session=session, count=len(remaining))
     else:
-        print("  Skipped cleanup. Data preserved.")
+        log.debug("skipped_cleanup")
 
 
 if __name__ == "__main__":

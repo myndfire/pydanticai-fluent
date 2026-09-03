@@ -50,6 +50,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 
+import structlog
 from dotenv import load_dotenv
 from pydantic_ai import RunContext
 
@@ -60,6 +61,7 @@ from agent_harness.tools import ToolRegistry
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-oss:20b")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
@@ -89,9 +91,9 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("Pattern 1: Tool-Driven Agent Delegation")
-    print("=" * 60)
+    log.debug("separator", char="=", count=60)
+    log.debug("pattern", pattern=1, title="Tool-Driven Agent Delegation")
+    log.debug("separator", char="=", count=60)
 
     # ── Specialist agent ──────────────────────────────────────────
     specialist = (
@@ -106,7 +108,7 @@ async def main():
         Args:
             task: The specific task for the specialist to handle.
         """
-        print(f"\n  [delegate] Coordinator → Specialist: {task}")
+        log.debug("delegate", direction="Coordinator -> Specialist", task=task)
         sub_history = MessageHistory()
         result = await specialist.run(
             f"You are a finance specialist. Answer precisely: {task}",
@@ -115,7 +117,7 @@ async def main():
         )
         output = str(result.output or "")
         ctx.deps.record(task, output)
-        print(f"  [delegate] Specialist → Coordinator: {output[:120]}...")
+        log.debug("delegate", direction="Specialist -> Coordinator", output=output[:120])
         return f"[Specialist Report]\nTask: {task}\nResult: {output}"
 
     # ── Coordinator agent ─────────────────────────────────────────
@@ -130,7 +132,7 @@ async def main():
     ctx = SharedContext()
 
     # ── Turn 1: Delegate a calculation ────────────────────────────
-    print("\n── Turn 1: Q3 Revenue ──")
+    log.debug("turn", turn=1, title="Q3 Revenue")
     h1 = await MessageHistory().load("del-r1", memory)
     r1 = await coordinator.run(
         "What was the Q3 revenue if we had $1.2M in July, $1.5M in August, "
@@ -139,10 +141,10 @@ async def main():
         "del-r1",
         deps=ctx,
     )
-    print(f"  Output: {r1.output}")
+    log.debug("output", result=str(r1.output))
 
     # ── Turn 2: Delegate an analysis ──────────────────────────────
-    print("\n── Turn 2: Expense Trends ──")
+    log.debug("turn", turn=2, title="Expense Trends")
     h2 = await MessageHistory().load("del-r2", memory)
     r2 = await coordinator.run(
         "Our expenses are: Marketing $200K, R&D $450K, Operations $300K. "
@@ -151,10 +153,10 @@ async def main():
         "del-r2",
         deps=ctx,
     )
-    print(f"  Output: {r2.output}")
+    log.debug("output", result=str(r2.output))
 
     # ── Turn 3: Ask about prior delegations ───────────────────────
-    print("\n── Turn 3: Recall Past Delegations ──")
+    log.debug("turn", turn=3, title="Recall Past Delegations")
     h3 = await MessageHistory().load("del-r3", memory)
     r3 = await coordinator.run(
         "What work has the specialist done so far? Summarize based on what you know.",
@@ -162,12 +164,12 @@ async def main():
         "del-r3",
         deps=ctx,
     )
-    print(f"  Output: {r3.output}")
+    log.debug("output", result=str(r3.output))
 
     # ── Summary ─────────────────────────────────────────────────
-    print(f"\nDelegations recorded in SharedContext: {len(ctx.delegation_log)}")
+    log.debug("summary", delegations_recorded=len(ctx.delegation_log))
     for i, entry in enumerate(ctx.delegation_log):
-        print(f"  {i+1}. {entry['task']}")
+        log.debug("delegation_entry", index=i + 1, task=entry['task'])
 
 
 if __name__ == "__main__":

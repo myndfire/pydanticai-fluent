@@ -40,11 +40,15 @@ Setup
 
 import asyncio
 
+import structlog
+
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.evaluators import Evaluator
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
+
+log = structlog.get_logger()
 
 
 # ── Evaluator that raises ───────────────────────────────────────────
@@ -56,7 +60,7 @@ class FailingEvaluator(Evaluator):
         self.name = name
 
     async def evaluate(self, prompt: str, result, context: dict) -> None:  # type: ignore[override]
-        print(f"  [evaluator:{self.name}] About to fail...")
+        log.debug("evaluator_failing", name=self.name, message="About to fail...")
         raise RuntimeError(f"Evaluator '{self.name}' crashed: external service timeout")
 
 
@@ -65,25 +69,27 @@ class WorkingEvaluator(Evaluator):
 
     async def evaluate(self, prompt: str, result, context: dict) -> None:  # type: ignore[override]
         output = getattr(result, "output", str(result))
-        print(f"  [evaluator:working] Output length: {len(output or '')} chars")
+        log.debug("evaluator_working", output_length=len(output or ''))
 
 
 # ── Evaluator error handler ─────────────────────────────────────────
 
 def on_evaluator_failure(ctx: ErrorContext) -> str | None:
     """Handle evaluator failures — suppress, don't crash the agent."""
-    print(f"\n  [on_evaluator_error] Evaluator failed!")
-    print(f"    Type:    {ctx.error_type}")
-    print(f"    Message: {ctx.error_message}")
-    print(f"    Session: {ctx.session_id}")
-    print(f"    Prompt:  {ctx.prompt}")
+    log.debug(
+        "evaluator_error_intercepted",
+        error_type=ctx.error_type,
+        error_message=ctx.error_message,
+        session_id=ctx.session_id,
+        prompt=ctx.prompt,
+    )
     # Evaluators are non-critical — suppress and continue
     return None  # return None to re-raise, or return a string to suppress
 
 
 def suppress_evaluator(ctx: ErrorContext) -> str | None:
     """Suppress the evaluator failure and continue."""
-    print(f"  [on_evaluator_error] Suppressing: {ctx.error_type}")
+    log.debug("evaluator_suppressed", error_type=ctx.error_type)
     return None  # suppress by returning None... wait, this would re-raise
 
 # Actually: return a value = suppress, return None = re-raise
@@ -91,20 +97,19 @@ def suppress_evaluator(ctx: ErrorContext) -> str | None:
 
 def handle_evaluator_gracefully(ctx: ErrorContext) -> str | None:
     """Suppress evaluator failures — they're non-critical."""
-    print(f"  [on_evaluator_error] Evaluator failed — suppressing gracefully")
-    print(f"    {ctx.error_type}: {ctx.error_message[:80]}")
+    log.debug("evaluator_suppressed_gracefully", error_type=ctx.error_type, error_message=ctx.error_message[:80])
     return None  # suppress with no fallback output
 
 
 async def main():
-    print("=" * 60)
-    print("Evaluator Errors — Handling Post-Turn Failures")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Evaluator Errors — Handling Post-Turn Failures")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
     # ── Example 1: Failing evaluator with suppress handler ──────
-    print("\n--- Example 1: Suppress evaluator errors ---")
+    log.debug("example", example=1, title="Suppress evaluator errors")
 
     config = (
         ErrorHandlingConfig()
@@ -124,11 +129,10 @@ async def main():
         history,
         "eval-err-1",
     )
-    print(f"  Agent output: {result.output}")
-    print(f"  Success: {result.success}")
+    log.debug("result", agent_output=result.output, success=result.success)
 
     # ── Example 2: Multiple evaluators, one fails ───────────────
-    print("\n--- Example 2: Mixed evaluators (one fails, one works) ---")
+    log.debug("example", example=2, title="Mixed evaluators (one fails, one works)")
 
     config2 = (
         ErrorHandlingConfig()
@@ -144,7 +148,7 @@ async def main():
         .with_error_handling(config2)
     )
 
-    print("  Evaluators: FailingEvaluator + WorkingEvaluator")
+    log.debug("status", evaluators="FailingEvaluator + WorkingEvaluator")
 
     # First run: FailingEvaluator raises → caught by on_evaluator_error
     # Note: after the first evaluator raises, the error propagates
@@ -157,14 +161,14 @@ async def main():
             history2,
             "eval-err-2",
         )
-        print(f"  Agent output: {result2.output}")
+        log.debug("result", agent_output=result2.output)
     except RuntimeError as e:
-        print(f"  Propagated: {e}")
-        print(f"  (First evaluator failed; on_evaluator_error returned None → re-raise)")
-        print(f"  To run all evaluators even if one fails, return a value from the handler.")
+        log.debug("status", message=f"Propagated: {e}")
+        log.debug("status", message="First evaluator failed; on_evaluator_error returned None → re-raise")
+        log.debug("status", message="To run all evaluators even if one fails, return a value from the handler.")
 
     # ── Example 3: Suppress with fallback message ───────────────
-    print("\n--- Example 3: Suppress evaluator errors with fallback ---")
+    log.debug("example", example=3, title="Suppress evaluator errors with fallback")
 
     config3 = (
         ErrorHandlingConfig()
@@ -187,8 +191,7 @@ async def main():
         history3,
         "eval-err-3",
     )
-    print(f"  Agent output: {result3.output}")
-    print(f"  Success: {result3.success}")
+    log.debug("result", agent_output=result3.output, success=result3.success)
 
 
 if __name__ == "__main__":

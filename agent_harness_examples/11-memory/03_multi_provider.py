@@ -38,6 +38,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -45,6 +46,7 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MEMORY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -53,21 +55,16 @@ MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
 async def inspect_turn(label: str, turn):
     """Print TurnData details."""
     if turn is None:
-        print(f"  {label}: None")
+        log.debug("turn_inspect", label=label, value=None)
         return
     has_usage = turn.usage is not None
     msg_count = len(turn.messages)
-    print(f"  {label}:")
-    print(f"    turn_id:    {turn.turn_id}")
-    print(f"    status:     {turn.status}")
-    print(f"    model:      {turn.model}")
-    print(f"    duration:   {turn.duration_seconds:.2f}s")
-    print(f"    messages:   {msg_count}")
+    log.debug("turn_inspect", label=label, turn_id=turn.turn_id, status=turn.status,
+              model=turn.model, duration=turn.duration_seconds, messages=msg_count)
     if has_usage:
-        print(f"    usage:      in={turn.usage.input_tokens} "
-              f"out={turn.usage.output_tokens} "
-              f"total={turn.usage.total_tokens}")
-    print(f"    timestamp:  {turn.timestamp.isoformat()}")
+        log.debug("turn_usage", input_tokens=turn.usage.input_tokens,
+                  output_tokens=turn.usage.output_tokens, total_tokens=turn.usage.total_tokens)
+    log.debug("turn_timestamp", timestamp=turn.timestamp.isoformat())
 
 
 async def main():
@@ -79,9 +76,9 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Multiple Memory Providers")
-    print("=" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="Multiple Memory Providers")
+    log.debug("separator", width=60)
 
     # ── Three providers, three purposes ──────────────────────────
     short_term = InMemoryProvider(max_turns=int(os.getenv("MEMORY_SHORT_TERM_MAX_TURNS", "10")))    # fast context
@@ -97,11 +94,11 @@ async def main():
     )
 
     session = "multi-prov-demo"
-    print(f"\nSession: {session}")
-    print(f"Save targets: short_term + long_term + audit_log")
+    log.debug("session", session=session)
+    log.debug("save_targets", targets="short_term + long_term + audit_log")
 
     # ── Turn 1 ──────────────────────────────────────────────────
-    print("\n--- Turn 1 ---")
+    log.debug("section", title="Turn 1")
     history = await MessageHistory().load(session, short_term)
     result = await agent.run(
         "Remember this: the secret code is 'XY-42-ALPHA'.",
@@ -113,7 +110,7 @@ async def main():
     inspect_turn("last_turn", agent.last_turn)
 
     # ── Turn 2 ──────────────────────────────────────────────────
-    print("\n--- Turn 2 ---")
+    log.debug("section", title="Turn 2")
     history2 = await MessageHistory().load(session, short_term)
     result2 = await agent.run(
         "What was the secret code I told you?",
@@ -121,10 +118,10 @@ async def main():
         session,
         save_to=[short_term, long_term, audit_log],
     )
-    print(f"  Response: {result2.output}")
+    log.debug("response", output=result2.output)
 
     # ── Turn 3 ──────────────────────────────────────────────────
-    print("\n--- Turn 3 ---")
+    log.debug("section", title="Turn 3")
     history3 = await MessageHistory().load(session, short_term)
     result3 = await agent.run(
         "Confirm the secret code and tell me the current time.",
@@ -132,10 +129,10 @@ async def main():
         session,
         save_to=[short_term, long_term, audit_log],
     )
-    print(f"  Response: {result3.output}")
+    log.debug("response", output=result3.output)
 
     # ── Compare storage across providers ────────────────────────
-    print("\n--- Storage comparison ---")
+    log.debug("section", title="Storage comparison")
     for name, provider in [
         ("short_term", short_term),
         ("long_term", long_term),
@@ -146,25 +143,22 @@ async def main():
             (t.usage.total_tokens if t.usage else 0) for t in turns
         )
         total_dur = sum(t.duration_seconds for t in turns)
-        print(f"  {name}: {len(turns)} turns, "
-              f"{total_tokens} total tokens, "
-              f"{total_dur:.2f}s total duration")
+        log.debug("storage", provider=name, turns=len(turns), total_tokens=total_tokens, total_duration=total_dur)
 
     # ── Inspect a specific turn from the audit log ──────────────
-    print("\n--- Audit trail (first turn) ---")
+    log.debug("section", title="Audit trail (first turn)")
     audit_turns = await audit_log.load_turns(session, limit=1)
     if audit_turns:
         inspect_turn("audit[0]", audit_turns[0])
 
     # ── to_dict / from_dict round-trip ──────────────────────────
-    print("\n--- TurnData.to_dict() / from_dict() round-trip ---")
+    log.debug("section", title="TurnData.to_dict() / from_dict() round-trip")
     if audit_turns:
         turn_dict = audit_turns[0].to_dict()
-        print(f"  Serialized keys: {list(turn_dict.keys())}")
-        print(f"  timestamp as string: {turn_dict['timestamp']}")
+        log.debug("serialized", keys=list(turn_dict.keys()), timestamp=turn_dict['timestamp'])
 
         rebuilt = audit_turns[0].__class__.from_dict(turn_dict)
-        print(f"  Round-trip OK: {rebuilt.turn_id == audit_turns[0].turn_id}")
+        log.debug("round_trip", ok=rebuilt.turn_id == audit_turns[0].turn_id)
 
 
 if __name__ == "__main__":

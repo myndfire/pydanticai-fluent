@@ -35,6 +35,7 @@ Setup
 import asyncio
 import os
 from dotenv import load_dotenv
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelRetry
 
@@ -43,6 +44,8 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("STRUCTURED_OUTPUT_REASONING_MODEL", "phi4-mini-reasoning")
 MAX_TOKENS = int(os.getenv("STRUCTURED_OUTPUT_MAX_TOKENS", "512"))
@@ -65,9 +68,9 @@ async def main():
         2. Pull model: ollama pull phi4-mini-reasoning
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Validation Retries — Business Rules with ModelRetry")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("title", title="Validation Retries — Business Rules with ModelRetry")
+    log.debug("separator")
 
     # ── Build agent with output validator ───────────────────────
     # The validator runs after Pydantic schema validation.
@@ -100,7 +103,7 @@ async def main():
     memory = InMemoryProvider()
 
     # ── Run 1: Valid meeting ────────────────────────────────────
-    print("\n--- Valid meeting (should pass) ---")
+    log.debug("section", title="Valid meeting (should pass)")
     history = await MessageHistory().load("valid-1", memory)
     result = await agent.run(
         "Schedule a 1-hour project review meeting starting at 2pm "
@@ -108,13 +111,13 @@ async def main():
         history, "valid-1",
     )
     m = result.output
-    print(f"  Title:     {m.title}")
-    print(f"  Start:     {m.start_time}")
-    print(f"  End:       {m.end_time}")
-    print(f"  Attendees: {', '.join(m.attendees)}")
+    log.debug("field", field="title", value=m.title)
+    log.debug("field", field="start", value=m.start_time)
+    log.debug("field", field="end", value=m.end_time)
+    log.debug("field", field="attendees", value=", ".join(m.attendees))
 
     # ── Run 2: Impossible meeting ───────────────────────────────
-    print("\n--- Impossible meeting (should fail validation) ---")
+    log.debug("section", title="Impossible meeting (should fail validation)")
     history2 = await MessageHistory().load("valid-2", memory)
     try:
         result2 = await agent.run(
@@ -122,18 +125,18 @@ async def main():
             history2, "valid-2",
         )
         m2 = result2.output
-        print(f"  Unexpectedly succeeded: {m2}")
+        log.debug("field", field="unexpectedly_succeeded", value=str(m2))
     except Exception as e:
-        print(f"  ✗ Validation exhausted after retries: {type(e).__name__}")
+        log.debug("validation_exhausted", error_type=type(e).__name__)
 
     # ── How ModelRetry works ────────────────────────────────────
-    print(f"\n--- How ModelRetry works ---")
-    print(f"  1. Agent generates a response matching the MeetingScheduler schema")
-    print(f"  2. Pydantic validates field types (str, list[str])")
-    print(f"  3. Custom validator checks business rules (end > start)")
-    print(f"  4. If rules fail → raise ModelRetry('reason')")
-    print(f"  5. Agent sees the error message and tries again")
-    print(f"  6. After output_retries=5 attempts → gives up, raises exception")
+    log.debug("section", title="How ModelRetry works")
+    log.debug("info", step=1, message="Agent generates a response matching the MeetingScheduler schema")
+    log.debug("info", step=2, message="Pydantic validates field types (str, list[str])")
+    log.debug("info", step=3, message="Custom validator checks business rules (end > start)")
+    log.debug("info", step=4, message="If rules fail → raise ModelRetry('reason')")
+    log.debug("info", step=5, message="Agent sees the error message and tries again")
+    log.debug("info", step=6, message="After output_retries=5 attempts → gives up, raises exception")
 
 
 if __name__ == "__main__":

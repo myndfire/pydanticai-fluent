@@ -67,11 +67,14 @@ Setup
 
 import asyncio
 
+import structlog
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.tools import ToolRegistry
 from agent_harness.guards import ContentFilterConfig
+
+log = structlog.get_logger()
 
 
 # ── Tool ────────────────────────────────────────────────────────────
@@ -95,7 +98,7 @@ def mortgage_calculator(loan_amount: float, annual_rate: float, years: int) -> s
         * (1 + monthly_rate) ** months
     ) / ((1 + monthly_rate) ** months - 1)
     result = f"${payment:,.2f}/month"
-    print(f"[tool:mortgage_calculator] ${loan_amount:,.0f} at {annual_rate*100}% for {years}yr = {result}")
+    log.debug("tool_params", tool="mortgage_calculator", loan_amount=loan_amount, annual_rate=annual_rate, years=years, result=result)
     return result
 
 
@@ -138,7 +141,7 @@ async def main():
 
     memory = InMemoryProvider()
     history = await MessageHistory().load("hitl-tool-demo", memory)
-    print("[agent] Generating response...")
+    log.debug("generating_response")
     result = await agent.run(
         "Calculate the monthly payment for a $500,000 mortgage "
         "at 6.5% annual interest over 30 years. "

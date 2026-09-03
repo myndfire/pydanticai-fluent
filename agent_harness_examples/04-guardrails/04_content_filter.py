@@ -36,6 +36,7 @@ import asyncio
 import os
 import re
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -45,6 +46,7 @@ from agent_harness.guards import ContentFilterConfig
 
 
 load_dotenv()
+log = structlog.get_logger()
 
 GUARDRAILS_MODEL_PROVIDER = os.getenv("GUARDRAILS_MODEL_PROVIDER", "ollama")
 GUARDRAILS_MODEL_NAME = os.getenv("GUARDRAILS_MODEL_NAME", "gpt-oss:20b")
@@ -68,14 +70,14 @@ def content_filter(text: str) -> str:
 
 def on_filter_error(ctx):
     """Fallback when the filter callback itself raises an exception."""
-    print(f"  [on_error] Filter failed: {ctx.error_message}")
+    log.debug("filter_error", error_message=ctx.error_message)
     return f"[Content filtered - error]: {ctx.error_message}"
 
 
 async def main():
-    print("=" * 60)
-    print("Content Filter Guardrail")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Content Filter Guardrail")
+    log.debug("separator")
 
     # ── Setup ──────────────────────────────────────────────────
     memory = InMemoryProvider()
@@ -94,9 +96,8 @@ async def main():
     )
 
     # ── Run ────────────────────────────────────────────────────
-    print(f"\nContent filter active: {filter_config._on_filter is not None}")
-    print(f"\nSending prompt: 'Write a short angry rant about losing a game "
-          f"using words like damn, hell, crap.'...\n")
+    log.debug("filter_config", active=filter_config._on_filter is not None)
+    log.debug("section", title="Sending prompt: angry rant using profanity")
 
     result = await agent.run(
         "Write a short angry rant about losing a video game. "
@@ -105,13 +106,13 @@ async def main():
         "content-filter-demo",
     )
 
-    print(f"\nSuccess: {result.success}")
-    print(f"Filtered output: {result.output}")
-    print()
+    log.debug("separator")
+    log.debug("result", success=result.success)
+    log.debug("result", filtered_output=result.output)
 
     # ── Demonstrate filter error handling ──────────────────────
-    print("-" * 40)
-    print("Demonstration: broken filter callback")
+    log.debug("separator")
+    log.debug("section", title="Demonstration: broken filter callback")
     broken_filter = ContentFilterConfig().on_filter(
         lambda t: 1 / 0  # raises ZeroDivisionError
     ).on_error(on_filter_error)
@@ -129,8 +130,8 @@ async def main():
         "filter-error-demo",
     )
 
-    print(f"Success: {result2.success}")
-    print(f"Error output: {result2.output}")
+    log.debug("result", success=result2.success)
+    log.debug("result", error_output=result2.output)
 
 
 if __name__ == "__main__":

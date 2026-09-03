@@ -36,6 +36,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -43,6 +44,7 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MEMORY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -57,9 +59,9 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("Memory CRUD Operations")
-    print("=" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="Memory CRUD Operations")
+    log.debug("separator", width=60)
 
     memory = InMemoryProvider()
     agent = (
@@ -71,7 +73,7 @@ async def main():
     session = "crud-demo"
 
     # ── Populate: save 5 turns ──────────────────────────────────
-    print("\n--- Populating 5 turns ---")
+    log.debug("section", title="Populating 5 turns")
     turn_ids = []
     for i in range(1, 6):
         history = await MessageHistory().load(session, memory)
@@ -82,60 +84,59 @@ async def main():
             save_to=[memory],
         )
         turn_ids.append(agent.last_turn.turn_id)
-        print(f"  Turn {i} saved: {turn_ids[-1][:12]}... "
-              f"status={agent.last_turn.status}")
+        log.debug("turn_saved", index=i, turn_id=turn_ids[-1][:12], status=agent.last_turn.status)
 
     # ── load_turns with limit ───────────────────────────────────
-    print("\n--- load_turns with limit ---")
+    log.debug("section", title="load_turns with limit")
     all_turns = await memory.load_turns(session)
-    print(f"  All turns: {len(all_turns)}")
+    log.debug("all_turns", count=len(all_turns))
 
     last_2 = await memory.load_turns(session, limit=2)
-    print(f"  Last 2: {len(last_2)}")
+    log.debug("limited_turns", count=len(last_2))
     for t in last_2:
-        print(f"    {t.turn_id[:12]}...")
+        log.debug("turn_id", turn_id=t.turn_id[:12])
 
     # ── get_turn by ID ──────────────────────────────────────────
-    print("\n--- get_turn by ID ---")
+    log.debug("section", title="get_turn by ID")
     target_id = turn_ids[2]  # third turn
     turn = await memory.get_turn(session, target_id)
     if turn:
-        print(f"  Found: {turn.turn_id[:12]}... status={turn.status}")
+        log.debug("found", turn_id=turn.turn_id[:12], status=turn.status)
         msg_count = len(turn.messages)
-        print(f"  Messages: {msg_count}")
+        log.debug("messages", count=msg_count)
     else:
-        print("  Not found")
+        log.debug("not_found")
 
     # Also check for a non-existent turn ID
     missing = await memory.get_turn(session, "nonexistent-id")
-    print(f"  Missing ID returns: {missing}")
+    log.debug("missing_returns", value=missing)
 
     # ── delete_turn ─────────────────────────────────────────────
-    print("\n--- delete_turn ---")
+    log.debug("section", title="delete_turn")
     delete_id = turn_ids[1]  # second turn
-    print(f"  Before delete: {len(await memory.load_turns(session))} turns")
+    log.debug("before_delete", turns=len(await memory.load_turns(session)))
 
     deleted = await memory.delete_turn(session, delete_id)
-    print(f"  Deleted turn {delete_id[:12]}...: {deleted}")
+    log.debug("deleted", turn_id=delete_id[:12], result=deleted)
 
-    print(f"  After delete:  {len(await memory.load_turns(session))} turns")
+    log.debug("after_delete", turns=len(await memory.load_turns(session)))
 
     # Verify it's gone
     gone = await memory.get_turn(session, delete_id)
-    print(f"  Verify gone: {gone is None}")
+    log.debug("verify_gone", is_none=gone is None)
 
     # Delete non-existent — no error
     not_deleted = await memory.delete_turn(session, "fake-id")
-    print(f"  Delete fake ID: {not_deleted} (should be False)")
+    log.debug("delete_fake", result=not_deleted, expected=False)
 
     # ── clear ───────────────────────────────────────────────────
-    print("\n--- clear session ---")
-    print(f"  Before clear: {len(await memory.load_turns(session))} turns")
+    log.debug("section", title="clear session")
+    log.debug("before_clear", turns=len(await memory.load_turns(session)))
     await memory.clear(session)
-    print(f"  After clear:  {len(await memory.load_turns(session))} turns")
+    log.debug("after_clear", turns=len(await memory.load_turns(session)))
 
     # ── Prove clear doesn't affect other sessions ───────────────
-    print("\n--- clear isolation ---")
+    log.debug("section", title="clear isolation")
     # Populate another session
     memory2 = InMemoryProvider()
     agent2 = (
@@ -156,18 +157,15 @@ async def main():
 
     keep_turns = await memory2.load_turns("session-keep")
     del_turns = await memory2.load_turns("session-delete")
-    print(f"  session-keep turns:   {len(keep_turns)} (should be 3)")
-    print(f"  session-delete turns: {len(del_turns)} (should be 0)")
+    log.debug("session_turns", session="session-keep", count=len(keep_turns), expected=3)
+    log.debug("session_turns", session="session-delete", count=len(del_turns), expected=0)
 
     # ── last_turn property ──────────────────────────────────────
-    print("\n--- last_turn property ---")
+    log.debug("section", title="last_turn property")
     h = await MessageHistory().load("last-turn-demo", memory)
     await agent.run("Say hello.", h, "last-turn-demo", save_to=[memory])
     last = agent.last_turn
-    print(f"  last_turn.turn_id:    {last.turn_id[:12]}...")
-    print(f"  last_turn.status:     {last.status}")
-    print(f"  last_turn.timestamp:  {last.timestamp.isoformat()}")
-    print(f"  last_turn is not None: {last is not None}")
+    log.debug("last_turn", turn_id=last.turn_id[:12], status=last.status, timestamp=last.timestamp.isoformat(), not_none=last is not None)
 
 
 if __name__ == "__main__":

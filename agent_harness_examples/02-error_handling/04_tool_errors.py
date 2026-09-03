@@ -36,11 +36,15 @@ Setup
 
 import asyncio
 
+import structlog
+
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.tools import ToolRegistry
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
+
+log = structlog.get_logger()
 
 
 # ── Tool that raises ─────────────────────────────────────────────────
@@ -52,16 +56,16 @@ def broken_divider(a: float, b: float) -> str:
         a: Numerator
         b: Denominator
     """
-    print(f"  [tool:broken_divider] {a} / {b}")
+    log.debug("tool_call", tool="broken_divider", a=a, b=b)
     if b == 0:
-        print(f"  [tool:broken_divider] Raising ValueError: division by zero!")
+        log.debug("tool_error", tool="broken_divider", error="division by zero")
         raise ValueError(f"Cannot divide {a} by zero")
     return f"{a} / {b} = {a / b}"
 
 
 def stable_echo(message: str) -> str:
     """Echo a message — this tool always works."""
-    print(f"  [tool:stable_echo] {message}")
+    log.debug("tool_call", tool="stable_echo", message=message)
     return f"Echo: {message}"
 
 
@@ -69,12 +73,14 @@ def stable_echo(message: str) -> str:
 
 def on_tool_failure(ctx: ErrorContext) -> str | None:
     """Handle tool execution failures with a graceful fallback."""
-    print(f"\n  [on_tool_error] Tool failed!")
-    print(f"    Type:    {ctx.error_type}")
-    print(f"    Message: {ctx.error_message}")
-    print(f"    Source:  {ctx.source}")
-    print(f"    Session: {ctx.session_id}")
-    print(f"    Stack:   {ctx.stack_trace is not None}")
+    log.debug(
+        "tool_error_intercepted",
+        error_type=ctx.error_type,
+        error_message=ctx.error_message,
+        source=ctx.source,
+        session_id=ctx.session_id,
+        has_stack=ctx.stack_trace is not None,
+    )
     return (
         f"I'm sorry, the calculation tool encountered an error "
         f"({ctx.error_type}). Using echo instead."
@@ -82,9 +88,9 @@ def on_tool_failure(ctx: ErrorContext) -> str | None:
 
 
 async def main():
-    print("=" * 60)
-    print("Tool Errors — Handling Tool Function Failures")
-    print("=" * 60)
+    log.debug("separator")
+    log.debug("section", title="Tool Errors — Handling Tool Function Failures")
+    log.debug("separator")
 
     memory = InMemoryProvider()
 
@@ -100,14 +106,14 @@ async def main():
         .with_error_handling(config)
     )
 
-    print(f"\n  Tools registered: {len(tools.get_tools())}")
+    log.debug("tools_registered", count=len(tools.get_tools()))
     for t in tools.get_tools():
-        print(f"    - {t.__name__}")
+        log.debug("tool", name=t.__name__)
 
-    print(f"  Handler: on_tool_error → on_tool_failure")
+    log.debug("status", handler="on_tool_error → on_tool_failure")
 
     # ── Run: ask the agent to divide by zero ────────────────────
-    print("\n--- Run: divide by zero (tool will raise) ---")
+    log.debug("example", title="Run: divide by zero (tool will raise)")
     history = await MessageHistory().load("tool-err-1", memory)
     result = await agent.run(
         "Use the broken_divider tool to divide 10 by 0. "
@@ -115,28 +121,26 @@ async def main():
         history,
         "tool-err-1",
     )
-    print(f"\n  Result: success={result.success}")
-    print(f"  Output: {result.output}")
+    log.debug("result", success=result.success, output=result.output)
 
     # ── Run: valid division (tool succeeds) ─────────────────────
-    print("\n--- Run: valid division (tool succeeds, no error) ---")
+    log.debug("example", title="Run: valid division (tool succeeds, no error)")
     history2 = await MessageHistory().load("tool-err-2", memory)
     result2 = await agent.run(
         "Use the broken_divider tool to divide 42 by 6.",
         history2,
         "tool-err-2",
     )
-    print(f"\n  Result: success={result2.success}")
-    print(f"  Output: {result2.output}")
+    log.debug("result", success=result2.success, output=result2.output)
 
     # ── Summary ─────────────────────────────────────────────────
-    print("\n--- Summary ---")
-    print("  Tool errors are caught and routed to on_tool_error.")
-    print("  The callback receives ErrorContext with:")
-    print("    - error_type: the Python exception class name")
-    print("    - error_message: the exception message")
-    print("    - stack_trace: full traceback for debugging")
-    print("  Return a string to suppress, None to re-raise.")
+    log.debug("example", title="Summary")
+    log.debug("summary", message="Tool errors are caught and routed to on_tool_error.")
+    log.debug("summary", message="The callback receives ErrorContext with:")
+    log.debug("summary", detail="error_type: the Python exception class name")
+    log.debug("summary", detail="error_message: the exception message")
+    log.debug("summary", detail="stack_trace: full traceback for debugging")
+    log.debug("summary", message="Return a string to suppress, None to re-raise.")
 
 
 if __name__ == "__main__":

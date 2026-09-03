@@ -131,17 +131,20 @@ import os
 import asyncio
 from pathlib import Path
 
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.prompts import StaticPrompts
-from agent_harness.observability import Observability
+
 from agent_harness.evaluators import Evaluator
 
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5:3b")
 MAX_WORDS = int(os.getenv("REFINEMENT_MAX_WORDS", "10"))
@@ -167,9 +170,9 @@ class WordCountEvaluator(Evaluator):
         self.last_count = word_count
         self.passed = word_count <= self.max_words
 
-        print(
-            f"  [evaluator] Word count: {word_count} / {self.max_words} "
-            f"({'PASS' if self.passed else 'FAIL'})"
+        log.debug(
+            "evaluator_result", word_count=word_count, max_words=self.max_words,
+            result="PASS" if self.passed else "FAIL"
         )
 
 
@@ -185,13 +188,11 @@ async def main():
         - `OLLAMA_BASE_URL` may configure the Ollama endpoint
           (default: `http://localhost:11434/v1`).
     """
-    print("=" * 60)
-    print("Iterative Refinement Loop")
-    print(f"Model: {MODEL_NAME}")
-    print("=" * 60)
-    print(f"\nTask: Summarize text in {MAX_WORDS} words or fewer")
-    print(f"Text length: {len(TEXT_TO_SUMMARIZE)} characters")
-    print(f"  Preview: {TEXT_TO_SUMMARIZE[:100]}...")
+    log.debug("separator")
+    log.debug("section", title="Iterative Refinement Loop")
+    log.debug("model", name=MODEL_NAME)
+    log.debug("separator")
+    log.debug("task", max_words=MAX_WORDS, text_length=len(TEXT_TO_SUMMARIZE), preview=TEXT_TO_SUMMARIZE[:100])
 
     memory = InMemoryProvider()
     session_id = "refinement-session"
@@ -207,7 +208,6 @@ async def main():
                 "Your summaries must be accurate and extremely brief."
             )
         )
-        .with_observability(Observability())
         .with_short_term_memory(memory)
         .with_evaluators(evaluator)
     )
@@ -220,19 +220,19 @@ async def main():
     )
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        print(f"\n--- Attempt {attempt}/{MAX_ATTEMPTS} ---")
+        log.debug("attempt", number=attempt, max_attempts=MAX_ATTEMPTS)
 
         # Load history and show accumulated context
         history = await MessageHistory().load(session_id, memory)
         turns = await memory.load_turns(session_id)
         turn_count = len(turns)
-        print(f"  [Memory] Loaded {turn_count} prior turn(s) (includes failed attempts)")
+        log.debug("memory_loaded", turn_count=turn_count, includes="failed attempts")
 
         result = await agent.run(prompt, history, session_id, model_settings={"max_tokens": MAX_TOKENS, "temperature": TEMPERATURE}, save_to=[memory])
-        print(f"  Output: {result.output}")
+        log.debug("output", text=result.output)
 
         if evaluator.passed:
-            print(f"\n✓ Success on attempt {attempt}!")
+            log.debug("success", attempt=attempt)
             break
 
         # Feed back the failure so the next attempt can improve
@@ -241,19 +241,18 @@ async def main():
             f"Please shorten it to {MAX_WORDS} words or fewer. "
             f"Keep all key points but use fewer words."
         )
-        print(f"  Feedback: {feedback}")
+        log.debug("feedback", text=feedback)
         prompt = feedback
     else:
-        print(f"\n✗ Gave up after {MAX_ATTEMPTS} attempts.")
-        print(f"  Final word count: {evaluator.last_count}")
+        log.debug("gave_up", max_attempts=MAX_ATTEMPTS, final_word_count=evaluator.last_count)
 
-    print(f"\n{'=' * 60}")
-    print("CONCEPTS DEMONSTRATED")
-    print(f"{'=' * 60}")
-    print("✓ External evaluator (WordCountEvaluator) enforced constraint")
-    print("✓ Feedback from failed attempts became next prompt")
-    print(f"✓ MessageHistory retained {attempt} attempts for learning")
-    print("✓ Attempt cap prevented infinite loop")
+    log.debug("separator")
+    log.debug("section", title="CONCEPTS DEMONSTRATED")
+    log.debug("separator")
+    log.debug("concept", description="External evaluator (WordCountEvaluator) enforced constraint")
+    log.debug("concept", description="Feedback from failed attempts became next prompt")
+    log.debug("concept", description="MessageHistory retained attempts for learning", attempts=attempt)
+    log.debug("concept", description="Attempt cap prevented infinite loop")
 
 
 if __name__ == "__main__":

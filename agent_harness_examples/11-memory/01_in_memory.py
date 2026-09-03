@@ -37,6 +37,7 @@ Setup
 
 import asyncio
 import os
+import structlog
 from dotenv import load_dotenv
 
 from agent_harness.agent import ManagedAgent
@@ -44,6 +45,7 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 
 load_dotenv()
+log = structlog.get_logger()
 
 MODEL_NAME = os.getenv("MEMORY_MODEL_NAME", "gpt-oss:20b")
 MAX_TOKENS = int(os.getenv("MEMORY_MAX_TOKENS", "512"))
@@ -58,9 +60,9 @@ async def main():
         2. Pull model: ollama pull gpt-oss:20b
         3. Install deps: cd agent_harness_examples && uv sync
     """
-    print("=" * 60)
-    print("InMemoryProvider — Short & Long Term Memory")
-    print("=" * 60)
+    log.debug("separator", width=60)
+    log.debug("section", title="InMemoryProvider — Short & Long Term Memory")
+    log.debug("separator", width=60)
 
     # ── Create providers ────────────────────────────────────────
     short_term = InMemoryProvider(max_turns=10)   # recent turns for context
@@ -75,11 +77,11 @@ async def main():
         .with_long_term_memory(long_term)
     )
 
-    print(f"\nShort-term: InMemoryProvider(max_turns={short_term._max_turns})")
-    print(f"Long-term:  InMemoryProvider(max_turns={long_term._max_turns})")
+    log.debug("providers", short_term=f"InMemoryProvider(max_turns={short_term._max_turns})")
+    log.debug("providers", long_term=f"InMemoryProvider(max_turns={long_term._max_turns})")
 
     # ── Turn 1 ──────────────────────────────────────────────────
-    print("\n--- Turn 1: Greeting ---")
+    log.debug("section", title="Turn 1: Greeting")
     history = await MessageHistory().load("session-42", short_term)
     result = await agent.run(
         "My name is Alice and I live in Portland.",
@@ -87,15 +89,15 @@ async def main():
         "session-42",
         save_to=[short_term, long_term],   # persist to both
     )
-    print(f"  Output: {result.output}")
-    print(f"  last_turn.status: {agent.last_turn.status}")
-    print(f"  last_turn.model: {agent.last_turn.model}")
+    log.debug("output", output=result.output)
+    log.debug("last_turn_status", status=agent.last_turn.status)
+    log.debug("last_turn_model", model=agent.last_turn.model)
     if agent.last_turn.usage:
         u = agent.last_turn.usage
-        print(f"  last_turn.usage: in={u.input_tokens} out={u.output_tokens} total={u.total_tokens}")
+        log.debug("usage", input_tokens=u.input_tokens, output_tokens=u.output_tokens, total_tokens=u.total_tokens)
 
     # ── Turn 2 ──────────────────────────────────────────────────
-    print("\n--- Turn 2: Recall (uses history from Turn 1) ---")
+    log.debug("section", title="Turn 2: Recall (uses history from Turn 1)")
     history2 = await MessageHistory().load("session-42", short_term)
     result2 = await agent.run(
         "What is my name and where do I live?",
@@ -103,11 +105,11 @@ async def main():
         "session-42",
         save_to=[short_term, long_term],
     )
-    print(f"  Output: {result2.output}")
-    print(f"  last_turn.duration: {agent.last_turn.duration_seconds:.2f}s")
+    log.debug("output", output=result2.output)
+    log.debug("duration", seconds=agent.last_turn.duration_seconds)
 
     # ── Turn 3 ──────────────────────────────────────────────────
-    print("\n--- Turn 3: More context building ---")
+    log.debug("section", title="Turn 3: More context building")
     history3 = await MessageHistory().load("session-42", short_term)
     result3 = await agent.run(
         "What did I tell you my name was? Also, add that I'm a software engineer.",
@@ -115,23 +117,20 @@ async def main():
         "session-42",
         save_to=[short_term, long_term],
     )
-    print(f"  Output: {result3.output}")
+    log.debug("output", output=result3.output)
 
     # ── Inspect stored turns ────────────────────────────────────
-    print("\n--- Stored turns ---")
+    log.debug("section", title="Stored turns")
     short_turns = await short_term.load_turns("session-42")
     long_turns = await long_term.load_turns("session-42")
-    print(f"  Short-term turns: {len(short_turns)}")
-    print(f"  Long-term turns:  {len(long_turns)}")
+    log.debug("turn_counts", short_term=len(short_turns), long_term=len(long_turns))
 
     for i, turn in enumerate(short_turns, 1):
         msg_count = len(turn.messages)
-        print(f"  Turn {i}: id={turn.turn_id[:8]}... "
-              f"msgs={msg_count} status={turn.status} "
-              f"dur={turn.duration_seconds:.2f}s")
+        log.debug("turn_detail", index=i, turn_id=turn.turn_id[:8], msgs=msg_count, status=turn.status, duration=turn.duration_seconds)
 
     # ── max_turns trimming ──────────────────────────────────────
-    print("\n--- max_turns trimming ---")
+    log.debug("section", title="max_turns trimming")
     small = InMemoryProvider(max_turns=3)
     # Generate 5 turns
     dummy_agent = (
@@ -148,16 +147,16 @@ async def main():
             save_to=[small],
         )
     turns = await small.load_turns("trim-test")
-    print(f"  After 5 saves with max_turns=3: {len(turns)} turns stored")
-    print(f"  Turn IDs: {[t.turn_id[:8] for t in turns]}")
+    log.debug("trim_result", turns_stored=len(turns), max_turns=3, total_saved=5)
+    log.debug("turn_ids", ids=[t.turn_id[:8] for t in turns])
 
     # ── Session isolation ───────────────────────────────────────
-    print("\n--- Session isolation ---")
+    log.debug("section", title="Session isolation")
     session_a = await short_term.load_turns("session-a")
     session_b = await short_term.load_turns("session-b")
-    print(f"  session-a turns: {len(session_a)} (should be 0)")
-    print(f"  session-b turns: {len(session_b)} (should be 0)")
-    print(f"  session-42 turns: {len(await short_term.load_turns('session-42'))}")
+    log.debug("session_turns", session_a=len(session_a), expected=0)
+    log.debug("session_turns", session_b=len(session_b), expected=0)
+    log.debug("session_turns", session_42=len(await short_term.load_turns('session-42')))
 
 
 if __name__ == "__main__":
