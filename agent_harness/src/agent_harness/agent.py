@@ -55,6 +55,26 @@ from .guards import (
 from .model_config import ModelConfig, build_model
 from .errorhandling import ErrorHandlingConfig, ErrorHandler
 from .evaluators import Evaluator
+from .compaction import (
+    clear_tool_results_from_env,
+    make_clear_tool_results,
+    make_report_context_usage,
+    make_sliding_window,
+    make_tiered,
+    make_warn_near_limits,
+    report_context_usage_from_env,
+    sliding_window_from_env,
+    tiered_from_env,
+    warn_near_limits_from_env,
+)
+from .persistence import (
+    make_file_store,
+    make_memory_store,
+    make_mongo_store,
+    make_sqlite_store,
+    make_step_persistence,
+    step_persistence_from_env,
+)
 
 
 AgentDepsT = TypeVar("AgentDepsT")
@@ -208,6 +228,9 @@ class ManagedAgent:
         self._last_turn: Optional[TurnData] = None
         self._short_term_memory: Optional[MemoryProvider] = None
         self._long_term_memory: Optional[MemoryProvider] = None
+        self._compaction: list[Any] = []
+        self._persistence: Optional[Any] = None
+        self._extra_toolsets: list[Any] = []
         self._rabbitmq_config: dict = {}
         self._input_queue: Optional[str] = None
         self._input_exchange: Optional[str] = None
@@ -236,6 +259,37 @@ class ManagedAgent:
     def observability(self, value: Observability):
         self._observability = value
 
+    def _rebuild_agent(self, model: Any = None, extra_toolsets: Any = None) -> None:
+        """Rebuild the underlying Agent, preserving prior configuration.
+
+        The Agent is immutable-by-replacement in this harness: model, settings,
+        output and MCP changes each build a new instance. This helper carries
+        over constructor toolsets, compaction capabilities, model settings,
+        output type and dependency type so no ``with_*`` call silently drops
+        them. Function tools are always re-registered fresh from the
+        ToolRegistry: ``agent.tool()`` mutates the agent's function toolset
+        in place, so carrying ``agent.toolsets`` by reference would register
+        them twice.
+        """
+        if extra_toolsets:
+            self._extra_toolsets.extend(extra_toolsets)
+        kwargs: dict[str, Any] = {
+            "model": model if model is not None else self._agent._model,
+            "toolsets": list(self._extra_toolsets),
+            "capabilities": list(self._compaction)
+            + ([self._persistence] if self._persistence is not None else []),
+        }
+        if self._deps_type is not None:
+            kwargs["deps_type"] = self._deps_type
+        if self._model_settings is not None:
+            kwargs["model_settings"] = self._model_settings
+        if self._output_type is not None:
+            kwargs["output_type"] = self._output_type
+            kwargs["retries"] = self._output_retries
+        self._agent = Agent(**kwargs)
+        if self.tools.get_tools():
+            self.tools.register_to_agent(self._agent)
+
     def with_model(
         self,
         model: ModelConfig,
@@ -245,13 +299,7 @@ class ManagedAgent:
         Args:
             model: ModelConfig specifying provider, model_name, api_key, base_url.
         """
-        kwargs: dict[str, Any] = {}
-        if self._model_settings is not None:
-            kwargs["model_settings"] = self._model_settings
-        if self._output_type is not None:
-            kwargs["output_type"] = self._output_type
-            kwargs["retries"] = self._output_retries
-        self._agent = Agent(model=build_model(model), **kwargs)
+        self._rebuild_agent(model=build_model(model))
         self.model = f"{model.provider}:{model.model_name}"
         return self
 
@@ -262,16 +310,7 @@ class ManagedAgent:
             model_settings: pydantic_ai ModelSettings dict or callable.
         """
         self._model_settings = model_settings
-        kwargs: dict[str, Any] = {
-            "model": self._agent._model,
-            "toolsets": list(self._agent.toolsets),
-        }
-        if model_settings is not None:
-            kwargs["model_settings"] = model_settings
-        if self._output_type is not None:
-            kwargs["output_type"] = self._output_type
-            kwargs["retries"] = self._output_retries
-        self._agent = Agent(**kwargs)
+        self._rebuild_agent()
         return self
 
     def with_log_enrichment(self, *providers: LogEnrichmentProvider) -> "ManagedAgent":
@@ -339,7 +378,7 @@ class ManagedAgent:
         self.tools = registry
         # Propagate observability to the registry
         self.tools._observability = self.observability
-        self.tools.register_to_agent(self._agent)
+        self._rebuild_agent()
         return self
 
     def with_mcp_server(self, url: str, **kwargs) -> "ManagedAgent":
@@ -351,17 +390,7 @@ class ManagedAgent:
         if tool_prefix:
             mcp_server = mcp_server.prefixed(tool_prefix)
 
-        current_toolsets = list(self._agent.toolsets)
-        kwargs: dict[str, Any] = {
-            "model": self._agent._model,
-            "toolsets": current_toolsets + [mcp_server],
-        }
-        if self._model_settings is not None:
-            kwargs["model_settings"] = self._model_settings
-        if self._output_type is not None:
-            kwargs["output_type"] = self._output_type
-            kwargs["retries"] = self._output_retries
-        self._agent = Agent(**kwargs)
+        self._rebuild_agent(extra_toolsets=[mcp_server])
         return self
 
     def with_mcp_servers(
@@ -481,15 +510,212 @@ class ManagedAgent:
         """
         self._output_type = output_type
         self._output_retries = output_retries
-        kwargs: dict[str, Any] = {
-            "model": self._agent._model,
-            "output_type": output_type,
-            "retries": output_retries,
-        }
-        if self._model_settings is not None:
-            kwargs["model_settings"] = self._model_settings
-        self._agent = Agent(**kwargs)
+        self._rebuild_agent()
         return self
+
+    def with_compaction(self, *caps: Any) -> "ManagedAgent":
+        """Attach compaction capabilities (escape hatch for any strategy).
+
+        Accepts upstream ``pydantic-ai-harness`` capabilities
+        (ClearToolResults, SlidingWindowCompaction, TieredCompaction,
+        WarnNearLimits, ReportContextUsage, ...) or any custom
+        ``CompactionStrategy``. Order is preserved.
+
+        Example:
+            agent.with_compaction(
+                ClearToolResults(max_fraction=0.7, keep_pairs=3),
+                WarnNearLimits(max_context_fraction=0.9),
+            )
+        """
+        self._compaction.extend(caps)
+        self._rebuild_agent()
+        return self
+
+    def clear_compaction(self) -> "ManagedAgent":
+        """Remove all compaction capabilities."""
+        self._compaction = []
+        self._rebuild_agent()
+        return self
+
+    def with_clear_tool_results(
+        self,
+        keep_pairs: int,
+        max_messages: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        max_fraction: Optional[float] = None,
+    ) -> "ManagedAgent":
+        """Clear old tool results, keeping the last ``keep_pairs`` pairs."""
+        return self.with_compaction(
+            make_clear_tool_results(
+                keep_pairs=keep_pairs,
+                max_messages=max_messages,
+                max_tokens=max_tokens,
+                max_fraction=max_fraction,
+            )
+        )
+
+    def with_clear_tool_results_from_env(self) -> "ManagedAgent":
+        """Clear old tool results using ``HARNESS_COMPACTION_*`` env vars."""
+        return self.with_compaction(clear_tool_results_from_env())
+
+    def with_sliding_window(
+        self,
+        keep_messages: int,
+        max_messages: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        max_fraction: Optional[float] = None,
+    ) -> "ManagedAgent":
+        """Keep only the recent ``keep_messages`` tail of the history."""
+        return self.with_compaction(
+            make_sliding_window(
+                keep_messages=keep_messages,
+                max_messages=max_messages,
+                max_tokens=max_tokens,
+                max_fraction=max_fraction,
+            )
+        )
+
+    def with_sliding_window_from_env(self) -> "ManagedAgent":
+        """Sliding-window compaction using ``HARNESS_COMPACTION_*`` env vars."""
+        return self.with_compaction(sliding_window_from_env())
+
+    def with_warn_near_limits(
+        self,
+        warning_threshold: float,
+        max_iterations: Optional[int] = None,
+        max_context_tokens: Optional[int] = None,
+        max_context_fraction: Optional[float] = None,
+    ) -> "ManagedAgent":
+        """Warn the model (no history edits) as limits approach."""
+        return self.with_compaction(
+            make_warn_near_limits(
+                warning_threshold=warning_threshold,
+                max_iterations=max_iterations,
+                max_context_tokens=max_context_tokens,
+                max_context_fraction=max_context_fraction,
+            )
+        )
+
+    def with_warn_near_limits_from_env(self) -> "ManagedAgent":
+        """Warn-near-limits using ``HARNESS_COMPACTION_*`` env vars."""
+        return self.with_compaction(warn_near_limits_from_env())
+
+    def with_report_context_usage(self, on_usage: Any) -> "ManagedAgent":
+        """Report live context usage via an ``on_usage`` callback."""
+        return self.with_compaction(make_report_context_usage(on_usage))
+
+    def with_report_context_usage_from_env(self, on_usage: Any) -> "ManagedAgent":
+        """Report context usage; window config from env, callback explicit."""
+        return self.with_compaction(report_context_usage_from_env(on_usage))
+
+    def with_tiered_compaction(
+        self,
+        tiers: Any,
+        target_tokens: Optional[int] = None,
+        target_fraction: Optional[float] = None,
+    ) -> "ManagedAgent":
+        """Escalate cheap-to-expensive tiers until under target (recommended)."""
+        return self.with_compaction(
+            make_tiered(
+                tiers=tiers,
+                target_tokens=target_tokens,
+                target_fraction=target_fraction,
+            )
+        )
+
+    def with_tiered_compaction_from_env(self, tiers: Any) -> "ManagedAgent":
+        """Tiered compaction; target budget from env, tiers explicit."""
+        return self.with_compaction(tiered_from_env(tiers))
+
+    def with_step_persistence(self, capability: Any) -> "ManagedAgent":
+        """Attach a StepPersistence capability (replaces any existing one).
+
+        Accepts an upstream ``StepPersistence`` built by
+        ``agent_harness.persistence.make_step_persistence`` (or constructed
+        directly). One slot per agent: attaching again replaces the previous
+        capability, since multiple instances need explicit upstream ids.
+        """
+        self._persistence = capability
+        self._rebuild_agent()
+        return self
+
+    def clear_step_persistence(self) -> "ManagedAgent":
+        """Remove the StepPersistence capability."""
+        self._persistence = None
+        self._rebuild_agent()
+        return self
+
+    def with_memory_steps(
+        self,
+        agent_name: Optional[str] = None,
+        max_snapshots_per_run: Optional[int] = None,
+    ) -> "ManagedAgent":
+        """Persist steps to a process-local in-memory store (great for tests)."""
+        return self.with_step_persistence(
+            make_step_persistence(
+                make_memory_store(max_snapshots_per_run=max_snapshots_per_run),
+                agent_name=agent_name,
+            )
+        )
+
+    def with_file_steps(
+        self,
+        directory: str,
+        agent_name: Optional[str] = None,
+        max_snapshots_per_run: Optional[int] = None,
+    ) -> "ManagedAgent":
+        """Persist steps to a directory-backed file store."""
+        return self.with_step_persistence(
+            make_step_persistence(
+                make_file_store(
+                    directory, max_snapshots_per_run=max_snapshots_per_run
+                ),
+                agent_name=agent_name,
+            )
+        )
+
+    def with_sqlite_steps(
+        self,
+        database: str,
+        agent_name: Optional[str] = None,
+        max_snapshots_per_run: Optional[int] = None,
+    ) -> "ManagedAgent":
+        """Persist steps to a single-file SQLite store."""
+        return self.with_step_persistence(
+            make_step_persistence(
+                make_sqlite_store(
+                    database, max_snapshots_per_run=max_snapshots_per_run
+                ),
+                agent_name=agent_name,
+            )
+        )
+
+    def with_mongo_steps(
+        self,
+        database: str,
+        db_url: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        max_snapshots_per_run: Optional[int] = None,
+    ) -> "ManagedAgent":
+        """Persist steps to MongoDB (needs the ``mongodb`` harness extra)."""
+        return self.with_step_persistence(
+            make_step_persistence(
+                make_mongo_store(
+                    database,
+                    db_url=db_url,
+                    max_snapshots_per_run=max_snapshots_per_run,
+                ),
+                agent_name=agent_name,
+            )
+        )
+
+    def with_step_persistence_from_env(self, store: Any = None) -> "ManagedAgent":
+        """Step persistence from ``HARNESS_PERSISTENCE_*`` env vars.
+
+        Backend, paths, retention bound and agent name all come from env;
+        pass an explicit ``store`` to skip backend selection.
+        """
+        return self.with_step_persistence(step_persistence_from_env(store))
 
     def with_rabbitmq(
         self,
@@ -552,6 +778,7 @@ class ManagedAgent:
         save_to: Optional[list[MemoryProvider]] = None,
         deps: Any = None,
         enrichment: Optional[LogContext] = None,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ) -> Any:
         """
@@ -570,6 +797,8 @@ class ManagedAgent:
                 Merged with agent-level enrichment providers set via
                 with_log_enrichment(). All keys appear in log entries,
                 trace spans, and metric labels.
+            conversation_id: Upstream dialogue grouping for step persistence
+                (multi-turn runs share one id; defaults to ``session_id``).
             **kwargs: Additional context for prompt rendering
 
         Returns:
@@ -646,6 +875,7 @@ class ManagedAgent:
                     prompt=prompt,
                     message_history=history,
                     deps=deps,
+                    conversation_id=conversation_id or session_id,
                 )
 
                 duration = time.time() - start_time
@@ -831,6 +1061,7 @@ class ManagedAgent:
         save_to: Optional[list[MemoryProvider]] = None,
         deps: Optional[Any] = None,
         enrichment: Optional[LogContext] = None,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """Run agent with streaming output, yielding text chunks in real-time.
@@ -845,6 +1076,8 @@ class ManagedAgent:
             save_to: Optional list of memory providers to save the turn to
             deps: Dependencies for dependency injection
             enrichment: Optional LogContext with per-run enrichment keys
+            conversation_id: Upstream dialogue grouping for step persistence
+                (defaults to ``session_id``).
             **kwargs: Additional context for prompt rendering
 
         Yields:
@@ -906,6 +1139,7 @@ class ManagedAgent:
                     prompt,
                     message_history=history,
                     usage_limits=usage_limits,
+                    conversation_id=conversation_id or session_id,
                 ) as result:
                     collected = ""
                     async for chunk in result.stream_text(delta=True):

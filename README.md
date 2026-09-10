@@ -143,6 +143,8 @@ pydanticai-fluent/
 │       ├── tracing.py          # OTELTracer, InMemoryTracer, LogfireTracer, JaegerTracer, etc.
 │       ├── metrics.py          # PrometheusMetrics, StatsdMetrics, InMemoryMetrics, OTELMetrics, etc.
 │       ├── guards.py           # GuardConfig, retry configs, guardrail configs
+│       ├── compaction.py       # Compaction builders (upstream harness strategies)
+│       ├── persistence.py      # Step-persistence builders (upstream harness stores)
 │       ├── errorhandling.py    # ErrorHandlingConfig, ErrorHandler
 │       ├── evaluators.py       # Evaluator, QualityCheck, SafetyCheck
 │       ├── rabbitmq.py         # MessagingService

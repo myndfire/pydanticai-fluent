@@ -1510,6 +1510,36 @@ All parameters are optional. Omitted parameters fall back to sensible defaults (
 | `with_output_exchange` | `(exchange_name: str) -> ManagedAgent` | Set the RabbitMQ output exchange name. |
 | `with_dead_letter_queue` | `(queue_name: str) -> ManagedAgent` | Set the RabbitMQ dead-letter queue name. |
 | `with_dead_letter_exchange` | `(exchange_name: str) -> ManagedAgent` | Set the RabbitMQ dead-letter exchange name. |
+| `with_compaction` | `(*caps: Capability) -> ManagedAgent` | Attach any upstream compaction capabilities (escape hatch). Order preserved. |
+| `clear_compaction` | `() -> ManagedAgent` | Remove all compaction capabilities. |
+| `with_clear_tool_results` | `(keep_pairs: int, max_messages?, max_tokens?, max_fraction?) -> ManagedAgent` | Blank old tool results, keep last `keep_pairs` pairs. |
+| `with_clear_tool_results_from_env` | `() -> ManagedAgent` | Same, values from `HARNESS_COMPACTION_*` env vars. |
+| `with_sliding_window` | `(keep_messages: int, max_messages?, max_tokens?, max_fraction?) -> ManagedAgent` | Drop oldest messages, keep recent tail. |
+| `with_sliding_window_from_env` | `() -> ManagedAgent` | Same, values from `HARNESS_COMPACTION_*` env vars. |
+| `with_warn_near_limits` | `(warning_threshold: float, max_iterations?, max_context_tokens?, max_context_fraction?) -> ManagedAgent` | Warn the model as limits approach (never edits history). |
+| `with_warn_near_limits_from_env` | `() -> ManagedAgent` | Same, values from `HARNESS_COMPACTION_*` env vars. |
+| `with_report_context_usage` | `(on_usage: callable) -> ManagedAgent` | Live context gauge via `on_usage(usage)` callback. |
+| `with_report_context_usage_from_env` | `(on_usage: callable) -> ManagedAgent` | Same, window config from env, callback explicit. |
+| `with_tiered_compaction` | `(tiers, target_tokens?, target_fraction?) -> ManagedAgent` | Escalate cheap-to-expensive tiers until under target (recommended default). |
+| `with_tiered_compaction_from_env` | `(tiers) -> ManagedAgent` | Same, stop budget from `HARNESS_COMPACTION_TARGET_*` env vars. |
+| `with_step_persistence` | `(capability: StepPersistence) -> ManagedAgent` | Attach step persistence (single slot; re-attaching replaces). Append-only step log + continuable snapshots + tool-effect ledger. |
+| `clear_step_persistence` | `() -> ManagedAgent` | Remove the StepPersistence capability. |
+| `with_memory_steps` | `(agent_name?, max_snapshots_per_run?) -> ManagedAgent` | Process-local in-memory step store (great for tests). |
+| `with_file_steps` | `(directory: str, agent_name?, max_snapshots_per_run?) -> ManagedAgent` | Directory-backed step store, survives restarts. |
+| `with_sqlite_steps` | `(database: str, agent_name?, max_snapshots_per_run?) -> ManagedAgent` | Single-file SQLite step store. |
+| `with_mongo_steps` | `(database: str, db_url?, agent_name?, max_snapshots_per_run?) -> ManagedAgent` | MongoDB step store (needs the `mongodb` harness extra). |
+| `with_step_persistence_from_env` | `(store? = None) -> ManagedAgent` | Backend, paths, retention and agent name from `HARNESS_PERSISTENCE_*` env vars. |
+
+Compaction capabilities are upstream `pydantic-ai-harness` strategies
+(`ClearToolResults`, `SlidingWindowCompaction`, `TieredCompaction`,
+`WarnNearLimits`, `ReportContextUsage`), composed — not subclassed — onto the
+agent via `capabilities=[...]`. They survive every `with_*` rebuild
+(`with_model`, `with_model_settings`, `with_output`, `with_mcp_server`).
+Tuning lives in `HARNESS_COMPACTION_*` env vars (see
+`agent_harness_examples/.env.example`, section `17-compaction`); explicit
+builders take required keep/threshold args with no hardcoded numbers.
+Runnable demos: `agent_harness_examples/17-compaction/` (model from shared
+`MODEL_NAME` / `LLM_PROVIDER`).
 
 ### Properties
 
@@ -1528,6 +1558,7 @@ async def run(
     session_id: str,                     # Session key (required)
     save_to: list[MemoryProvider] | None = None,  # Persist turn to these providers
     deps: Any = None,                    # Dependency injection value
+    conversation_id: str | None = None,  # Dialogue grouping for step persistence (defaults to session_id)
     **kwargs,                            # prompt_id, template vars, model_settings, etc.
 ) -> AgentRunResult
 ```
