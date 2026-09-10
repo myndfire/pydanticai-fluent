@@ -19,7 +19,7 @@ import socket
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from pydantic_settings import BaseSettings
 from dotenv import find_dotenv
