@@ -601,8 +601,41 @@ class OTELTracer:
         span.end()
 
     @staticmethod
+    def _extract_source_location(error: Exception) -> dict | None:
+        """Extract the raise-site user-code frame from an exception's traceback.
+
+        Walks the full traceback chain and returns the DEEPEST frame that is
+        not inside agent_harness, the Python stdlib, or third-party
+        site-packages -- i.e. the user-code frame closest to where the
+        exception was actually raised. Reuses the same frame filter as
+        ``logging._app_callsite()`` so ``code.*`` on spans stays aligned with
+        ``_exception_record()`` used for log records.
+
+        Returns None if no suitable frame is found.
+        """
+        from .logging import _is_harness_or_internal_frame
+
+        tb = error.__traceback__
+        deepest = None
+        while tb is not None:
+            frame = tb.tb_frame
+            if not _is_harness_or_internal_frame(frame.f_code.co_filename):
+                deepest = {
+                    "file": os.path.relpath(frame.f_code.co_filename),
+                    "function": frame.f_code.co_name,
+                    "line": frame.f_lineno,
+                }
+            tb = tb.tb_next
+        return deepest
+
+    @staticmethod
     def _annotate_span_failure(span, error: Exception) -> None:
-        """Apply standard OTel failure fields to an open span (ERROR + exception)."""
+        """Apply standard OTel failure fields to an open span (ERROR + exception).
+
+        Sets ``error.type``, ``error.source``, and ``code.*`` attributes on the
+        span for programmatic access. Appends the source location to the
+        ``statusMessage`` so it is visible in Langfuse's error log UI.
+        """
         from opentelemetry.trace import Status, StatusCode
 
         error_type = type(error)
@@ -613,8 +646,19 @@ class OTELTracer:
         )
         span.set_attribute("error.type", error_type_name)
         span.set_attribute("error.source", getattr(error, "_error_source", "unknown"))
+
+        source_loc = OTELTracer._extract_source_location(error)
+        if source_loc:
+            span.set_attribute("code.file.path", source_loc["file"])
+            span.set_attribute("code.function", source_loc["function"])
+            span.set_attribute("code.line.number", source_loc["line"])
+
         span.record_exception(error, escaped=True)
-        span.set_status(Status(StatusCode.ERROR, str(error)))
+
+        status_msg = str(error)
+        if source_loc:
+            status_msg = f"{status_msg} | at {source_loc['file']}:{source_loc['line']}"
+        span.set_status(Status(StatusCode.ERROR, status_msg))
 
     def add_event(self, name: str, **attributes):
         """Add an event to the current span."""
