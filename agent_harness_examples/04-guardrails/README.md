@@ -57,8 +57,10 @@ Guardrail types at a glance:
 
 ## Configuration
 
-All scripts call `load_dotenv()` at import and read variables from a `.env`
-file in the `agent_harness_examples/` directory (see `.env.example` there).
+All scripts call `load_dotenv()` at import and read variables from the single
+canonical `.env` at the **repo root**. The template lives at
+`agent_harness_examples/.env.example` (copy it with
+`cp agent_harness_examples/.env.example .env` from the repo root).
 
 Common variables:
 

@@ -11,6 +11,27 @@ set -euo pipefail
 KIBANA_URL="${KIBANA_URL:-http://localhost:5601}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAVED_OBJECTS_DIR="${SCRIPT_DIR}/saved-objects"
+ENV_FILE="${SCRIPT_DIR}/../.env"
+
+# Read a single key from .env without sourcing it (values may contain spaces).
+read_env_var() {
+  local key="$1" file="$2" default="$3"
+  local val=""
+  if [[ -f "${file}" ]]; then
+    val="$(grep -E "^${key}=" "${file}" | head -n1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+  fi
+  if [[ -z "${val}" ]]; then
+    val="${default}"
+  fi
+  printf '%s' "${val}"
+}
+
+# Browser-accessible Langfuse UI base + project id, used to turn the log
+# document's trace_id into a clickable link to the trace where it happened.
+# Environment values win; otherwise fall back to .env, then sane defaults.
+LANGFUSE_UI_URL="${LANGFUSE_UI_URL:-$(read_env_var LANGFUSE_UI_URL "${ENV_FILE}" "http://localhost:3000")}"
+LANGFUSE_PROJECT_ID="${LANGFUSE_PROJECT_ID:-$(read_env_var LANGFUSE_PROJECT_ID "${ENV_FILE}" "local-project")}"
+TRACE_LINK_BASE="${LANGFUSE_UI_URL%/}/project/${LANGFUSE_PROJECT_ID}/traces/"
 
 LOGS_DATA_VIEW_ID="1ee66b57-99f5-44bd-9828-5b690f3cc8af"
 LOGS_DATA_VIEW_TITLE="logs-generic.otel-default*"
@@ -42,16 +63,33 @@ done
 ensure_data_view() {
   dv_id="$1"
   title="$2"
+  trace_link_base="${3:-}"
 
   echo "==> Ensuring data view '${title}' exists ..."
 
-  python3 - "$KIBANA_URL" "$dv_id" "$title" <<'PY'
+  python3 - "$KIBANA_URL" "$dv_id" "$title" "$trace_link_base" <<'PY'
 import json
 import sys
 import urllib.error
 import urllib.request
 
-base, dv_id, title = sys.argv[1:]
+base, dv_id, title = sys.argv[1:4]
+trace_link_base = sys.argv[4] if len(sys.argv) > 4 else ""
+
+# Optional: render trace_id as a "View in Langfuse" link.
+extra = {}
+if trace_link_base:
+    extra["fieldFormats"] = {
+        "trace_id": {
+            "id": "url",
+            "params": {
+                "type": "a",
+                "urlTemplate": trace_link_base + "{{value}}",
+                "labelTemplate": "View in Langfuse",
+            },
+        }
+    }
+
 headers = {"Content-Type": "application/json", "kbn-xsrf": "true"}
 
 def request(method, url, body=None):
@@ -71,6 +109,7 @@ if status == 200:
             "title": title,
             "timeFieldName": "@timestamp",
             "name": title,
+            **extra,
         },
         "refresh_fields": True,
     }
@@ -87,6 +126,7 @@ elif status == 404:
             "title": title,
             "timeFieldName": "@timestamp",
             "name": title,
+            **extra,
         },
         "override": True,
     }
@@ -112,7 +152,7 @@ print(f"    time field: {dv.get('timeFieldName')}")
 PY
 }
 
-ensure_data_view "${LOGS_DATA_VIEW_ID}" "${LOGS_DATA_VIEW_TITLE}"
+ensure_data_view "${LOGS_DATA_VIEW_ID}" "${LOGS_DATA_VIEW_TITLE}" "${TRACE_LINK_BASE}"
 ensure_data_view "${TRACES_DATA_VIEW_ID}" "${TRACES_DATA_VIEW_TITLE}"
 
 if [[ ! -d "${SAVED_OBJECTS_DIR}" ]]; then

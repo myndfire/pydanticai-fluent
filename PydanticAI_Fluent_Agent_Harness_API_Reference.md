@@ -104,6 +104,14 @@ provider environment variables when api_key is not explicitly supplied.
 | model_name | str          | empty string | Provider-specific model identifier without provider prefix.                                    |
 | api_key    | str \| None  | None         | Explicit provider API key.                                                                     |
 | base_url   | str \| None  | None         | Custom provider endpoint; for Ollama defaults to OLLAMA_BASE_URL or http://localhost:11434/v1. |
+| max_tokens_field | Literal["auto","max_tokens","max_completion_tokens"] | auto | Which wire field the generic `max_tokens` setting maps to for OpenAI-compatible providers. `auto` uses the PydanticAI profile (Ollama → `max_tokens`, OpenAI → `max_completion_tokens`). Ignored by native providers. |
+
+> **Ollama token cap:** Ollama honors `max_tokens` but ignores
+> `max_completion_tokens`. The harness routes Ollama to `max_tokens` so
+> `max_tokens` settings are enforced (pydantic-ai #5186 / PR #5926). Override
+> with `max_tokens_field` for other OpenAI-compatible endpoints. The same
+> routing applies to the retry fallback model and `QualityCheck` judge model,
+> which are built via the shared model factory.
 
 ## Supported provider values
 

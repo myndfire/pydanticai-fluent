@@ -7,7 +7,7 @@ A fluent, builder-style API for configuring [pydantic-ai](https://github.com/pyd
 `ManagedAgent` is the central orchestrator. It wraps a pydantic-ai `Agent` and layers on top:
 
 - **Memory** — short-term and long-term conversation persistence via a pluggable `MemoryProvider` protocol (in-memory, MongoDB, Redis, Elasticsearch).
-- **Observability** — unified facade combining logging (structlog, file, Elasticsearch, Logfire, OTEL), tracing (OTEL, Logfire, Jaeger, InMemory), and metrics (Prometheus, StatsD, OTEL, InMemory).
+- **Observability** — unified facade combining logging (structlog, file, **Elasticsearch**, Logfire, OTLP), tracing (OTLP → **Langfuse**, Logfire, InMemory), and metrics (OTLP, Logfire, InMemory). The shipped dev stack routes logs → Elasticsearch, traces → Langfuse, and browses them in Kibana via the OTel Collector.
 - **Guards** — retry logic with exponential backoff, fallback models, callbacks; circuit breaker; guardrails for content filtering, PII detection, and cost limits.
 - **Error handling** — custom error handlers with source classification (LLM, tool, memory, unknown); pipeline error recovery.
 - **Orchestration** — multi-agent patterns: tool-driven delegation, sequential pipelines, classify-and-route, parallel fan-out/fan-in.
@@ -155,13 +155,13 @@ pydanticai-fluent/
 │   ├── tools/ memory/ guards/  # etc.
 │   └── ...
 ├── agentic_rag/                # RAG agent example
-├── docker-compose.yml          # Infra services (mongo, redis, elasticsearch, kibana, grafana, jaeger, otel-collector, prometheus, pushgateway, rabbitmq)
-├── otel-collector-config.yml   # OTel Collector single OTLP receiver → ES logs + Prometheus metrics + Jaeger traces
-├── prometheus.yml              # Prometheus scrape config (pushgateway; metrics ingested via OTLP receiver)
-├── grafana/                    # Grafana provisioning (Elasticsearch + Prometheus + Jaeger datasources, dashboards)
-├── kibana/                     # Kibana log-levels dashboard provisioning (script + saved-object NDJSON)
+├── docker-compose.yml          # Dev stack: langfuse-web/worker, elasticsearch, kibana, otel-collector, minio, postgres, clickhouse, redis
+├── otel-collector-config.yaml  # OTel Collector: traces → Langfuse, logs → Elasticsearch, metrics → debug
+├── prometheus.yml              # (legacy — not part of the default stack)
+├── grafana/                    # (legacy — not part of the default stack)
+├── kibana/                     # Kibana provisioning: data views + trace_id → "View in Langfuse" link
 ├── USAGE.md                    # Full usage guide
-└── OBSERVABILITY.md            # Observability stack docs: Elasticsearch, Jaeger, Prometheus, Grafana, Kibana
+└── OBSERVABILITY.md            # Observability stack docs: Langfuse, Elasticsearch, Kibana
 ```
 
 ## Installation
@@ -171,6 +171,18 @@ cd agent_harness && uv sync
 cd ../agent_harness_examples && uv sync
 ```
 
+## Observability stack (dev)
+
+`docker compose up -d` from the repo root starts the dev observability stack:
+
+| Tool | URL | Login |
+|---|---|---|
+| Langfuse (traces) | http://localhost:3000 | `admin@example.com` / `langfuse` — required; session persists ~1 year |
+| Kibana (logs) | http://localhost:5601 | none — open access |
+| Elasticsearch (logs API) | http://localhost:9200 | none |
+
+Example telemetry is emitted by `agent_harness_examples/12-observability/fluent_app.py` over OTLP to the collector, which routes **logs → Elasticsearch** and **traces → Langfuse**. Kibana renders each log record's `trace_id` as a clickable **"View in Langfuse"** link. See [`OBSERVABILITY.md`](OBSERVABILITY.md).
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
@@ -178,4 +190,4 @@ Apache 2.0 — see [LICENSE](LICENSE).
 ---
 
 > For detailed API docs, configuration, and examples, see [`USAGE.md`](USAGE.md).
-> For the observability stack (Elasticsearch, Jaeger, Prometheus, Grafana, Kibana), see [`OBSERVABILITY.md`](OBSERVABILITY.md).
+> For the observability stack (Langfuse, Elasticsearch, Kibana), see [`OBSERVABILITY.md`](OBSERVABILITY.md).

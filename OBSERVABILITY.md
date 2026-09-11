@@ -1,47 +1,53 @@
-# OBSERVABILITY.md — Elasticsearch, Jaeger, Prometheus & Grafana
+# OBSERVABILITY.md — Langfuse, Elasticsearch & Kibana
 
-How to run the observability stack and inspect agent telemetry in **Elasticsearch** (logs + traces), **Jaeger** (trace waterfall), **Prometheus** (metrics), **Grafana** (single pane), and optionally **Kibana** (log dashboards).
+How to run the observability stack and inspect agent telemetry in **Langfuse** (traces), **Elasticsearch** (structured logs), and **Kibana** (log browser with a click-through link to the Langfuse trace where the event happened).
+
+> The Jaeger / Prometheus / Grafana sections at the end describe the **legacy**
+> stack in `docker-compose.yml.old`; the default `docker-compose.yml` ships
+> Langfuse (traces) + Elasticsearch/Kibana (logs) and routes metrics to the
+> collector's `debug` exporter.
 
 ## 1. Overview & architecture
 
-The OTEL backends (`OTELLogger`, `OTELTracer`, `OTELMetrics`) export over OTLP gRPC to the OpenTelemetry Collector, which routes each signal over OTLP to a separate native-OTLP backend:
+The OTEL backends (`OTELLogger`, `OTELTracer`, `OTELMetrics`) export over OTLP gRPC to the OpenTelemetry Collector, which routes each signal to a backend:
 
-> **OTLP is the de-facto transport for all telemetry.** Every OTEL backend ships logs, metrics, and traces to the OTel Collector at `localhost:4317` (gRPC) / `localhost:4318` (HTTP). Direct export to Jaeger (or any other backend) is not used by these examples — Jaeger is reached only as a downstream target of the collector.
+> **OTLP is the de-facto transport for all telemetry.** Every OTEL backend ships logs, metrics, and traces to the OTel Collector at `localhost:4317` (gRPC) / `localhost:4318` (HTTP).
 
 ```
-agent_harness  --OTLP gRPC:4317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
-    (logs + metrics + traces)        (otlp receiver:   --otlphttp-->  Prometheus (metrics)
-                                       grpc :4317,      \--otlp gRPC-->  Jaeger (traces)
+agent_harness  --OTLP gRPC:4317-->  otel-collector  --otlphttp-->  Langfuse (traces)
+    (logs + metrics + traces)        (otlp receiver:   --otlphttp-->  Elasticsearch (logs)
+                                       grpc :4317,      \--debug----->  collector stdout (metrics)
                                        http :4318)
 ```
+
+To make a run's logs link back to its trace, `fluent_app.py` enables `OTELTracer(create_spans=True)`, so the harness owns an `agent_run` span that stays active for the whole run (tools, guardrails, evaluators, error handling). Every in-run log record then carries `trace_id`, which Kibana renders as a "View in Langfuse" link (see §4.4 and §8).
 
 ## 2. Start the stack
 
 From the repo root:
 
 ```bash
-docker compose -f docker-compose.yml up -d elasticsearch otel-collector kibana grafana jaeger prometheus
+docker compose up -d
 ```
 
-Skip `kibana` if you don't need the optional specialist browser (Grafana Logs Drilldown covers it).
+This starts Langfuse (plus its Postgres/ClickHouse/Redis/MinIO dependencies), the OTel Collector, Elasticsearch, and Kibana.
 
 ## 3. Service & port reference
 
 | Service | Port | Role |
 |---|---|---|
+| `langfuse-web` | `3000` | Trace backend + UI (login with the seeded admin user from `.env`) |
 | `elasticsearch` | `9200` | Logs backend — native OTLP/HTTP intake (`/_otlp/v1/logs`) → OTel data stream `logs-generic.otel-default` |
-| `grafana` | `3000` | Single pane — ES datasource (logs), Prometheus datasource (metrics), Jaeger datasource (trace waterfall) |
-| `prometheus` | `9090` | Metrics backend — native OTLP receiver (`/api/v1/otlp/v1/metrics`) |
-| `jaeger` | `16686` | Trace backend — native OTLP gRPC ingest (host `:14317`), UI at `:16686` |
-| `kibana` | `5601` | Optional specialist log browser (Grafana Logs Drilldown covers this) |
-| `otel-collector` | `4317`, `4318` | Single OTLP receiver; traces → Jaeger, metrics → Prometheus, logs → Elasticsearch |
+| `kibana` | `5601` | Log browser; renders `trace_id` as a "View in Langfuse" link |
+| `otel-collector` | `4317`, `4318` | Single OTLP receiver; traces → Langfuse, logs → Elasticsearch, metrics → debug |
+| `postgres`, `clickhouse`, `redis`, `minio` | internal | Langfuse storage backends |
 
 ## 4. Elasticsearch
 
-Both logs and traces land in Elasticsearch:
+Log records land in Elasticsearch:
 
 - Log records → data stream `logs-generic.otel-default` (backing indices `.ds-logs-generic.otel-default-…`).
-- Trace spans → data stream `traces-generic.otel-default`.
+- Trace spans → **Langfuse** in the default stack (in the legacy stack they also went to `traces-generic.otel-default`, see §5-§7).
 
 ### 4.1 Data shape
 
@@ -69,6 +75,8 @@ curl -s http://localhost:9200/_cat/indices/*generic.otel-default*
 
 ### 4.3 Trace queries (`traces-generic.otel-default*`)
 
+> Legacy stack only — in the default stack trace spans go to **Langfuse** (§4.4), not Elasticsearch.
+
 Reference queries for failure telemetry:
 
 ```text
@@ -88,7 +96,25 @@ curl -s 'http://localhost:9200/traces-generic.otel-default*/_search?_source=name
 
 > **`-*` vs `*` gotcha** — a data-view pattern like `logs-generic.otel-default-*` matches nothing because the backing indices are hidden (`.ds-…`). Use `logs-generic.otel-default*` (no trailing hyphen) so ES resolves the data stream itself. The same applies to `traces-generic.otel-default*`.
 
-## 5. Jaeger
+### 4.4 Linking a log to its Langfuse trace
+
+Log records emitted inside an active span carry a top-level `trace_id`. With `OTELTracer(create_spans=True)` (as used by `fluent_app.py`) the harness owns the `agent_run` span for the whole run, so in-run records — tool calls, guardrail errors (`filter_error`), evaluator failures, `error_handled` — all carry `trace_id`.
+
+`kibana/provision-dashboards.sh` adds a URL field format to the `logs-generic.otel-default*` data view so Kibana renders `trace_id` as a clickable **"View in Langfuse"** link:
+
+```text
+{LANGFUSE_UI_URL}/project/{LANGFUSE_PROJECT_ID}/traces/{trace_id}
+```
+
+Both values come from `.env` (`LANGFUSE_UI_URL`, `LANGFUSE_PROJECT_ID`). Note that `LANGFUSE_HOST` (`http://langfuse-web:3000`) is the in-Docker hostname and is **not** browser-reachable.
+
+```bash
+./kibana/provision-dashboards.sh   # from the repo root
+```
+
+> A link only appears on records that carry `trace_id` (emitted while a span was active); bootstrap/out-of-run logs have none. In production, sampling matters too: with `sample_rate < 1.0` an unsampled record still carries a `trace_id`, but Langfuse will not have the trace.
+
+## 5. Jaeger (legacy stack)
 
 Trace backend with a native OTLP gRPC ingest (host `:14317`, forwarded from the collector) and UI at **http://localhost:16686**.
 
@@ -100,7 +126,7 @@ To view your runs:
 
 > There is a small ingest delay (collector → Jaeger batch export); refresh if a just-run trace isn't listed yet.
 
-## 6. Prometheus
+## 6. Prometheus (legacy stack)
 
 Metrics backend with a native OTLP receiver (`/api/v1/otlp/v1/metrics`), UI at **http://localhost:9090**.
 
@@ -119,9 +145,11 @@ Raw curl:
 curl -s 'http://localhost:9090/api/v1/query?query=sum({__name__=~"all_in_one_observability_demo_agent_runs_total"})'
 ```
 
-## 7. Grafana
+## 7. Grafana (legacy stack)
 
-Single pane at **http://localhost:3000** (`admin`/`admin`). Datasources (Elasticsearch, Prometheus, Jaeger) and the **"Agent Harness — OTel Telemetry"** dashboard are auto-provisioned (Dashboards → OTel).
+Single pane at **http://localhost:3000** (`admin`/`admin`) in the legacy stack. Datasources (Elasticsearch, Prometheus, Jaeger) and the **"Agent Harness — OTel Telemetry"** dashboard are auto-provisioned (Dashboards → OTel).
+
+> In the default stack, `localhost:3000` is **Langfuse**, not Grafana.
 
 - **Logs like Kibana** — Logs Drilldown (`/a/grafana-lokiexplore-app`) on the Elasticsearch datasource, or the dashboard's *Logs (Elasticsearch)* panel.
 - **Metrics like Grafana** — Prometheus datasource (`/a/explore-metrics`) or PromQL panels, e.g. `sum(all_in_one_observability_demo_agent_runs_total)`.
@@ -131,41 +159,49 @@ Single pane at **http://localhost:3000** (`admin`/`admin`). Datasources (Elastic
 
 > Correlation links only resolve for log records that carry `trace_id`/`span_id` (i.e. records emitted while a span was active — in-run logs like `tool_call`). Boundary logs (`agent_run_started`/`completed`/`failed`) emitted outside any span do not carry trace context.
 
-## 8. Kibana (optional)
+## 8. Kibana
 
-Kibana ships a built-in log viewer for log data streams, but to get a purpose-built **severity dashboard** (bar by severity, volume-over-time by severity, donut share, recent-logs table) you must provision saved objects — Kibana only supports file-based provisioning for data views, not for Lens panels/dashboards.
-
-Provision it idempotently from the repo root (Kibana must be running):
+Kibana is the log browser. Provision the data views and dashboards idempotently from the repo root (Kibana must be running):
 
 ```bash
 docker compose up -d kibana
-./kibana/provision-log-levels-dashboard.sh
+./kibana/provision-dashboards.sh
 ```
 
 What the script does:
 
 1. **Waits** for Kibana `/api/status` → `available`.
-2. **Upserts** the data view `logs-generic.otel-default*` (timeField `@timestamp`) — the OTel log data stream.
-3. **Imports** `kibana/saved-objects/log-levels.ndjson` (`POST /api/saved_objects/_import?overwrite=true`) — 4 Lens panels + 1 dashboard, with `overwrite=true` so re-running is a no-op.
-4. Prints the dashboard URL (`http://localhost:5601/app/dashboards#/view/log-levels-dashboard`, or find **Agent Harness — Log Levels**).
+2. **Upserts** the data views `logs-generic.otel-default*` and `traces-generic.otel-default*` (timeField `@timestamp`).
+3. **Adds a URL field format** on `trace_id` in the logs data view, so Discover renders it as a **"View in Langfuse"** link to `{LANGFUSE_UI_URL}/project/{LANGFUSE_PROJECT_ID}/traces/{trace_id}` (values read from `.env`, see §4.4).
+4. **Imports** the saved-object bundles in `kibana/saved-objects/*.ndjson` and prints the dashboard URLs.
 
-The panels:
+Dashboards (all built on the **logs** data view; trace analytics live in **Langfuse**):
 
-| Panel | Type | What it shows |
+| Dashboard | URL path | What it shows |
 |---|---|---|
-| Logs by severity | Bar | Count of log records grouped by `severity_text` |
-| Log volume over time by severity | Stacked area | `@timestamp` histogram split by `severity_text` |
-| Severity share | Donut | Distribution of `severity_text` |
-| Recent logs | Table | Time, severity, `resource.attributes.service.name`, `body.text` |
+| **Agent Harness — Errors** | `/app/dashboards#/view/errors-exceptions-dashboard` | ERROR-severity trend, top messages (`attributes.error_message`), exception types, raise sites, and recent errors (with `langfuse_trace_url`) |
+| **Agent Harness — Debug Logs** | `/app/dashboards#/view/log-levels-dashboard` | Severity overview, log volume, recent logs |
+| **Agent Harness — Agent Runs** | `/app/dashboards#/view/agent-runs-dashboard` | Run volume/duration |
+| **Agent Harness — Token Usage** | `/app/dashboards#/view/token-usage-dashboard` | Token usage by model/phase |
 
-In **Discover**, use the `logs-generic.otel-default*` data view and filter `service.name: all-in-one-observability-demo`.
+> The old trace-based Kibana dashboards (**Errors & Exceptions**, **LLM Performance**, **Tool Calls**) were removed: traces now go to **Langfuse**, so those ES-backed views would be empty. Use Langfuse for trace/LLM/tool analytics.
 
-## 9. Quick start (all-in-one demo)
+**Finding errors in Discover:** widen the time picker (the Errors dashboard defaults to `now-24h`), select the `logs-generic.otel-default*` data view, and filter `severity_text: "ERROR"`. Note `body.text` is analyzed — search `body.text: filter_error` (not `body.text: error`). Each error record carries `trace_id` and a `langfuse_trace_url` field.
 
-Run the all-in-one demo, then open the provisioned Grafana dashboard, the Logs Drilldown, or the Jaeger UI and search `service.name: all-in-one-observability-demo`:
+In **Discover**, filter `service.name: <your-service-name>` to scope to one app.
+
+## 9. Quick start
 
 ```bash
+docker compose up -d
+./kibana/provision-dashboards.sh
 cd agent_harness_examples
 uv sync
-uv run python observability/09_otel_oltp_logs_traces_metrics.py
+uv run python 12-observability/fluent_app.py
 ```
+
+Then:
+
+- **Langfuse traces** — http://localhost:3000 (log in with the seeded admin user from `.env`).
+- **Elasticsearch logs** — query the `logs-generic.otel-default*` data stream (see §4.2).
+- **Kibana** — Discover on `logs-generic.otel-default*`; click **View in Langfuse** on a record's `trace_id` to jump to the trace where it happened.

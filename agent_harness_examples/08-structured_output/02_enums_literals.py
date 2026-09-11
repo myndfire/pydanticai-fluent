@@ -46,8 +46,8 @@ load_dotenv()
 
 log = structlog.get_logger()
 
-MODEL_NAME = os.getenv("STRUCTURED_OUTPUT_REASONING_MODEL", "phi4-mini-reasoning")
-MAX_TOKENS = int(os.getenv("STRUCTURED_OUTPUT_MAX_TOKENS", "512"))
+MODEL_NAME = os.getenv("STRUCTURED_OUTPUT_REASONING_MODEL", "qwen2.5:3b")
+MAX_TOKENS = int(os.getenv("STRUCTURED_OUTPUT_MAX_TOKENS", "1024"))
 
 
 class SentimentResult(BaseModel):
@@ -72,7 +72,7 @@ async def main():
     Setup
     -----
         1. Start Ollama: ollama serve
-        2. Pull model: ollama pull phi4-mini-reasoning
+        2. Pull model: ollama pull qwen2.5:3b
         3. Install deps: cd agent_harness_examples && uv sync
     """
     log.debug("separator")

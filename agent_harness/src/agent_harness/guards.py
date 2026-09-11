@@ -19,14 +19,17 @@ from __future__ import annotations
 import asyncio
 import structlog
 import time
+import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Union
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.usage import UsageLimits, UsageLimitExceeded
 
 from .errorhandling import ErrorContext, AgentRunResult, TokenUsageInfo
+from .model_config import build_model_ref
 
 # Forward reference for Observability to avoid circular imports at type-check time
 from typing import TYPE_CHECKING
@@ -486,11 +489,58 @@ class GuardRunner:
             billing_mode=self.config.token_limits.billing_mode if self.config.token_limits else "output_plus_reasoning",
         )
 
+    def _guard_error_context(
+        self,
+        error_type: str,
+        error_message: str,
+        *,
+        source: str = "guardrail",
+        session_id: Any = None,
+        attempt: int = 0,
+        max_attempts: Optional[int] = None,
+        stack_trace: Optional[str] = None,
+        **extra: Any,
+    ) -> ErrorContext:
+        """Build an ErrorContext enriched with session, attempt, and stack context.
+
+        Centralizes the extra fields so every guardrail failure carries the same
+        context (session id + attempt + stack trace), which callers and log
+        pipelines can surface uniformly.
+        """
+        return ErrorContext(
+            error_type=error_type,
+            error_message=error_message,
+            source=source,
+            session_id=session_id,
+            attempt=attempt + 1,
+            max_attempts=(
+                max_attempts
+                if max_attempts is not None
+                else self.config.agent.max_retries
+            ),
+            stack_trace=stack_trace,
+            **extra,
+        )
+
     def _log(self, level: str, event: str, **kwargs) -> None:
         """Log via observability if available, otherwise bootstrap print fallback."""
         if self._observability:
             getattr(self._observability, f"log_{level}")(event, **kwargs)
         # else: silently drop — Observability is initialized by ManagedAgent before run
+
+    def _record_token_limit_metric(self, session_id: Any = None, limit_type: str = "unknown") -> None:
+        """Emit a counter when a token limit is enforced (post-hoc or streaming)."""
+        if self._observability:
+            try:
+                self._observability.record_metric(
+                    "counter",
+                    "agent_token_limit_exceeded",
+                    1,
+                    limit_type=limit_type,
+                    session_id=session_id,
+                )
+            except Exception:
+                pass
 
 
     def apply_to_agent(self, agent: Agent) -> Agent:
@@ -514,6 +564,8 @@ class GuardRunner:
         string or a sequence of pydantic_ai UserContent parts for multimodal
         input.
         """
+        session_id = kwargs.get("conversation_id")
+
         # ── Circuit breaker gateway check ──────────────────────────
         if self.config.circuit_breaker and self._circuit_open:
             cb = self.config.circuit_breaker
@@ -529,6 +581,7 @@ class GuardRunner:
                             f"failures. Retry in {cb.circuit_timeout - int(elapsed)}s"
                         ),
                         source="guardrail",
+                        session_id=session_id,
                         attempt=self._failure_count,
                         max_attempts=cb.failure_threshold,
                         will_retry=False,
@@ -554,10 +607,28 @@ class GuardRunner:
         # ── Retry loop with timeout ────────────────────────────────
         last_exception = None
 
+        # Build pydantic-ai UsageLimits as a backstop so the model call is
+        # flagged/aborted as soon as limits are exceeded (non-streaming can only
+        # check after the response; the server-side `max_tokens` is the true
+        # mid-generation cap).
+        usage_limits = None
+        if self.config.token_limits:
+            tl = self.config.token_limits
+            usage_limits = UsageLimits(
+                input_tokens_limit=tl.max_input_tokens,
+                output_tokens_limit=tl.max_output_tokens,
+                total_tokens_limit=tl.max_total_tokens,
+            )
+
         for attempt in range(self.config.agent.max_retries):
             try:
                 result = await asyncio.wait_for(
-                    agent.run(prompt, message_history=message_history, **kwargs),
+                    agent.run(
+                        prompt,
+                        message_history=message_history,
+                        usage_limits=usage_limits,
+                        **kwargs,
+                    ),
                     timeout=self.config.agent.timeout,
                 )
                 usage_obj = None
@@ -588,16 +659,16 @@ class GuardRunner:
 
                     # Hard stop: reasoning limit (Q1: B)
                     if tl.max_reasoning_tokens is not None and reasoning_tok > tl.max_reasoning_tokens:
-                        error_ctx = ErrorContext(
-                            error_type="TokenLimitExceeded",
-                            error_message=(
-                                f"Reasoning tokens {reasoning_tok} > {tl.max_reasoning_tokens}"
-                            ),
-                            source="guardrail",
+                        error_ctx = self._guard_error_context(
+                            "TokenLimitExceeded",
+                            f"Reasoning tokens {reasoning_tok} > {tl.max_reasoning_tokens}",
+                            session_id=session_id,
+                            attempt=attempt,
                             token_usage=self._build_token_usage_info(
                                 "reasoning", tl.max_reasoning_tokens, reasoning_tok, usage_obj
                             ),
                         )
+                        self._record_token_limit_metric(session_id, limit_type="reasoning")
                         if tl._on_token_limit:
                             return AgentRunResult(
                                 output=tl._on_token_limit(error_ctx),
@@ -607,16 +678,16 @@ class GuardRunner:
                         raise RuntimeError(error_ctx.error_message)
 
                     if tl.max_input_tokens is not None and input_tok > tl.max_input_tokens:
-                        error_ctx = ErrorContext(
-                            error_type="TokenLimitExceeded",
-                            error_message=(
-                                f"Input tokens {input_tok} > {tl.max_input_tokens}"
-                            ),
-                            source="guardrail",
+                        error_ctx = self._guard_error_context(
+                            "TokenLimitExceeded",
+                            f"Input tokens {input_tok} > {tl.max_input_tokens}",
+                            session_id=session_id,
+                            attempt=attempt,
                             token_usage=self._build_token_usage_info(
                                 "input", tl.max_input_tokens, input_tok, usage_obj
                             ),
                         )
+                        self._record_token_limit_metric(session_id, limit_type="input")
                         if tl._on_token_limit:
                             return AgentRunResult(
                                 output=tl._on_token_limit(error_ctx),
@@ -626,16 +697,16 @@ class GuardRunner:
                         raise RuntimeError(error_ctx.error_message)
 
                     if tl.max_output_tokens is not None and output_tok > tl.max_output_tokens:
-                        error_ctx = ErrorContext(
-                            error_type="TokenLimitExceeded",
-                            error_message=(
-                                f"Output tokens {output_tok} > {tl.max_output_tokens}"
-                            ),
-                            source="guardrail",
+                        error_ctx = self._guard_error_context(
+                            "TokenLimitExceeded",
+                            f"Output tokens {output_tok} > {tl.max_output_tokens}",
+                            session_id=session_id,
+                            attempt=attempt,
                             token_usage=self._build_token_usage_info(
                                 "output", tl.max_output_tokens, output_tok, usage_obj
                             ),
                         )
+                        self._record_token_limit_metric(session_id, limit_type="output")
                         if tl._on_token_limit:
                             return AgentRunResult(
                                 output=tl._on_token_limit(error_ctx),
@@ -645,16 +716,16 @@ class GuardRunner:
                         raise RuntimeError(error_ctx.error_message)
 
                     if tl.max_total_tokens is not None and total_tok > tl.max_total_tokens:
-                        error_ctx = ErrorContext(
-                            error_type="TokenLimitExceeded",
-                            error_message=(
-                                f"Total tokens {total_tok} > {tl.max_total_tokens}"
-                            ),
-                            source="guardrail",
+                        error_ctx = self._guard_error_context(
+                            "TokenLimitExceeded",
+                            f"Total tokens {total_tok} > {tl.max_total_tokens}",
+                            session_id=session_id,
+                            attempt=attempt,
                             token_usage=self._build_token_usage_info(
                                 "total", tl.max_total_tokens, total_tok, usage_obj
                             ),
                         )
+                        self._record_token_limit_metric(session_id, limit_type="total")
                         if tl._on_token_limit:
                             return AgentRunResult(
                                 output=tl._on_token_limit(error_ctx),
@@ -684,12 +755,11 @@ class GuardRunner:
                     total_cost = input_cost + output_cost
 
                     if cl.max_input_cost is not None and input_cost > cl.max_input_cost:
-                        error_ctx = ErrorContext(
-                            error_type="CostLimitExceeded",
-                            error_message=(
-                                f"Input cost ${input_cost:.6f} > ${cl.max_input_cost:.6f}"
-                            ),
-                            source="guardrail",
+                        error_ctx = self._guard_error_context(
+                            "CostLimitExceeded",
+                            f"Input cost ${input_cost:.6f} > ${cl.max_input_cost:.6f}",
+                            session_id=session_id,
+                            attempt=attempt,
                         )
                         if cl._on_cost_limit:
                             return AgentRunResult(
@@ -700,13 +770,14 @@ class GuardRunner:
                         raise RuntimeError(error_ctx.error_message)
 
                     if cl.max_output_cost is not None and output_cost > cl.max_output_cost:
-                        error_ctx = ErrorContext(
-                            error_type="CostLimitExceeded",
-                            error_message=(
+                        error_ctx = self._guard_error_context(
+                            "CostLimitExceeded",
+                            (
                                 f"Output cost ${output_cost:.6f} "
                                 f"> ${cl.max_output_cost:.6f}"
                             ),
-                            source="guardrail",
+                            session_id=session_id,
+                            attempt=attempt,
                         )
                         if cl._on_cost_limit:
                             return AgentRunResult(
@@ -717,12 +788,11 @@ class GuardRunner:
                         raise RuntimeError(error_ctx.error_message)
 
                     if cl.max_total_cost is not None and total_cost > cl.max_total_cost:
-                        error_ctx = ErrorContext(
-                            error_type="CostLimitExceeded",
-                            error_message=(
-                                f"Total cost ${total_cost:.6f} > ${cl.max_total_cost:.6f}"
-                            ),
-                            source="guardrail",
+                        error_ctx = self._guard_error_context(
+                            "CostLimitExceeded",
+                            f"Total cost ${total_cost:.6f} > ${cl.max_total_cost:.6f}",
+                            session_id=session_id,
+                            attempt=attempt,
                         )
                         if cl._on_cost_limit:
                             return AgentRunResult(
@@ -738,10 +808,12 @@ class GuardRunner:
                         output = self.config.content_filter._on_filter(output)
                     except Exception as e:
                         cf = self.config.content_filter
-                        error_ctx = ErrorContext(
-                            error_type=type(e).__name__,
-                            error_message=str(e),
-                            source="guardrail",
+                        error_ctx = self._guard_error_context(
+                            type(e).__name__,
+                            str(e),
+                            session_id=session_id,
+                            attempt=attempt,
+                            stack_trace=traceback.format_exc(),
                         )
                         if cf._on_error:
                             return AgentRunResult(
@@ -757,10 +829,12 @@ class GuardRunner:
                         output = self.config.pii_detection._on_redact(output)
                     except Exception as e:
                         pd = self.config.pii_detection
-                        error_ctx = ErrorContext(
-                            error_type=type(e).__name__,
-                            error_message=str(e),
-                            source="guardrail",
+                        error_ctx = self._guard_error_context(
+                            type(e).__name__,
+                            str(e),
+                            session_id=session_id,
+                            attempt=attempt,
+                            stack_trace=traceback.format_exc(),
                         )
                         if pd._on_error:
                             return AgentRunResult(
@@ -792,6 +866,33 @@ class GuardRunner:
                     token_usage=token_usage_info,
                 )
 
+            except UsageLimitExceeded as e:
+                # pydantic-ai flagged a token limit during the model call; route
+                # it through the graceful token-limit callback when configured.
+                self._accumulate_usage(result if "result" in dir() else None)
+                error_ctx = self._guard_error_context(
+                    "TokenLimitExceeded",
+                    str(e),
+                    session_id=session_id,
+                    attempt=attempt,
+                )
+                self._log(
+                    "error",
+                    "token_limit_exceeded",
+                    error_message=str(e),
+                    session_id=session_id,
+                    attempt=attempt + 1,
+                )
+                self._record_token_limit_metric(session_id, limit_type="usage_limits")
+                tl = self.config.token_limits
+                if tl and tl._on_token_limit:
+                    return AgentRunResult(
+                        output=tl._on_token_limit(error_ctx),
+                        success=False,
+                        error_context=error_ctx,
+                    )
+                raise RuntimeError(error_ctx.error_message) from e
+
             except asyncio.TimeoutError as e:
                 # Accumulate token usage even on timeout (input tokens were consumed)
                 self._accumulate_usage(result if "result" in dir() else None)
@@ -802,9 +903,11 @@ class GuardRunner:
                         f"Agent execution timed out after {self.config.agent.timeout}s"
                     ),
                     source="llm",
+                    session_id=session_id,
                     attempt=attempt + 1,
                     max_attempts=self.config.agent.max_retries,
                     will_retry=attempt < self.config.agent.max_retries - 1,
+                    stack_trace=traceback.format_exc(),
                 )
 
                 self._log(
@@ -842,9 +945,11 @@ class GuardRunner:
                     error_type=type(e).__name__,
                     error_message=str(e),
                     source="llm",
+                    session_id=session_id,
                     attempt=attempt + 1,
                     max_attempts=self.config.agent.max_retries,
                     will_retry=attempt < self.config.agent.max_retries - 1,
+                    stack_trace=traceback.format_exc(),
                 )
 
                 self._log(
@@ -878,7 +983,7 @@ class GuardRunner:
         # ── Fallback ───────────────────────────────────────────────
         if self.config.agent.fallback_model:
             try:
-                fallback_agent = Agent(self.config.agent.fallback_model)
+                fallback_agent = Agent(build_model_ref(self.config.agent.fallback_model))
                 result = await asyncio.wait_for(
                     fallback_agent.run(prompt, message_history=message_history),
                     timeout=self.config.agent.timeout,
@@ -902,9 +1007,11 @@ class GuardRunner:
                         f"Fallback error: {fallback_error}"
                     ),
                     source="llm",
+                    session_id=session_id,
                     attempt=self.config.agent.max_retries,
                     max_attempts=self.config.agent.max_retries,
                     will_retry=False,
+                    stack_trace=traceback.format_exc(),
                 )
 
                 if self.config.agent._on_error:
@@ -929,9 +1036,21 @@ class GuardRunner:
             error_type="MaxRetriesExceeded",
             error_message=str(last_exception),
             source="llm",
+            session_id=session_id,
             attempt=self.config.agent.max_retries,
             max_attempts=self.config.agent.max_retries,
             will_retry=False,
+            stack_trace=(
+                "".join(
+                    traceback.format_exception(
+                        type(last_exception),
+                        last_exception,
+                        last_exception.__traceback__,
+                    )
+                )
+                if last_exception is not None
+                else None
+            ),
         )
 
         if self.config.agent._on_error:

@@ -384,8 +384,8 @@ docker compose -f docker-compose.yml up -d mongo redis elasticsearch
 cd agent_harness_examples
 uv sync
 
-# 5. (Optional) Copy and edit .env
-cp .env.example .env
+# 5. (Optional) Copy and edit the single canonical .env at the repo root
+cp .env.example ../.env
 ```
 
 ## Configuration

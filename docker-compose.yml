@@ -1,49 +1,212 @@
-# Infrastructure services for all pydanticai-fluent examples.
-# Start all:    docker compose up -d
-# Start one:    docker compose up -d mongo
-# Stop one:     docker compose stop mongo            (keeps data)
-# Remove one (container only):
-#               docker compose rm -f mongo
-# Remove one + its volumes:
-#               docker compose rm -f mongo
-#               docker volume rm agent-harness_mongo_data agent-harness_mongo_configdb
-# Stop all:     docker compose down -v
-
-name: agent-harness
-
 services:
-  mongo:
-    image: mongo:7
-    container_name: agent-harness-mongo
-    ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_DATABASE: agent_memory
-    volumes:
-      - mongo_data:/data/db
-      - mongo_configdb:/data/configdb
-
-  mongo-express:
-    image: mongo-express:latest
-    container_name: agent-harness-mongo-express
-    ports:
-      - "8081:8081"
-    environment:
-      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017
-      ME_CONFIG_BASICAUTH: "false"
+  # ---------------------------------------------------------------
+  # MinIO Init (creates the langfuse bucket)
+  # ---------------------------------------------------------------
+  minio-init:
+    image: minio/mc
+    container_name: langfuse-minio-init
     depends_on:
-      - mongo
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        mc alias set langfuse http://langfuse-minio:9000 minioadmin minioadmin &&
+        mc mb langfuse/langfuse --ignore-existing &&
+        echo 'Bucket langfuse created/verified'
+      "
+
+  # ---------------------------------------------------------------
+  # OpenTelemetry Collector
+  # ---------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    environment:
+      LANGFUSE_HOST: ${LANGFUSE_HOST}
+      LANGFUSE_AUTH: ${LANGFUSE_AUTH}
+    depends_on:
+      langfuse-web:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_started
     restart: unless-stopped
 
+  # ---------------------------------------------------------------
+  # Langfuse Web (UI + API)
+  # ---------------------------------------------------------------
+  langfuse-web:
+    image: langfuse/langfuse:4.30.0
+    container_name: langfuse-web
+    restart: unless-stopped
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      # Dev convenience: keep users signed in (~1 year) so login is a one-time
+      # event. Langfuse still requires authentication; this only extends the
+      # session lifetime (minutes).
+      AUTH_SESSION_MAX_AGE: ${AUTH_SESSION_MAX_AGE:-525600}
+      SALT: ${SALT}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://langfuse-web:3000/api/public/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ---------------------------------------------------------------
+  # Langfuse Worker (background jobs)
+  # ---------------------------------------------------------------
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.30.0
+    container_name: langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: ${SALT}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+  # ---------------------------------------------------------------
+  # PostgreSQL (Langfuse transactional data)
+  # ---------------------------------------------------------------
+  postgres:
+    image: postgres:17
+    container_name: langfuse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - langfuse-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------
+  # ClickHouse (Langfuse analytics)
+  # ---------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    container_name: langfuse-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------
+  # Redis (Langfuse caching + job queue)
+  # ---------------------------------------------------------------
   redis:
     image: redis:7-alpine
-    container_name: agent-harness-redis
-    ports:
-      - "6379:6379"
+    container_name: langfuse-redis
+    restart: unless-stopped
     volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
+      - langfuse-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
+  # ---------------------------------------------------------------
+  # MinIO (S3-compatible object storage)
+  # ---------------------------------------------------------------
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: langfuse-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9090:9001"   # MinIO Console (mapped to 9090)
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DEFAULT_BUCKETS: langfuse
+    volumes:
+      - langfuse-minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------
+  # Elasticsearch (structured logs backend via native OTLP intake)
+  # ---------------------------------------------------------------
   elasticsearch:
     image: elasticsearch:9.5.1
     container_name: agent-harness-elastic
@@ -56,6 +219,9 @@ services:
     volumes:
       - es_data:/usr/share/elasticsearch/data
 
+  # ---------------------------------------------------------------
+  # Kibana (log browser; renders trace_id as a Langfuse link)
+  # ---------------------------------------------------------------
   kibana:
     image: kibana:9.5.1
     container_name: agent-harness-kibana
@@ -69,83 +235,9 @@ services:
       - elasticsearch
     restart: unless-stopped
 
-  grafana:
-    image: grafana/grafana-oss:11.5.1
-    container_name: agent-harness-grafana
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-    depends_on:
-      - elasticsearch
-      - jaeger
-    restart: unless-stopped
-
-  jaeger:
-    image: jaegertracing/jaeger:2.20.0
-    container_name: agent-harness-jaeger
-    ports:
-      - "16686:16686"   # UI
-      - "14317:4317"     # OTLP gRPC
-      - "14318:4318"     # OTLP HTTP
-    volumes:
-      - jaeger_data:/tmp   # badger storage dir (image declares VOLUME /tmp)
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.143.0
-    container_name: agent-harness-otel-collector
-    ports:
-      - "4317:4317"   # OTLP gRPC (standard OTLP port)
-      - "4318:4318"   # OTLP HTTP (standard OTLP port)
-    environment:
-      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
-    volumes:
-      - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
-    depends_on:
-      - elasticsearch
-      - prometheus
-      - jaeger
-
-  pushgateway:
-    image: prom/pushgateway:v1.9.0
-    container_name: agent-harness-pushgateway
-    ports:
-      - "9091:9091"
-
-  prometheus:
-    image: prom/prometheus:v3.13.2
-    container_name: agent-harness-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=7d"
-      - "--web.enable-otlp-receiver"
-    restart: unless-stopped
-
-  rabbitmq:
-    image: rabbitmq:3-management
-    container_name: agent-harness-rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    restart: unless-stopped
-
 volumes:
-  mongo_data:
-  mongo_configdb:
-  redis_data:
+  langfuse-postgres-data:
+  langfuse-clickhouse-data:
+  langfuse-redis-data:
+  langfuse-minio-data:
   es_data:
-  jaeger_data:
-  prometheus_data:
-  rabbitmq_data:

@@ -17,8 +17,9 @@ Demonstrates an end-to-end agentic RAG workflow using `ManagedAgent` with tool-b
 cd agentic_rag
 uv sync
 
-# 2. (Optional) Configure environment
-cp .env.example .env
+# 2. (Optional) Configure environment — the canonical .env lives at the repo
+#    root. From the repo root run:
+#      cp agent_harness_examples/.env.example .env
 # Edit .env to add your LOGFIRE_TOKEN if using Logfire tracing
 ```
 

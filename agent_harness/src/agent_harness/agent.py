@@ -243,21 +243,80 @@ class ManagedAgent:
         if self.tools.get_tools():
             self.tools.register_to_agent(self._agent)
 
+    def _propagate_observability(self, observability: Observability) -> None:
+        """Attach an observability stack to all interested components.
+
+        Centralizes propagation so a lazily-created default stack reaches
+        tools, guards, and the guard runner exactly like an explicitly
+        provided one. Assigns ``_observability`` directly to avoid recursing
+        through the ``observability`` property.
+        """
+        self._observability = observability
+        if self.traceback_frame_limit is not None:
+            observability.traceback_frame_limit = self.traceback_frame_limit
+            observability._base_context["traceback_frame_limit"] = self.traceback_frame_limit
+        if getattr(self, "tools", None) is not None:
+            self.tools._observability = observability
+        if getattr(self, "guards", None) is not None:
+            self.guards.observability = observability
+        guard_runner = getattr(self, "_guard_runner", None)
+        if guard_runner is not None:
+            guard_runner._observability = observability
+
     @property
     def observability(self) -> Observability:
         """Lazy-init observability: creates default OTEL backends on first access."""
         if self._observability is None:
-            self._observability = Observability(
-                builder=ObservabilityBuilder(service_name="agent")
-                .with_otel_observability(
-                    otlp_endpoint=os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:4317"),
+            self._propagate_observability(
+                Observability(
+                    builder=ObservabilityBuilder(service_name="agent")
+                    .with_otel_observability(
+                        otlp_endpoint=os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:4317"),
+                    )
                 )
             )
         return self._observability
 
     @observability.setter
     def observability(self, value: Observability):
-        self._observability = value
+        self._propagate_observability(value)
+
+    def _warn_if_provider_ignored_max_tokens(self, result: Any, context: dict) -> None:
+        """Canary: warn when a provider generated more than the configured max_tokens.
+
+        Detects silent provider/API drift (e.g. the token cap being routed to a
+        field the backend ignores), which would otherwise only show up as
+        runaway generation.
+        """
+        max_tokens = None
+        settings = self._model_settings
+        if isinstance(settings, dict):
+            max_tokens = settings.get("max_tokens")
+        elif settings is not None:
+            getter = getattr(settings, "get", None)
+            if callable(getter):
+                max_tokens = getter("max_tokens")
+        if not max_tokens:
+            return
+        usage = getattr(result, "usage", None)
+        completion = getattr(usage, "output_tokens", 0) or 0
+        if completion and completion > max_tokens:
+            self.observability.log_warning(
+                "max_tokens_exceeded_by_provider",
+                configured_max_tokens=max_tokens,
+                completion_tokens=completion,
+                **context,
+            )
+            self.observability.record_metric(
+                "counter",
+                "agent_max_tokens_exceeded_by_provider",
+                1,
+                **{
+                    k: str(v)
+                    for k, v in context.items()
+                    if k in ("model", "session_id")
+                },
+            )
 
     def _rebuild_agent(self, model: Any = None, extra_toolsets: Any = None) -> None:
         """Rebuild the underlying Agent, preserving prior configuration.
@@ -361,23 +420,16 @@ class ManagedAgent:
     def with_observability(self, observability: Observability) -> "ManagedAgent":
         """Set observability."""
         self.observability = observability
-        # Apply traceback_frame_limit if set before observability was provided
-        if self.traceback_frame_limit is not None:
-            self._observability.traceback_frame_limit = self.traceback_frame_limit
-            self._observability._base_context["traceback_frame_limit"] = self.traceback_frame_limit
-        # Propagate observability to tools if already set
-        if self.tools is not None:
-            self.tools._observability = observability
-        # Propagate to guards
-        self.guards.observability = observability
-        self._guard_runner._observability = observability
         return self
 
     def with_tools(self, registry: ToolRegistry) -> "ManagedAgent":
         """Set tool registry."""
         self.tools = registry
-        # Propagate observability to the registry
-        self.tools._observability = self.observability
+        # Propagate observability to the registry, but do not materialize the
+        # lazy default here: .with_observability() must be able to replace it
+        # later without leaving a discarded default stack behind.
+        if self._observability is not None:
+            self.tools._observability = self._observability
         self._rebuild_agent()
         return self
 
@@ -488,8 +540,11 @@ class ManagedAgent:
     def with_traceback_frame_limit(self, limit: Optional[int]) -> "ManagedAgent":
         """Set max traceback frames shown (None = full tracebacks)."""
         self.traceback_frame_limit = limit
-        self.observability.traceback_frame_limit = limit
-        self.observability._base_context["traceback_frame_limit"] = limit
+        # Only touch an existing stack; otherwise the limit is stored and
+        # applied when observability is provided (or lazily created).
+        if self._observability is not None:
+            self._observability.traceback_frame_limit = limit
+            self._observability._base_context["traceback_frame_limit"] = limit
         return self
 
     def with_minimal_traceback(self) -> "ManagedAgent":
@@ -894,6 +949,7 @@ class ManagedAgent:
                 cumulative = getattr(result, "cumulative_usage", None)
                 self.observability.log_token_usage(result, {**context, "cumulative_usage": cumulative})
                 token_usage_logged = True
+                self._warn_if_provider_ignored_max_tokens(result, context)
 
                 try:
                     usage = None
@@ -1149,6 +1205,7 @@ class ManagedAgent:
                     # Log token usage after stream completes
                     duration = time.time() - start_time
                     self.observability.log_token_usage(result, {**context, "cumulative_usage": None})
+                    self._warn_if_provider_ignored_max_tokens(result, context)
 
                     # Capture reasoning traces if enabled
                     reasoning_traces = None
@@ -1244,6 +1301,13 @@ class ManagedAgent:
                     partial_output_length=len(collected),
                     reasoning_traces_length=len(reasoning_traces) if reasoning_traces else 0,
                     duration_seconds=duration,
+                )
+                self.observability.record_metric(
+                    "counter",
+                    "agent_token_limit_exceeded",
+                    1,
+                    limit_type="streaming",
+                    session_id=session_id,
                 )
 
                 error_ctx = ErrorContext(

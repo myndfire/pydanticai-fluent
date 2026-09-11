@@ -237,7 +237,7 @@ Key components:
 - `@raw_agent.output_validator` — custom function that parses times and checks `end > start`
 - `ModelRetry` — tells pydantic-ai to retry with the error message visible to the LLM
 - `output_retries=5` — max attempts before giving up
-- Two runs: valid meeting (passes) and impossible meeting (exhausts retries)
+- Two runs: valid meeting (passes) and impossible meeting. The impossible run may exhaust retries, or the model may self-correct to a valid range before the validator is satisfied.
 
 ## Prerequisites
 
@@ -251,16 +251,15 @@ Key components:
 # 1. Start Ollama
 ollama serve
 
-# 2. Pull models (first time only)
-ollama pull phi4-mini                # for 01
-ollama pull phi4-mini-reasoning      # for 02, 03, 04
+# 2. Pull model (first time only)
+ollama pull qwen2.5:3b             # all examples
 
 # 3. Install dependencies
 cd agent_harness_examples
 uv sync
 
-# 4. (Optional) Copy and edit .env
-cp .env.example .env
+# 4. (Optional) Copy and edit the single canonical .env at the repo root
+cp .env.example ../.env
 ```
 
 ## Configuration
@@ -269,10 +268,15 @@ All variables are optional and read from `.env` via `python-dotenv`.
 
 | Variable | File(s) | Default | Description |
 |----------|---------|---------|-------------|
-| `STRUCTURED_OUTPUT_MODEL_NAME` | 01 | `phi4-mini` | LLM model for simple model example |
-| `STRUCTURED_OUTPUT_REASONING_MODEL` | 02, 03, 04 | `phi4-mini-reasoning` | LLM model with reasoning for classification/nested/validation |
-| `STRUCTURED_OUTPUT_MAX_TOKENS` | all | `512` | Max LLM output tokens |
+| `STRUCTURED_OUTPUT_MODEL_NAME` | 01 | `qwen2.5:3b` | LLM model for simple model example |
+| `STRUCTURED_OUTPUT_REASONING_MODEL` | 02, 03, 04 | `qwen2.5:3b` | LLM model for classification/nested/validation |
+| `STRUCTURED_OUTPUT_MAX_TOKENS` | all | `1024` | Max LLM output tokens |
 | `OLLAMA_BASE_URL` | all | `http://localhost:11434/v1` | Ollama endpoint |
+
+`qwen2.5:3b` is small, fast, non-reasoning, and works with Ollama's
+grammar-constrained JSON-schema output, so any of these examples complete in a
+few seconds. The model name is a plain `ModelConfig`, so swap it for any other
+Ollama model if you prefer.
 
 ## Running
 
@@ -300,11 +304,11 @@ uv run python 08-structured_output/04_validation_retries.py
 
 **03_nested_models.py:** One chocolate chip cookie recipe with ingredients list and step-by-step instructions. Shows nested access like `recipe.ingredients[0].name`.
 
-**04_validation_retries.py:** First run succeeds (valid meeting). Second run fails after retries (impossible time range). Shows the ModelRetry error message.
+**04_validation_retries.py:** First run succeeds (valid meeting). The second ("impossible") run either exhausts `output_retries` and raises, or — with a capable model — self-corrects to a valid time range and succeeds. Either way the `@output_validator` is the gate: if it raises `ModelRetry`, the agent retries with the error message.
 
 ## How It Works
 
-1. **01_simple_model.py** — `.with_output(WeatherReport)` tells pydantic-ai to constrain the LLM to JSON matching the `WeatherReport` schema. Pydantic validates field types. `result.output` is a `WeatherReport` instance with typed access.
+1. **01_simple_model.py** — `.with_output(WeatherReport)` tells pydantic-ai to constrain the LLM to JSON matching the `WeatherReport` schema. The harness configures Ollama to use native structured output (`response_format: json_schema`), which Ollama enforces at generation time via grammar-constrained decoding. Pydantic validates field types. `result.output` is a `WeatherReport` instance with typed access. Because the output type is a plain Pydantic model, swapping the model doesn't change any code.
 
 2. **02_enums_literals.py** — `Literal["positive", "negative", "neutral"]` restricts the `sentiment` field to exactly 3 valid values. If the LLM returns anything else, pydantic rejects it and the agent retries (up to `output_retries=3`).
 
@@ -316,6 +320,8 @@ uv run python 08-structured_output/04_validation_retries.py
 
 - **"Connection refused"** — Ollama is not running. Start it with `ollama serve`.
 - **Model not found** — Pull the required model (see Setup section).
-- **Validation keeps retrying** — The LLM may struggle with the schema. Use a larger model (e.g., `qwen3.5:4b` instead of `phi4-mini`).
+- **Seems to hang / "Exceeded maximum output retries"** — the model isn't producing a valid structured response, so pydantic-ai retries (`output_retries=3`) and the harness guard layer retries the run (`AGENT_RETRIES_MAX_RETRIES=3`), which can take minutes. Reasoning models such as `phi4-mini-reasoning` spend the entire token budget on `<think>` tokens and never emit the result. Use a small non-reasoning model such as `qwen2.5:3b` (the default) and raise `STRUCTURED_OUTPUT_MAX_TOKENS` if responses are truncated.
+- **Validation keeps retrying** — The LLM may struggle with the schema. Use a larger model (e.g., `granite4.1:8b` or `qwen3.5:4b`).
+- **Truncated output** — the response hit the token cap. Raise `STRUCTURED_OUTPUT_MAX_TOKENS` (e.g. `1024`–`2048`; reasoning models need more headroom). The Ollama `max_tokens` cap is honored (routed to the correct wire field by the harness).
 - **Malformed JSON** — The model may not support structured output well. Increase `output_retries` or use a different model.
 - **Wrong endpoint** — Set `OLLAMA_BASE_URL` if Ollama is running on a non-default host/port.

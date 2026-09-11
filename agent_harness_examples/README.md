@@ -27,7 +27,20 @@ uv sync
 
 This installs `pydanticai-fluent` as an editable install from the local `../` project root.
 
-### 3. Run any example
+### 3. (Optional) Configure environment
+
+There is a **single canonical `.env` at the repo root** (used by `docker compose`
+and by every example via `python-dotenv`'s upward search). Copy the template:
+
+```bash
+# from the repo root
+cp agent_harness_examples/.env.example .env
+```
+
+It already contains the Langfuse/OpenTelemetry/Elasticsearch settings used by
+the examples and the default `docker compose` stack.
+
+### 4. Run any example
 
 ```bash
 uv run agent_example-1.py
@@ -53,7 +66,8 @@ Services:
 | `mongo` | `27017` | MongoMemory, MongoPrompts |
 | `redis` | `6379` | RedisMemory |
 | `elasticsearch` | `9200` | ElasticsearchMemory, ElasticsearchLogger, OTel logs backend |
-| `kibana` | `5601` | Optional specialist — Kibana log browser (Grafana Logs Drilldown covers this) |
+| `kibana` | `5601` | Kibana log browser — renders `trace_id` as a "View in Langfuse" link |
+| `langfuse-web` | `3000` | Trace backend + UI (default `docker compose up -d` stack) |
 | `grafana` | `3000` | Single pane: logs from ES, metrics from Prometheus, trace waterfall from Jaeger |
 | `prometheus` | `9090` | Metrics backend — native OTLP receiver (ingests the collector's OTLP metrics) |
 | `jaeger` | `16686`, `14317`, `14318` | Trace backend — native OTLP gRPC ingest (host :14317/:14318), UI at :16686 |
@@ -78,16 +92,20 @@ Full docs on using **Elasticsearch** (log/trace queries), **Jaeger**, **Promethe
 - Logs like Kibana — Logs Drilldown (`/a/grafana-lokiexplore-app`) on the Elasticsearch datasource.
 - Traces like Jaeger — Jaeger UI (http://localhost:16686) or Grafana Explore → Jaeger.
 
-### Kibana log-levels dashboard
+### Kibana dashboards
 
-Provision a purpose-built **severity dashboard** in Kibana (bar by severity, volume-over-time by severity, donut share, recent-logs table). Kibana only file-provisions data views (not Lens panels), so this pushes pre-built saved objects via the import API — idempotent, re-run anytime:
+Provision the logs-based Kibana dashboards (errors, severity, runs, token usage). Kibana only file-provisions data views (not Lens panels), so this pushes pre-built saved objects via the import API — idempotent, re-run anytime:
 
 ```bash
-docker compose -f docker-compose.yml up -d kibana
-./kibana/provision-log-levels-dashboard.sh
+docker compose up -d kibana
+./kibana/provision-dashboards.sh
 ```
 
-Opens at `http://localhost:5601/app/dashboards#/view/log-levels-dashboard` ("Agent Harness — Log Levels"). See **[`OBSERVABILITY.md §8`](../OBSERVABILITY.md#8-kibana-optional)** for the panel table, script steps, and the data-stream `-*` vs `*` gotcha.
+Dashboards are logs-based (trace analytics live in Langfuse):
+- **Agent Harness — Errors**: `http://localhost:5601/app/dashboards#/view/errors-exceptions-dashboard` (ERROR trend, top messages, exception types, raise sites, recent errors with `langfuse_trace_url`).
+- **Agent Harness — Debug Logs**: `http://localhost:5601/app/dashboards#/view/log-levels-dashboard`.
+
+The same script adds a URL field format on the logs data view so `trace_id` renders as a **"View in Langfuse"** link (built from `LANGFUSE_UI_URL` + `LANGFUSE_PROJECT_ID` in `.env`). In Discover, widen the time range and filter `severity_text: "ERROR"` (`body.text` is analyzed, so search `body.text: filter_error`, not `body.text: error`). See **[`OBSERVABILITY.md §8`](../OBSERVABILITY.md#8-kibana-optional)** for the full dashboard list and the data-stream `-*` vs `*` gotcha.
 
 ---
 

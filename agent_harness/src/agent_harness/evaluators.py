@@ -17,9 +17,11 @@
 import os
 
 import structlog
-from typing import Protocol, Any
+from typing import Protocol, Any, Union
 
 from pydantic_ai import Agent
+
+from .model_config import ModelConfig, build_model_ref
 
 
 class Evaluator(Protocol):
@@ -40,17 +42,19 @@ class Evaluator(Protocol):
 class QualityCheck:
     """LLM-as-judge quality evaluation."""
 
-    def __init__(self, threshold: float = 7.0, judge_model: str = "openai:gpt-4o-mini"):
+    def __init__(self, threshold: float = 7.0, judge_model: Union[str, ModelConfig] = "openai:gpt-4o-mini"):
         """
         Initialize quality evaluator.
 
         Args:
             threshold: Minimum quality score (0-10)
-            judge_model: Model to use for evaluation
+            judge_model: Model to use for evaluation (``"provider:model"`` string
+                or a :class:`ModelConfig`, so provider/profile handling matches
+                the main agent, e.g. Ollama's ``max_tokens`` routing)
         """
         self.threshold = threshold
         self.judge_model = judge_model
-        self._judge_agent = Agent(judge_model)
+        self._judge_agent = Agent(build_model_ref(judge_model))
         self._logger = structlog.get_logger()
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> None:

@@ -61,6 +61,13 @@ ProviderType = Literal[
     "heroku",
 ]
 
+# Which wire field the generic `max_tokens` ModelSetting maps to for
+# OpenAI-compatible Chat Completions providers:
+#   "auto"                  -> provider/model profile (Ollama => max_tokens)
+#   "max_tokens"            -> force the legacy field (OpenRouter, some compatible APIs)
+#   "max_completion_tokens" -> force the OpenAI field (incl. o-series reasoning models)
+MaxTokensField = Literal["auto", "max_tokens", "max_completion_tokens"]
+
 
 @dataclass
 class ModelConfig:
@@ -76,30 +83,107 @@ class ModelConfig:
                     var when not set).
         base_url:   Custom endpoint URL (e.g.
                     ``"https://api.openai.com/v1"``).
+        max_tokens_field: Which wire field the generic ``max_tokens`` setting
+                    maps to for OpenAI-compatible providers. ``"auto"`` (default)
+                    uses the pydantic-ai profile (Ollama => ``max_tokens``);
+                    force ``"max_tokens"`` or ``"max_completion_tokens"`` to
+                    override. Ignored by native (non-OpenAI) providers.
     """
 
     provider: ProviderType = "ollama"
     model_name: str = ""
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    max_tokens_field: MaxTokensField = "auto"
 
 
 # ── Lazy builder functions (one per supported provider) ────────────────
 
 
-def _build_ollama(config: ModelConfig) -> Any:
+def _resolve_max_tokens_flag(provider: str, config: ModelConfig) -> Optional[bool]:
+    """Resolve the desired ``openai_chat_supports_max_completion_tokens`` flag.
+
+    Returns ``True`` to send ``max_completion_tokens``, ``False`` to send the
+    legacy ``max_tokens`` field, or ``None`` to leave the provider/profile
+    default untouched.
+    """
+    field = getattr(config, "max_tokens_field", "auto") or "auto"
+    if field == "max_tokens":
+        return False
+    if field == "max_completion_tokens":
+        return True
+    # "auto": Ollama's OpenAI-compatible endpoint honors `max_tokens` but
+    # ignores `max_completion_tokens`, so route to the legacy field. Other
+    # providers keep whatever their pydantic-ai profile declares.
+    if provider == "ollama":
+        return False
+    return None
+
+
+def _openai_chat_model(config: ModelConfig, provider: Any, provider_name: str) -> Any:
+    """Build an ``OpenAIChatModel`` applying the max_tokens field routing profile."""
     from pydantic_ai.models.openai import OpenAIChatModel
+
+    kwargs: dict[str, Any] = {"provider": provider}
+    flag = _resolve_max_tokens_flag(provider_name, config)
+    if flag is not None:
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
+
+        kwargs["profile"] = OpenAIModelProfile(
+            openai_chat_supports_max_completion_tokens=flag
+        )
+    return OpenAIChatModel(config.model_name, **kwargs)
+
+
+def _build_ollama(config: ModelConfig) -> Any:
+    from pydantic_ai.models.ollama import OllamaModel
     from pydantic_ai.providers.ollama import OllamaProvider
 
     base_url = config.base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     kwargs: dict[str, Any] = {"base_url": base_url}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=OllamaProvider(**kwargs))
+
+    flag = _resolve_max_tokens_flag("ollama", config)
+    if flag is None:
+        provider = OllamaProvider(**kwargs)
+    else:
+        # Override the provider profile so the generic `max_tokens` setting is
+        # routed to the field Ollama actually honors. Using a provider subclass
+        # (rather than passing `profile=` to OllamaModel) keeps OllamaModel's
+        # own Ollama-Cloud json-schema guard intact.
+        # See pydantic-ai #5186 / PR #5926.
+        from pydantic_ai.profiles import merge_profile
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
+
+        class _HarnessOllamaProvider(OllamaProvider):
+            @staticmethod
+            def model_profile(model_name: str):
+                base = OllamaProvider.model_profile(model_name) or {}
+                return merge_profile(
+                    base,
+                    OpenAIModelProfile(
+                        openai_chat_supports_max_completion_tokens=flag,
+                        # Ollama's /v1/chat/completions endpoint enforces
+                        # `response_format: json_schema` at generation time via
+                        # llama.cpp's grammar-constrained decoder, for every
+                        # model. pydantic-ai's default output mode is `'tool'`,
+                        # which small/fast local models handle unreliably (they
+                        # emit no tool call, and structured output then retries
+                        # until exhausted). Prefer native structured output so
+                        # plain `BaseModel` output types stay model-agnostic.
+                        # Explicit `ToolOutput`/`PromptedOutput` from callers
+                        # still win.
+                        default_structured_output_mode="native",
+                    ),
+                )
+
+        provider = _HarnessOllamaProvider(**kwargs)
+
+    return OllamaModel(config.model_name, provider=provider)
 
 
 def _build_openai(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
     kwargs: dict[str, Any] = {}
@@ -107,7 +191,7 @@ def _build_openai(config: ModelConfig) -> Any:
         kwargs["api_key"] = config.api_key
     if config.base_url:
         kwargs["base_url"] = config.base_url
-    return OpenAIChatModel(config.model_name, provider=OpenAIProvider(**kwargs))
+    return _openai_chat_model(config, OpenAIProvider(**kwargs), "openai")
 
 
 def _build_anthropic(config: ModelConfig) -> Any:
@@ -180,107 +264,96 @@ def _build_huggingface(config: ModelConfig) -> Any:
 
 
 def _build_openrouter(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openrouter import OpenRouterProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=OpenRouterProvider(**kwargs))
+    return _openai_chat_model(config, OpenRouterProvider(**kwargs), "openrouter")
 
 
 def _build_grok(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.grok import GrokProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=GrokProvider(**kwargs))
+    return _openai_chat_model(config, GrokProvider(**kwargs), "grok")
 
 
 def _build_deepseek(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.deepseek import DeepSeekProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=DeepSeekProvider(**kwargs))
+    return _openai_chat_model(config, DeepSeekProvider(**kwargs), "deepseek")
 
 
 def _build_cerebras(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.cerebras import CerebrasProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=CerebrasProvider(**kwargs))
+    return _openai_chat_model(config, CerebrasProvider(**kwargs), "cerebras")
 
 
 def _build_fireworks(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.fireworks import FireworksProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=FireworksProvider(**kwargs))
+    return _openai_chat_model(config, FireworksProvider(**kwargs), "fireworks")
 
 
 def _build_together(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.together import TogetherProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=TogetherProvider(**kwargs))
+    return _openai_chat_model(config, TogetherProvider(**kwargs), "together")
 
 
 def _build_azure(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.azure import AzureProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=AzureProvider(**kwargs))
+    return _openai_chat_model(config, AzureProvider(**kwargs), "azure")
 
 
 def _build_vercel(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.vercel import VercelProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=VercelProvider(**kwargs))
+    return _openai_chat_model(config, VercelProvider(**kwargs), "vercel")
 
 
 def _build_moonshotai(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.moonshotai import MoonshotAIProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=MoonshotAIProvider(**kwargs))
+    return _openai_chat_model(config, MoonshotAIProvider(**kwargs), "moonshotai")
 
 
 def _build_github(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.github import GitHubProvider
 
     kwargs: dict[str, Any] = {}
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=GitHubProvider(**kwargs))
+    return _openai_chat_model(config, GitHubProvider(**kwargs), "github")
 
 
 def _build_heroku(config: ModelConfig) -> Any:
-    from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.heroku import HerokuProvider
 
     kwargs: dict[str, Any] = {}
@@ -288,7 +361,7 @@ def _build_heroku(config: ModelConfig) -> Any:
         kwargs["base_url"] = config.base_url
     if config.api_key:
         kwargs["api_key"] = config.api_key
-    return OpenAIChatModel(config.model_name, provider=HerokuProvider(**kwargs))
+    return _openai_chat_model(config, HerokuProvider(**kwargs), "heroku")
 
 
 _PROVIDER_BUILDERS: dict[str, Callable[[ModelConfig], Any]] = {
@@ -326,7 +399,12 @@ def build_model(config: ModelConfig) -> Union[str, Any]:
     Delegates to the provider-specific lazy builder when explicit auth is
     needed or when the provider (e.g. ollama) is not in the inference list.
     """
-    if not config.api_key and not config.base_url and config.provider not in ("ollama", "google"):
+    if (
+        (getattr(config, "max_tokens_field", "auto") or "auto") == "auto"
+        and not config.api_key
+        and not config.base_url
+        and config.provider not in ("ollama", "google")
+    ):
         return f"{config.provider}:{config.model_name}"
 
     builder = _PROVIDER_BUILDERS.get(config.provider)
@@ -336,3 +414,22 @@ def build_model(config: ModelConfig) -> Union[str, Any]:
             f"Supported: {', '.join(sorted(_PROVIDER_BUILDERS))}"
         )
     return builder(config)
+
+
+def build_model_ref(ref: Union[str, ModelConfig]) -> Any:
+    """Resolve a model reference (``ModelConfig`` or ``"provider:model"`` string).
+
+    Used by internal components (evaluation judges, retry fallback models) so
+    they inherit the same provider/profile handling as ``ManagedAgent`` — in
+    particular Ollama's ``max_tokens`` field routing. Bare or unknown strings
+    are returned unchanged for pydantic-ai to infer.
+    """
+    if isinstance(ref, ModelConfig):
+        return build_model(ref)
+    if isinstance(ref, str) and ":" in ref:
+        provider, _, model_name = ref.partition(":")
+        if provider in _PROVIDER_BUILDERS:
+            return build_model(
+                ModelConfig(provider=provider, model_name=model_name)  # type: ignore[arg-type]
+            )
+    return ref

@@ -1,6 +1,6 @@
 # Observability
 
-Log, trace, and measure agent behavior — from simple console logging to full OpenTelemetry pipelines with Elasticsearch, Jaeger, Prometheus, and Grafana.
+Log, trace, and measure agent behavior — from simple console logging to full OpenTelemetry pipelines with Langfuse (traces), Elasticsearch (logs), and Kibana (log browser with Langfuse trace links).
 
 ## Overview
 
@@ -45,8 +45,31 @@ Observability architecture:
 | Prometheus metrics | `07_prometheus_logs_metrics.py` | PrometheusMetrics, InMemory | Pushgateway, Ollama |
 | Live agent full stack | `08_live_agent_logs_metrics.py` | Console, File, InMemory | Ollama |
 | All-in-one OTLP | `09_otel_oltp_logs_traces_metrics.py` | OTELLogger, OTELTracer, OTELMetrics | ES, OTel Collector, Jaeger, Prometheus, Grafana, Ollama |
+| Fluent full app (Langfuse + ES/Kibana) | `fluent_app.py` | ConsoleLogger, OTELLogger, OTELTracer, OTELMetrics | OpenAI, OTel Collector, Langfuse, Elasticsearch, Kibana |
 
 ## Files
+
+### fluent_app.py
+
+End-to-end `ManagedAgent` demo (tools, guardrails, evaluators) with the default observability stack: OTLP logs → Elasticsearch, OTLP traces → Langfuse, metrics → collector `debug`. It uses the fluent API, a custom `ResponseLengthEvaluator`, a content filter with an `on_filter_error` fallback, and token limits. A third scenario intentionally uses a broken content filter to exercise guardrail error logging.
+
+Because it enables `OTELTracer(create_spans=True)`, the harness owns the `agent_run` span for the whole run, so in-run log records (including `filter_error`) carry `trace_id`. Kibana renders that `trace_id` as a clickable **"View in Langfuse"** link to the trace where the event happened.
+
+```bash
+# From the repo root
+docker compose up -d
+./kibana/provision-dashboards.sh      # adds the trace_id -> Langfuse URL field format
+cd agent_harness_examples
+uv run python 12-observability/fluent_app.py
+```
+
+Inspect the results:
+
+- **Langfuse**: http://localhost:3000 (seeded admin user from `.env`).
+- **Elasticsearch**: `curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=body.text:filter_error'`.
+- **Kibana**: http://localhost:5601 → Discover → data view `logs-generic.otel-default*`; click **View in Langfuse** on a record's `trace_id`.
+
+Requires `LANGFUSE_PROJECT_ID` and `LANGFUSE_UI_URL` in `.env` (see [Configuration](#configuration)); `LANGFUSE_HOST` is the in-Docker hostname and is not browser-reachable.
 
 ### 01_logging.py
 
@@ -391,12 +414,13 @@ Key components:
 - Python >= 3.11
 - [uv](https://docs.astral.sh/uv/) package manager
 - [Ollama](https://ollama.ai) running locally (for files 03, 05–09)
-- Elasticsearch (for files 05, 09)
+- Elasticsearch (for files 05, 09, and `fluent_app.py`)
 - Jaeger (for files 06, 09)
 - Prometheus pushgateway (for file 07)
 - Prometheus (for file 09)
 - Grafana (for file 09)
-- OTel Collector (for file 09)
+- OTel Collector (for file 09 and `fluent_app.py`)
+- Langfuse + Kibana (for `fluent_app.py` — the default `docker compose up -d` stack)
 
 ## Setup
 
@@ -413,12 +437,16 @@ docker compose -f docker-compose.yml up -d elasticsearch jaeger pushgateway graf
 # 4. (Optional) Start full OTLP stack (for 09)
 docker compose -f docker-compose.yml up -d elasticsearch otel-collector jaeger prometheus grafana
 
+# 4b. (fluent_app.py) Start the default stack: Langfuse + Elasticsearch + Kibana
+docker compose up -d
+./kibana/provision-dashboards.sh
+
 # 5. Install dependencies
 cd agent_harness_examples
 uv sync
 
-# 6. (Optional) Copy and edit .env
-cp .env.example .env
+# 6. (Optional) Copy and edit the single canonical .env at the repo root
+cp .env.example ../.env
 ```
 
 ## Configuration
@@ -434,6 +462,8 @@ All variables are optional and read from `.env` via `python-dotenv`.
 | `PROMETHEUS_PUSH_GATEWAY` | 07 | `http://localhost:9091` | Prometheus push gateway |
 | `OTEL_COLLECTOR_ENDPOINT` | 06, 09 | `localhost:4317` | OTel Collector OTLP gRPC (logs, metrics, traces) |
 | `OBSERVABILITY_SERVICE_NAME` | 09 | `all-in-one-observability-demo` | OTLP service name |
+| `LANGFUSE_PROJECT_ID` | `fluent_app.py` | `local-project` | Langfuse project id used to build log→trace links |
+| `LANGFUSE_UI_URL` | `fluent_app.py` | `http://localhost:3000` | Browser-reachable Langfuse UI base (not the in-Docker `LANGFUSE_HOST`) |
 | `OLLAMA_BASE_URL` | all | `http://localhost:11434/v1` | Ollama endpoint |
 
 ## Running
@@ -467,6 +497,9 @@ uv run python 12-observability/08_live_agent_logs_metrics.py
 
 # All-in-one OTLP — ES + Jaeger + Prometheus + Grafana
 uv run python 12-observability/09_otel_oltp_logs_traces_metrics.py
+
+# Fluent full app — logs → Elasticsearch, traces → Langfuse, trace-linked logs
+uv run python 12-observability/fluent_app.py
 ```
 
 ## Expected Output

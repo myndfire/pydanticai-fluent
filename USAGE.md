@@ -182,6 +182,7 @@ ModelConfig(
     model_name="gpt-4o",      # Model name (without provider prefix)
     api_key="sk-...",         # Optional — omit for auto-inference from env
     base_url=None,            # Optional — custom endpoint URL
+    max_tokens_field="auto",  # "auto" | "max_tokens" | "max_completion_tokens"
 )
 ```
 
@@ -191,12 +192,15 @@ ModelConfig(
 | `model_name` | `str` | Yes | `""` | Model identifier without provider prefix |
 | `api_key` | `str \| None` | No | `None` | Explicit API key. Overrides the provider's env var. |
 | `base_url` | `str \| None` | No | `None` | Custom endpoint URL (e.g., local Ollama) |
+| `max_tokens_field` | `Literal["auto","max_tokens","max_completion_tokens"]` | No | `"auto"` | Which wire field the generic `max_tokens` setting maps to for OpenAI-compatible providers. `"auto"` uses the pydantic-ai profile (Ollama → `max_tokens`, OpenAI → `max_completion_tokens`). Ignored by native (non-OpenAI) providers. |
+
+> **Ollama `max_tokens`:** Ollama's OpenAI-compatible endpoint honors `max_tokens` but ignores `max_completion_tokens`. The harness routes Ollama to `max_tokens` automatically so `max_tokens` model settings are enforced (see pydantic-ai #5186 / PR #5926). Use `max_tokens_field` to override for other OpenAI-compatible endpoints.
 
 #### Supported Providers
 
 | Provider | Model class | Provider class | Auth | Env var |
 |---|---|---|---|---|
-| `ollama` | `OpenAIChatModel` | `OllamaProvider` | None (local) | `OLLAMA_BASE_URL` |
+| `ollama` | `OllamaModel` | `OllamaProvider` | None (local) | `OLLAMA_BASE_URL` |
 | `openai` | `OpenAIChatModel` | `OpenAIProvider` | API key | `OPENAI_API_KEY` |
 | `anthropic` | `AnthropicModel` | `AnthropicProvider` | API key | `ANTHROPIC_API_KEY` |
 | `google` | `GoogleModel` | `GoogleProvider` | API key | `GOOGLE_API_KEY` |
@@ -609,10 +613,7 @@ from agent_harness.observability import ObservabilityBuilder
 obs = (
     ObservabilityBuilder("my-agent")
     .with_console_logging()
-    .with_file_logging("agent.log")
-    .with_logfire_tracing()
-    .with_otel_tracing(otlp_endpoint="localhost:4317")
-    .with_prometheus_metrics(push_gateway="localhost:9091")
+    .with_otel_observability(otlp_endpoint="localhost:4317")  # logs→Elasticsearch, traces→Langfuse
     .build()
 )
 agent.with_observability(obs)
@@ -630,7 +631,7 @@ All builder methods return `self` for chaining. Call `.build()` at the end to pr
 | `.with_logfire_logging()` | `() -> ObservabilityBuilder` | `LogfireLogger` | Sends structured logs to [Logfire](https://logfire.pydantic.dev). Configures structlog with JSON renderer, timestamps, and caller info. Falls back to console if Logfire is unavailable. |
 | `.with_otel_logging()` | `(otlp_endpoint: str = "localhost:4317") -> ObservabilityBuilder` | `OTELLogger` | Exports structured logs via OTLP gRPC to an OpenTelemetry collector. Log records emitted inside a span automatically carry `trace_id`/`span_id` for log-trace correlation. |
 | `.with_logfire_tracing()` | `(send_to_logfire: bool = True, instrument_pydantic_ai: bool = True) -> ObservabilityBuilder` | `LogfireTracer` | Creates Logfire spans for every agent run. When `instrument_pydantic_ai=True`, automatically instruments the underlying PydanticAI agent for detailed LLM call tracing. The Logfire equivalent of OpenTelemetry distributed tracing. |
-| `.with_otel_tracing()` | `(otlp_endpoint: str = "localhost:4317", sample_rate: float = 1.0, create_spans: bool = False, record_failures: bool = True) -> ObservabilityBuilder` | `OTELTracer` | Exports spans via OTLP gRPC to an OpenTelemetry collector (e.g. Grafana, Jaeger, Datadog). `sample_rate` controls trace sampling (1.0 = all traces). By default (`create_spans=False`) the harness adds no spans — the trace stream is PydanticAI's native instrumentation only (`invoke_agent`, `execute_tool`, `chat`), so `gen_ai.*` labels are stable to query on. `record_failures=True` still surfaces failures as ERROR spans / exception events (see "Failure telemetry"). Set `create_spans=True` to also export harness spans named `{service_name}.{operation}`. Requires `opentelemetry-api`, `opentelemetry-sdk`, and `opentelemetry-exporter-otlp-proto-grpc` packages. |
+| `.with_otel_tracing()` | `(otlp_endpoint: str = "localhost:4317", sample_rate: float = 1.0, create_spans: bool = False, record_failures: bool = True) -> ObservabilityBuilder` | `OTELTracer` | Exports spans via OTLP gRPC to an OpenTelemetry collector (via the OTel Collector, e.g. Langfuse). `sample_rate` controls trace sampling (1.0 = all traces). By default (`create_spans=False`) the harness adds no spans — the trace stream is PydanticAI's native instrumentation only (`invoke_agent`, `execute_tool`, `chat`), so `gen_ai.*` labels are stable to query on. `record_failures=True` still surfaces failures as ERROR spans / exception events (see "Failure telemetry"). Set `create_spans=True` to also export harness spans named `{service_name}.{operation}`. Requires `opentelemetry-api`, `opentelemetry-sdk`, and `opentelemetry-exporter-otlp-proto-grpc` packages. |
 | `.with_jaeger_tracing()` | `(jaeger_host: str = "localhost", jaeger_port: int = 6831) -> ObservabilityBuilder` | `JaegerTracer` | Sends spans to a Jaeger agent via UDP over the compact Thrift protocol. Lightweight alternative to OTLP when you use Jaeger directly. |
 | `.with_prometheus_metrics()` | `(push_gateway: str \| None = None) -> ObservabilityBuilder` | `PrometheusMetrics` | Records counters, gauges, and histograms using the Prometheus client library. If `push_gateway` is set, metrics are pushed to a Prometheus Pushgateway (useful for short-lived jobs). Otherwise, metrics are only accessible via the Python client API. |
 | `.with_statsd_metrics()` | `(host: str = "localhost", port: int = 8125) -> ObservabilityBuilder` | `StatsdMetrics` | Sends metrics to a StatsD daemon (Datadog Agent, Telegraf, etc.). Uses `timing` for summary metrics. All metric names are prefixed with `prefix` (default `"agent"`). |
@@ -673,7 +674,7 @@ Use these when constructing `Observability(metrics=...)` or `Observability(metri
 | `NoOpMetrics` | `()` | All counter/gauge/histogram/summary calls are no-ops. Default when no metrics backend is configured. |
 | `InMemoryMetrics` | `()` | Stores metrics in Python dicts: `_counters`, `_gauges`, `_histograms`, `_summaries`. Access with `get_metrics()`, clear with `reset()`. Perfect for testing. |
 | `LogfireMetrics` | `(service_name: str = "agent")` | Sends metric events to Logfire as info-level log entries. No dedicated metric protocol — uses Logfire's structured event system. |
-| `OTELMetrics` | `(service_name: str = "agent", otlp_endpoint: str = "localhost:4317")` | OpenTelemetry metrics via OTLP gRPC. Creates real OTel counters, gauges, and histograms with a `PeriodicExportingMetricReader`. Same default OTLP gRPC port as tracing (`4317`); the collector routes metrics to Prometheus. |
+| `OTELMetrics` | `(service_name: str = "agent", otlp_endpoint: str = "localhost:4317")` | OpenTelemetry metrics via OTLP gRPC. Creates real OTel counters, gauges, and histograms with a `PeriodicExportingMetricReader`. Same default OTLP gRPC port as tracing (`4317`); the collector routes metrics to its `debug` exporter by default. |
 | `PrometheusMetrics` | `(namespace: str = "agent", push_gateway: str \| None = None)` | Prometheus client library metrics. Supports `push_to_gateway(job_name)` for push-based workflows. Metric names follow Prometheus naming conventions. |
 | `StatsdMetrics` | `(host: str = "localhost", port: int = 8125, prefix: str = "agent")` | Standard StatsD client. `summary()` maps to StatsD `timing()`. Compatible with Datadog Agent, Telegraf, and other StatsD-compatible collectors. |
 
@@ -700,7 +701,7 @@ With `create_spans=False` (default), success traces contain PydanticAI native sp
 
 Set `record_failures=False` to opt out of all harness failure spans/enrichment.
 
-Reference queries for these failures against `traces-generic.otel-default*` (Elasticsearch) are in **[`OBSERVABILITY.md`](OBSERVABILITY.md#43-trace-queries-traces-genericotel-default)** — e.g. `status.code: "STATUS_CODE_ERROR"`, `name: *:failed`, `error.type`/`error.source`.
+These failures appear as `ERROR` spans with an `exception` event in **Langfuse** (`http://localhost:3000`); the `{operation}:failed` name is only a query convenience. See **[`OBSERVABILITY.md`](OBSERVABILITY.md)** for viewing traces in Langfuse.
 
 Disable repeatedly-failing paths in a run: `create_spans=False, record_failures=False`.
 
@@ -715,9 +716,15 @@ Failure records — `{operation}_failed`, `error_handled`, and any `obs.error(ms
 
 ES record shape and reference queries against `logs-generic.otel-default*` are in **[`OBSERVABILITY.md`](OBSERVABILITY.md#42-log-queries-logs-genericotel-default)** (`body.text`, `attributes.code.file.path`, `attributes.exception.stacktrace`, …).
 
-### Visualizing telemetry (Elasticsearch, Jaeger, Prometheus, Grafana, Kibana)
+### Visualizing telemetry (Langfuse, Elasticsearch, Kibana)
 
-Docs for running the observability stack and inspecting telemetry in **Elasticsearch** (log/trace queries), **Jaeger** (trace waterfall), **Prometheus** (PromQL), **Grafana** (single pane, Logs Drilldown), and the optional **Kibana** log-levels dashboard moved to **[`OBSERVABILITY.md`](OBSERVABILITY.md)**: stack startup, service/port reference, data-stream shapes, ES reference queries, Jaeger/Grafana/Prometheus usage, and Kibana provisioning.
+The dev stack routes **traces → Langfuse**, **logs → Elasticsearch**, and browses logs in **Kibana** (which renders each record's `trace_id` as a clickable "View in Langfuse" link). Full docs — stack startup, service/port reference, data-stream shapes, ES reference queries, and Kibana provisioning — are in **[`OBSERVABILITY.md`](OBSERVABILITY.md)**.
+
+| Tool | URL | Login |
+|---|---|---|
+| Langfuse (traces) | http://localhost:3000 | `admin@example.com` / `langfuse` — required; session persists ~1 year |
+| Kibana (logs) | http://localhost:5601 | none — open access |
+| Elasticsearch (logs API) | http://localhost:9200 | none |
 
 ---
 
@@ -921,6 +928,8 @@ Fluent setters: `.on_redact(callback)`, `.on_error(callback)`.
 | `on_error` | `Callable[[ErrorContext], Any] \| None` | `None` | Fallback for unexpected errors |
 
 Fluent setters: `.with_max_input_tokens(n)`, `.with_max_output_tokens(n)`, `.with_max_total_tokens(n)`, `.on_token_limit(callback)`, `.on_error(callback)`.
+
+> **Layered enforcement:** these caps are checked by the harness after each response (non-streaming) and during streaming via PydanticAI `UsageLimits` (which aborts mid-stream). The true mid-generation cap for non-streaming is the provider's server-side `max_tokens` model setting — set it via `.with_model_settings({"max_tokens": n})`. For Ollama this is now enforced (see `ModelConfig.max_tokens_field` in §4.1). A counter metric `agent_token_limit_exceeded` is emitted when a cap is hit, and `agent_max_tokens_exceeded_by_provider` warns if a provider returns more tokens than the configured `max_tokens` (routing-regression canary).
 
 **`CostLimitsConfig`** — dollar cost caps using per-token pricing:
 
@@ -1446,8 +1455,8 @@ uv run orchestration/04_parallel_fanout.py   # Parallel fan-out / fan-in
 # Error handling — pipeline error recovery
 uv run error_handling/09_pipeline_error_recovery.py
 
-# Observability — OTel logs+traces+metrics → ES logs + Prometheus metrics + Jaeger traces
-uv run observability/09_otel_oltp_logs_traces_metrics.py
+# Observability — OTel logs → Elasticsearch, traces → Langfuse, browsed in Kibana
+uv run 12-observability/fluent_app.py
 ```
 
 **Prerequisites:**
@@ -1455,7 +1464,7 @@ uv run observability/09_otel_oltp_logs_traces_metrics.py
 - [Ollama](https://ollama.ai/) running locally (for Ollama models) or API keys for cloud providers
 - MongoDB (optional, for persistent memory in examples 2/3)
 - RabbitMQ (optional, for the document classification example)
-- Elasticsearch + OTel Collector + Jaeger + Prometheus (+ Kibana/Grafana for the OTEL observability examples) — `docker compose -f docker-compose.yml up -d` from the repo root
+- Langfuse + Elasticsearch + Kibana + OTel Collector — `docker compose up -d` from the repo root (Langfuse login `admin@example.com` / `langfuse`; Kibana is open access)
 
 ---
 

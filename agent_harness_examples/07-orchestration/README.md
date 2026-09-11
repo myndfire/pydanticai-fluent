@@ -149,8 +149,8 @@ ollama pull gpt-oss:20b
 cd agent_harness_examples
 uv sync
 
-# 4. (Optional) Copy and edit .env
-cp .env.example .env
+# 4. (Optional) Copy and edit the single canonical .env at the repo root
+cp .env.example ../.env
 ```
 
 ## Configuration
