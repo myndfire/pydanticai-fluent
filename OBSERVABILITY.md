@@ -51,18 +51,34 @@ Log records land in Elasticsearch:
 
 ### 4.1 Data shape
 
-- The OTel log message lands in `body.text` (the string body is wrapped in an object).
-- All log context lands under `attributes.*` (`session_id`, `model`, `error`, `error_type`, `duration_seconds`, `code.*`, `exception.*`, …).
+- The OTel log message lands in `body.text`; the **`event_name`** keyword field
+  carries the same value in an aggregatable/filterable form (mirrored as
+  `attributes.event.name`).
+- Structured context is **flattened into dotted, typed `attributes.*` fields** so
+  it can be aggregated in Kibana Lens rather than read as an opaque string:
+  - `attributes.token_usage.total_tokens` / `.input_tokens` / `.output_tokens` / `.reasoning_tokens`
+  - `attributes.performance.duration_seconds`
+  - `attributes.model_settings.max_tokens`
+  - `attributes.tool.name` / `attributes.tool.parameters.*`
+  - `attributes.error.type` / `.message` / `.stacktrace`
+- Deployment-wide facts are **resource attributes** (set once per process, not
+  repeated on every record): `resource.attributes.service.name`,
+  `resource.attributes.deployment.environment`, `resource.attributes.host.name`.
 - Log records emitted **while a span is active** carry top-level `trace_id` / `span_id` so they correlate with traces.
-- Span exception events are additionally extracted into the logs stream as `event_name: exception` docs carrying `attributes.exception.type`, `attributes.exception.message`, `attributes.exception.stacktrace`.
+- Span exception events are additionally extracted into the logs stream as `event_name: exception` docs.
+- The collector (`filter/drop_noise`) drops DEBUG records, lifecycle `*_started`
+  markers, and `retry_wait` backoff events before they reach Elasticsearch; the
+  completion record, `retry_attempt`, and traces carry that information.
 
 ### 4.2 Log queries (`logs-generic.otel-default*`)
 
 ```text
-body.text: "agent_run_failed"            a failed operation by message
-attributes.code.file.path: *             records that carry a callsite
-attributes.exception.stacktrace: *       failed/error_handled records with the full traceback
-attributes.code.file.path: 09_otel_oltp_logs_traces_metrics.py AND attributes.code.line.number: >0
+event_name: "agent_run_failed"           a failed operation by event name (keyword)
+event_name: (retry_attempt or filter_error or agent_run_failed)
+severity_text: "ERROR"                   all error records
+attributes.error.type: ValueError        drill into cause by type
+attributes.token_usage.total_tokens: >100   expensive calls
+attributes.code.file.path: *             records that carry a callsite (WARNING/ERROR only)
 ```
 
 Raw curl:
@@ -179,14 +195,14 @@ Dashboards (all built on the **logs** data view; trace analytics live in **Langf
 
 | Dashboard | URL path | What it shows |
 |---|---|---|
-| **Agent Harness — Errors** | `/app/dashboards#/view/errors-exceptions-dashboard` | ERROR-severity trend, top messages (`attributes.error_message`), exception types, raise sites, and recent errors (with `langfuse_trace_url`) |
-| **Agent Harness — Debug Logs** | `/app/dashboards#/view/log-levels-dashboard` | Severity overview, log volume, recent logs |
-| **Agent Harness — Agent Runs** | `/app/dashboards#/view/agent-runs-dashboard` | Run volume/duration |
-| **Agent Harness — Token Usage** | `/app/dashboards#/view/token-usage-dashboard` | Token usage by model/phase |
+| **Agent Harness — Errors** | `/app/dashboards#/view/errors-exceptions-dashboard` | ERROR-severity trend, top messages (`attributes.error_message`), exception types (`attributes.error.type`), raise sites, recent errors, and a retries/failures view (with `langfuse_trace_url`) |
+| **Agent Harness — Debug Logs** | `/app/dashboards#/view/log-levels-dashboard` | Severity overview, top events (`event_name`), log volume, recent logs |
+| **Agent Harness — Agent Runs** | `/app/dashboards#/view/agent-runs-dashboard` | Run volume, duration (`attributes.performance.duration_seconds`), runs by model/session/environment |
+| **Agent Harness — Token Usage** | `/app/dashboards#/view/token-usage-dashboard` | Token usage by model/phase (`attributes.token_usage.*`) |
 
 > The old trace-based Kibana dashboards (**Errors & Exceptions**, **LLM Performance**, **Tool Calls**) were removed: traces now go to **Langfuse**, so those ES-backed views would be empty. Use Langfuse for trace/LLM/tool analytics.
 
-**Finding errors in Discover:** widen the time picker (the Errors dashboard defaults to `now-24h`), select the `logs-generic.otel-default*` data view, and filter `severity_text: "ERROR"`. Note `body.text` is analyzed — search `body.text: filter_error` (not `body.text: error`). Each error record carries `trace_id` and a `langfuse_trace_url` field.
+**Finding errors in Discover:** widen the time picker (the Errors dashboard defaults to `now-24h`), select the `logs-generic.otel-default*` data view, and filter `severity_text: "ERROR"` or `event_name: (retry_attempt or filter_error or agent_run_failed)`. Each error record carries `trace_id` and a `langfuse_trace_url` field.
 
 In **Discover**, filter `service.name: <your-service-name>` to scope to one app.
 

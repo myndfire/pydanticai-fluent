@@ -15,9 +15,11 @@
 """Structured logging to Elasticsearch and other backends."""
 
 import asyncio
+import json
 import math
 import os
 import sysconfig
+from collections.abc import Mapping
 from typing import Protocol, Any
 from datetime import datetime, date
 import structlog
@@ -32,6 +34,29 @@ def _normalize_otel_attr(v: Any) -> Any:
     if v is None:
         return "None"
     return str(v)
+
+
+def _flatten_telemetry_attrs(context: dict, prefix: str = "") -> dict:
+    """Flatten a log context into dotted primitive attributes.
+
+    Nested mappings are expanded into dotted keys (``token_usage.total_tokens``,
+    ``performance.duration_seconds``, ``model_settings.max_tokens``) so backends
+    such as Elasticsearch index them as queryable, numeric fields instead of
+    opaque ``str(dict)`` values. Sequences are JSON-encoded under their own key;
+    ``None`` values are dropped to reduce noise.
+    """
+    flat: dict = {}
+    for key, value in context.items():
+        dotted = f"{prefix}{key}"
+        if value is None:
+            continue
+        if isinstance(value, Mapping):
+            flat.update(_flatten_telemetry_attrs(dict(value), f"{dotted}."))
+        elif isinstance(value, (list, tuple, set)):
+            flat[dotted] = json.dumps([_normalize_otel_attr(v) for v in value])
+        else:
+            flat[dotted] = _normalize_otel_attr(value)
+    return flat
 
 
 _HARNESS_ROOT = os.path.normpath(
@@ -468,6 +493,8 @@ class OTELLogger:
         otlp_endpoint: str = "localhost:4317",
         flush_on_exit: bool = True,
         shutdown_on_exit: bool = True,
+        environment: str = "development",
+        host: str | None = None,
     ):
         """
         Initialize OTEL logging.
@@ -480,9 +507,15 @@ class OTELLogger:
             shutdown_on_exit: Register an atexit handler that calls
                 ``shutdown()`` on the LoggerProvider (default True). Implies
                 ``flush_on_exit``.
+            environment: Deployment environment, exported once as the
+                ``deployment.environment`` resource attribute instead of being
+                repeated on every log record.
+            host: Hostname, exported once as the ``host.name`` resource attribute.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
+        self.environment = environment
+        self.host = host
         self._flush_on_exit = flush_on_exit or shutdown_on_exit
         self._shutdown_on_exit = shutdown_on_exit
         self._provider = None
@@ -502,7 +535,13 @@ class OTELLogger:
             )
             from opentelemetry.sdk.resources import Resource
 
-            resource = Resource.create({"service.name": self.service_name})
+            resource_attrs = {
+                "service.name": self.service_name,
+                "deployment.environment": self.environment,
+            }
+            if self.host:
+                resource_attrs["host.name"] = self.host
+            resource = Resource.create(resource_attrs)
 
             exporter = OTLPLogExporter(endpoint=self.otlp_endpoint, insecure=True)
             self._provider = LoggerProvider(resource=resource)
@@ -554,8 +593,15 @@ class OTELLogger:
             return
 
         severity_number = self._severity_map.get(severity)
-        attrs = {k: _normalize_otel_attr(v) for k, v in context.items()}
-        attrs.update(_app_callsite())
+        attrs = _flatten_telemetry_attrs(context)
+        # OTel semantic convention for a log event name; Elasticsearch maps this
+        # to the aggregatable top-level `event_name` keyword field.
+        attrs["event.name"] = message
+        # Attach the application callsite only for actionable severities, and
+        # never clobber an exception's raise-site `code.*` fields. This keeps
+        # info-level records lean and avoids the per-emit `inspect.stack()` cost.
+        if severity in ("warning", "error") and "code.file.path" not in attrs:
+            attrs.update(_app_callsite())
         self._logger.emit(
             severity_number=severity_number,
             severity_text=severity.upper(),

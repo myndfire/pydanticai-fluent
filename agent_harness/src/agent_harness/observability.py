@@ -191,19 +191,22 @@ class Observability:
 
         # Apply OTEL defaults for empty lists
         if not self._loggers:
-            self._loggers = [OTELLogger(service_name=self.service_name)]
+            self._loggers = [
+                OTELLogger(
+                    service_name=self.service_name,
+                    environment=HARNESS_SETTINGS.app_env,
+                    host=socket.gethostname(),
+                )
+            ]
         if not self._tracers:
             self._tracers = [OTELTracer(service_name=self.service_name)]
         if not self._metrics:
             self._metrics = [OTELMetrics(service_name=self.service_name)]
 
-        # Base context injected into every log entry
-        self._base_context = {
-            "service": HARNESS_SETTINGS.service_name,
-            "environment": HARNESS_SETTINGS.app_env,
-            "host": socket.gethostname(),
-            "traceback_frame_limit": self.traceback_frame_limit,
-        }
+        # Base context injected into every log entry. Deployment-wide facts
+        # (service, environment, host) live on the OTel Resource instead of
+        # being repeated on every record, so this stays empty by default.
+        self._base_context: dict = {}
 
     # Convenience properties — delegate to first backend
     @property
@@ -256,9 +259,11 @@ class Observability:
         try:
             start_time = datetime.now()
 
-            # Log start on all loggers
+            # Log start on all loggers (debug: lifecycle start is duplicated by
+            # the completion record and by traces, so it stays out of the
+            # Elasticsearch log pipeline).
             for lg in self._loggers:
-                lg.info(f"{operation}_started", **{**self._base_context, **context})
+                lg.debug(f"{operation}_started", **{**self._base_context, **context})
 
             # Increment counter on all metrics
             for m in self._metrics:
@@ -427,10 +432,9 @@ class Observability:
         # Log each request separately
         for entry in usage_list:
             ctx = {**context, "turn": entry["turn"], "phase": entry["phase"]}
-            # Include cumulative usage if provided in context
-            cumulative = context.get("cumulative_usage")
-            if cumulative:
-                ctx["cumulative_usage"] = cumulative
+            # Drop the run-level cumulative_usage key (and the plumbing key that
+            # fed it) — it duplicated token_usage on every record.
+            ctx.pop("cumulative_usage", None)
             self.log_info(
                 "token_usage",
                 token_usage={
@@ -542,6 +546,8 @@ class ObservabilityBuilder:
                 otlp_endpoint=otlp_endpoint,
                 flush_on_exit=flush_on_exit,
                 shutdown_on_exit=shutdown_on_exit,
+                environment=HARNESS_SETTINGS.app_env,
+                host=socket.gethostname(),
             )
         )
         self._tracers.append(

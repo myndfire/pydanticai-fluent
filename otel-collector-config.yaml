@@ -7,6 +7,18 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # Keep the Elasticsearch log stream high-signal: drop lifecycle "started"
+  # markers and retry backoff waits (the completion record and retry_attempt
+  # already carry the useful information), plus any DEBUG records.
+  # The harness mirrors this by emitting these at DEBUG, but the filter is a
+  # policy net for any app that emits them at INFO.
+  filter/drop_noise:
+    error_mode: ignore
+    logs:
+      log_record:
+        - severity_number == SEVERITY_NUMBER_DEBUG
+        - IsMatch(body.string, ".*_started$")
+        - body.string == "retry_wait"
   batch:
 
 exporters:
@@ -32,5 +44,5 @@ service:
       exporters: [debug]
     logs:
       receivers: [otlp]
-      processors: [batch]
+      processors: [filter/drop_noise, batch]
       exporters: [otlp_http/elasticsearch]

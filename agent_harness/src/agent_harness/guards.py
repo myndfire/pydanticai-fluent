@@ -927,7 +927,7 @@ class GuardRunner:
                 if attempt < self.config.agent.max_retries - 1:
                     wait_time = self.config.agent.backoff_multiplier**attempt
                     self._log(
-                        "info",
+                        "debug",
                         "retry_wait",
                         wait_seconds=wait_time,
                         attempt=attempt + 1,
@@ -970,7 +970,7 @@ class GuardRunner:
                 if attempt < self.config.agent.max_retries - 1:
                     wait_time = self.config.agent.backoff_multiplier**attempt
                     self._log(
-                        "info",
+                        "debug",
                         "retry_wait",
                         wait_seconds=wait_time,
                         attempt=attempt + 1,

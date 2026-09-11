@@ -712,9 +712,9 @@ Every log record now carries the application callsite (skipping frames inside `a
 - **OpenTelemetry logs (ES)** — record attributes include `code.file.path`, `code.function`, `code.line.number`.
 - **Console / file / Logfire records** — the same location is appended as structlog-style keys `pathname`, `func_name`, `lineno`.
 
-Failure records — `{operation}_failed`, `error_handled`, and any `obs.error(msg, exception=e)` — additionally embed the exception (OTel `exception.*` shape) plus the **raise site**: `exception.type`, `exception.message`, `exception.stacktrace`, and `code.file.path` / `code.function` / `code.line.number` taken from the innermost traceback frame.
+Failure records — `{operation}_failed`, `error_handled`, and any `obs.error(msg, exception=e)` — additionally embed the exception detail plus the **raise site**: `error.type`, `error.message`, `error.stacktrace`, and `code.file.path` / `code.function` / `code.line.number` taken from the innermost traceback frame.
 
-ES record shape and reference queries against `logs-generic.otel-default*` are in **[`OBSERVABILITY.md`](OBSERVABILITY.md#42-log-queries-logs-genericotel-default)** (`body.text`, `attributes.code.file.path`, `attributes.exception.stacktrace`, …).
+ES record shape and reference queries against `logs-generic.otel-default*` are in **[`OBSERVABILITY.md`](OBSERVABILITY.md#42-log-queries-logs-genericotel-default)** (`event_name`, flattened `attributes.token_usage.*`, `attributes.performance.duration_seconds`, `attributes.error.*`, `attributes.code.file.path`, …).
 
 ### Visualizing telemetry (Langfuse, Elasticsearch, Kibana)
 

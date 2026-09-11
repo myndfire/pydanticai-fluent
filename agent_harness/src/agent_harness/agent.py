@@ -221,7 +221,6 @@ class ManagedAgent:
         self.traceback_frame_limit = HARNESS_SETTINGS.default_traceback_frames
         if self.traceback_frame_limit is not None and self._observability is not None:
             self._observability.traceback_frame_limit = self.traceback_frame_limit
-            self._observability._base_context["traceback_frame_limit"] = self.traceback_frame_limit
 
         self._guard_runner = GuardRunner(self.guards)
         self._error_handler = ErrorHandler(self.error_handling)
@@ -254,7 +253,6 @@ class ManagedAgent:
         self._observability = observability
         if self.traceback_frame_limit is not None:
             observability.traceback_frame_limit = self.traceback_frame_limit
-            observability._base_context["traceback_frame_limit"] = self.traceback_frame_limit
         if getattr(self, "tools", None) is not None:
             self.tools._observability = observability
         if getattr(self, "guards", None) is not None:
@@ -544,7 +542,6 @@ class ManagedAgent:
         # applied when observability is provided (or lazily created).
         if self._observability is not None:
             self._observability.traceback_frame_limit = limit
-            self._observability._base_context["traceback_frame_limit"] = limit
         return self
 
     def with_minimal_traceback(self) -> "ManagedAgent":
@@ -871,10 +868,13 @@ class ManagedAgent:
 
         context = {
             "session_id": session_id,
-            "prompt_id": prompt_id,
             "model": self.model,
             "model_settings": self._model_settings,
         }
+        # Only carry prompt_id when it's meaningful; the default adds noise to
+        # every log record without aiding debugging.
+        if prompt_id != "default":
+            context["prompt_id"] = prompt_id
 
         # Merge agent-level enrichment providers
         for provider in self._enrichment:
@@ -945,9 +945,8 @@ class ManagedAgent:
 
                 serialized_messages = filter_thinking_parts(new_messages)
 
-                # Log token usage (per-request logging, includes cumulative across retries)
-                cumulative = getattr(result, "cumulative_usage", None)
-                self.observability.log_token_usage(result, {**context, "cumulative_usage": cumulative})
+                # Log token usage (per-request logging)
+                self.observability.log_token_usage(result, context)
                 token_usage_logged = True
                 self._warn_if_provider_ignored_max_tokens(result, context)
 
@@ -1056,15 +1055,15 @@ class ManagedAgent:
             # Log token usage even on failure (if result was partially produced)
             if not token_usage_logged:
                 if "result" in locals() and result is not None:
-                    cumulative = getattr(result, "cumulative_usage", None)
-                    self.observability.log_token_usage(result, {**context, "cumulative_usage": cumulative})
+                    self.observability.log_token_usage(result, context)
                 else:
-                    # Log cumulative usage from exception if available
+                    # No result object: log the accumulated usage captured on the
+                    # exception, as token_usage (not the duplicate cumulative field).
                     cumulative = getattr(e, "_cumulative_usage", None)
                     if cumulative:
                         self.observability.log_info(
                             "token_usage",
-                            cumulative_usage=cumulative,
+                            token_usage=cumulative,
                             phase="error",
                             **context,
                         )
@@ -1153,10 +1152,13 @@ class ManagedAgent:
 
         context = {
             "session_id": session_id,
-            "prompt_id": prompt_id,
             "model": self.model,
             "model_settings": self._model_settings,
         }
+        # Only carry prompt_id when it's meaningful; the default adds noise to
+        # every log record without aiding debugging.
+        if prompt_id != "default":
+            context["prompt_id"] = prompt_id
 
         # Merge enrichment
         for provider in self._enrichment:
@@ -1204,7 +1206,7 @@ class ManagedAgent:
 
                     # Log token usage after stream completes
                     duration = time.time() - start_time
-                    self.observability.log_token_usage(result, {**context, "cumulative_usage": None})
+                    self.observability.log_token_usage(result, context)
                     self._warn_if_provider_ignored_max_tokens(result, context)
 
                     # Capture reasoning traces if enabled

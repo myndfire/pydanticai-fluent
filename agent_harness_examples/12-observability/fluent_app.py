@@ -68,7 +68,7 @@ Usage:
         Log in with the seeded admin user from .env
         (LANGFUSE_INIT_USER_EMAIL / LANGFUSE_INIT_USER_PASSWORD).
       - Elasticsearch:    http://localhost:9200
-        curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=body.text:filter_error'
+        curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=event_name:filter_error'
       - Kibana:           http://localhost:5601
         Discover -> data view "logs-generic.otel-default*".
         Because the harness owns the run span (create_spans=True), every
@@ -541,9 +541,10 @@ async def run_scenario(agent: ManagedAgent, observability, session_id: str, prom
         1. Creates an InMemoryProvider for conversation history
         2. Loads any existing history for the session
         3. Runs the agent inside a scenario span (so logs share the run's trace)
-        4. Logs the result, and on failure emits an enriched ``scenario_failed``
-           record (session, prompt, output, error context, stack trace) plus an
-           ``agent_errors_total`` metric and a Langfuse trace link
+        4. Emits ``scenario_completed`` on success (via the enclosing span) and an
+           enriched ``scenario_failed`` record on failure (session, prompt, output,
+           error context, stack trace) plus an ``agent_errors_total`` metric and a
+           Langfuse trace link
     """
     memory = InMemoryProvider()
     history = await MessageHistory().load(session_id, memory)
@@ -551,13 +552,8 @@ async def run_scenario(agent: ManagedAgent, observability, session_id: str, prom
     async with observability.observe("scenario", session_id=session_id, prompt=prompt):
         result = await agent.run(prompt, history, session_id, save_to=[memory])
 
-        observability.info(
-            "scenario_complete",
-            session_id=session_id,
-            output=result.output,
-            success=result.success,
-        )
-
+        # The enclosing observe() emits ``scenario_completed`` (with duration),
+        # so there is no separate ``scenario_complete`` record here.
         if not result.success:
             ec = result.error_context
             observability.error(

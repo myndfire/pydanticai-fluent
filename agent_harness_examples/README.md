@@ -105,7 +105,7 @@ Dashboards are logs-based (trace analytics live in Langfuse):
 - **Agent Harness — Errors**: `http://localhost:5601/app/dashboards#/view/errors-exceptions-dashboard` (ERROR trend, top messages, exception types, raise sites, recent errors with `langfuse_trace_url`).
 - **Agent Harness — Debug Logs**: `http://localhost:5601/app/dashboards#/view/log-levels-dashboard`.
 
-The same script adds a URL field format on the logs data view so `trace_id` renders as a **"View in Langfuse"** link (built from `LANGFUSE_UI_URL` + `LANGFUSE_PROJECT_ID` in `.env`). In Discover, widen the time range and filter `severity_text: "ERROR"` (`body.text` is analyzed, so search `body.text: filter_error`, not `body.text: error`). See **[`OBSERVABILITY.md §8`](../OBSERVABILITY.md#8-kibana-optional)** for the full dashboard list and the data-stream `-*` vs `*` gotcha.
+The same script adds a URL field format on the logs data view so `trace_id` renders as a **"View in Langfuse"** link (built from `LANGFUSE_UI_URL` + `LANGFUSE_PROJECT_ID` in `.env`). In Discover, widen the time range and filter `severity_text: "ERROR"` or `event_name: (retry_attempt or filter_error or agent_run_failed)`. See **[`OBSERVABILITY.md §8`](../OBSERVABILITY.md#8-kibana-optional)** for the full dashboard list and the data-stream `-*` vs `*` gotcha.
 
 ---
 

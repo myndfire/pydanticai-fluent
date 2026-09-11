@@ -66,10 +66,36 @@ uv run python 12-observability/fluent_app.py
 Inspect the results:
 
 - **Langfuse**: http://localhost:3000 (seeded admin user from `.env`).
-- **Elasticsearch**: `curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=body.text:filter_error'`.
+- **Elasticsearch**: `curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=event_name:filter_error'`.
 - **Kibana**: http://localhost:5601 → Discover → data view `logs-generic.otel-default*`; click **View in Langfuse** on a record's `trace_id`.
 
 Requires `LANGFUSE_PROJECT_ID` and `LANGFUSE_UI_URL` in `.env` (see [Configuration](#configuration)); `LANGFUSE_HOST` is the in-Docker hostname and is not browser-reachable.
+
+#### Elasticsearch log schema
+
+Log records are designed to be queried, not just read. The OTel collector
+forwards them to the `logs-generic.otel-default*` data stream with:
+
+- **`event_name`** — the log event (e.g. `agent_run_completed`, `token_usage`,
+  `retry_attempt`, `filter_error`). Aggregatable/clickable in Kibana.
+- **Flattened structured attributes** — nested values are expanded into dotted,
+  typed fields so they aggregate in Kibana Lens:
+  - `attributes.token_usage.total_tokens` / `.input_tokens` / `.output_tokens` / `.reasoning_tokens`
+  - `attributes.performance.duration_seconds`
+  - `attributes.model_settings.max_tokens`
+  - `attributes.tool.name`
+  - `attributes.error.type` / `.message`
+- **Resource attributes** (set once per process, not repeated per record):
+  `resource.attributes.service.name`, `resource.attributes.deployment.environment`,
+  `resource.attributes.host.name`.
+- **Correlation**: `trace_id` / `span_id` (rendered as a *View in Langfuse* link
+  by `kibana/provision-dashboards.sh`).
+
+To keep the stream high-signal, the collector (`otel-collector-config.yaml`,
+`filter/drop_noise`) drops DEBUG records, lifecycle `*_started` markers, and
+`retry_wait` backoff events before they reach Elasticsearch. The completion
+record, `retry_attempt` (with the error), and traces carry that information
+instead. These events still appear on the console when running locally.
 
 ### 01_logging.py
 
