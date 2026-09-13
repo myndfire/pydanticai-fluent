@@ -173,6 +173,8 @@ class OTELTracer:
         self,
         service_name: str,
         otlp_endpoint: str = "localhost:4317",
+        headers: dict[str, str] | None = None,
+        runtime: Any = None,
         sample_rate: float = 1.0,
         create_spans: bool = False,
         record_failures: bool = True,
@@ -212,6 +214,8 @@ class OTELTracer:
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
+        self.headers = headers or {}
+        self.runtime = runtime
         self.sample_rate = sample_rate
         self.create_spans = create_spans
         self.record_failures = record_failures
@@ -272,7 +276,10 @@ class OTELTracer:
             if not isinstance(existing_provider, ProxyTracerProvider):
                 # Reuse existing provider, just add our exporter
                 otlp_exporter = OTLPSpanExporter(
-                    endpoint=self.otlp_endpoint, insecure=True, timeout=5
+                    endpoint=self.otlp_endpoint,
+                    headers=self.headers or None,
+                    insecure=True,
+                    timeout=5,
                 )
                 processor = BatchSpanProcessor(
                     otlp_exporter,
@@ -300,17 +307,20 @@ class OTELTracer:
             # No existing provider — create one
             from ._otel import build_resource, register_atexit
 
-            resource = build_resource(
+            resource = self.runtime.resource if self.runtime else build_resource(
                 self.service_name,
                 telemetry_level=self.telemetry_level,
-                extra={"service.version": "0.1.0"},
+                extra={"service.version": os.getenv("SERVICE_VERSION", "0.1.0")},
             )
 
             sampler = TraceIdRatioBased(self.sample_rate)
             provider = TracerProvider(resource=resource, sampler=sampler)
 
             otlp_exporter = OTLPSpanExporter(
-                endpoint=self.otlp_endpoint, insecure=True, timeout=5
+                endpoint=self.otlp_endpoint,
+                headers=self.headers or None,
+                insecure=True,
+                timeout=5,
             )
             processor = BatchSpanProcessor(
                 otlp_exporter,
@@ -333,12 +343,15 @@ class OTELTracer:
 
             self._enable_pydanticai_instrumentation()
             print(f"✅ OTEL tracing initialized: {self.otlp_endpoint}")
-            register_atexit(
-                provider,
-                flush_on_exit=self._flush_on_exit,
-                shutdown_on_exit=self._shutdown_on_exit,
-                is_shut_down=lambda: self._shut_down,
-            )
+            if self.runtime:
+                self.runtime.register(provider)
+            else:
+                register_atexit(
+                    provider,
+                    flush_on_exit=self._flush_on_exit,
+                    shutdown_on_exit=self._shutdown_on_exit,
+                    is_shut_down=lambda: self._shut_down,
+                )
 
         except Exception as e:
             print(f"⚠️  Failed to setup OTEL tracing: {str(e)}")
@@ -531,5 +544,4 @@ class OTELTracer:
 
     def error(self, message: str, **context):
         pass
-
 

@@ -9,7 +9,7 @@ ManagedAgent  (OTel only: OTELLogger + OTELTracer + OTELMetrics + pydantic-ai na
    │  structlog call sites are bridged to OTel
    │  local console rendered by the OTel Console{Log,Span,Metric}Exporter
    ▼ OTLP :4317
-otel-collector ──▶ Elasticsearch / Kibana   (logs + metrics)
+otel-collector ──▶ Elasticsearch / Kibana   (logs + metrics + traces)
                ──▶ Langfuse                (traces)
                ──▶ OpenObserve             (logs + metrics + traces)
 ```
@@ -22,11 +22,27 @@ metrics, traces, and memory:
 | Level | Logs | Metrics | Traces | Memory |
 |---|---|---|---|---|
 | `minimal` | `run_summary` + WARN/ERROR only | not exported | native spans, no prompt content | not enriched |
-| `standard` (library default) | + `agent_turn` per model iteration | native + `gen_ai.client.operation.duration` | + harness run span; no prompt content | `cost`/`latency`/`turn_count` populated |
+| `standard` (library default) | + `agent_turn` per model iteration | native + `gen_ai.client.operation.duration` | native PydanticAI spans; no prompt content | `cost`/`latency`/`turn_count` populated |
 | `verbose` (dev default in `.env`) | + retry attempts, `retry_wait`, lifecycle `*_started` | + retry/attempt metrics | + prompt/completion content (native spans), TTFT | full |
 
 `HARNESS_TELEMETRY_CONSOLE=true` renders records to the local console through the
 OTel console exporters.
+
+## Error drill-down
+
+Start in either the Elasticsearch/Kibana or OpenObserve Errors view. Filter on
+`error.handled:false`, open the failed record, and follow its `trace_id` to the
+failed span. Use `error.id` to find every log record for the same logical
+failure and `run.id` to inspect the complete agent execution. The collector
+exports the same fields, event names, and correlation IDs to both systems.
+
+Investigation order:
+
+1. Read `error.type`, `error.message`, and `error.source`.
+2. Check `error.handled`, `error.retryable`, and attempt fields.
+3. Open the linked trace and select the failed span.
+4. Query `error.id` for the complete failure timeline.
+5. Use `code.file.path`, `code.function`, and `code.line.number` to locate the source.
 
 ## Event model
 
@@ -104,6 +120,7 @@ Shared UI login for Langfuse and OpenObserve: **`admin@example.com` / `Admin1234
   ```bash
   curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=event_name:run_summary'
   curl -s 'http://localhost:9200/logs-generic.otel-default*/_search?q=event_name:agent_turn'
+  curl -s 'http://localhost:9200/traces-generic.otel-default*/_search?q=attributes.error.id:*'
   ```
 
 ## Configuration

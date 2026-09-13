@@ -1,6 +1,6 @@
 # OBSERVABILITY.md — Langfuse, Elasticsearch, Kibana & OpenObserve
 
-How to run the observability stack and inspect agent telemetry in **Langfuse** (traces), **Elasticsearch + Kibana** (structured logs/metrics), and **OpenObserve** (unified logs/metrics/traces browser with provisioned dashboards). Kibana renders a click-through link to the Langfuse trace where the event happened.
+How to run the observability stack and inspect agent telemetry in **Elasticsearch + Kibana** and **OpenObserve**. Both receive the same structured logs, metrics, and traces from the collector; **Langfuse** remains an additional trace-oriented UI.
 
 > The Jaeger / Prometheus / Grafana sections at the end describe the **legacy**
 > stack in `docker-compose.yml.old`; the default `docker-compose.yml` ships
@@ -11,7 +11,7 @@ How to run the observability stack and inspect agent telemetry in **Langfuse** (
 
 The OTEL backends (`OTELLogger`, `OTELTracer`, `OTELMetrics`) export over OTLP gRPC to the OpenTelemetry Collector, which routes each signal to a backend:
 
-> **OTLP is the de-facto transport for all telemetry.** Every OTEL backend ships logs, metrics, and traces to the OTel Collector at `localhost:4317` (gRPC) / `localhost:4318` (HTTP).
+> **OTLP is the transport for all telemetry.** Every signal is sent to the OTel Collector at `localhost:4317` (gRPC) / `localhost:4318` (HTTP), which fans out the same data to Elasticsearch and OpenObserve.
 
 ```
 agent_harness  --OTLP gRPC:4317-->  otel-collector  --otlphttp-->  Langfuse (traces)
@@ -37,7 +37,7 @@ This starts Langfuse (plus its Postgres/ClickHouse/Redis/MinIO dependencies), th
 | Service | Port | Role |
 |---|---|---|
 | `langfuse-web` | `3000` | Trace backend + UI (shared UI login, see below) |
-| `elasticsearch` | `9200` | Logs + metrics backend — native OTLP/HTTP intake (`/_otlp`) → `logs-generic.otel-default`, `metrics-generic.otel-default` |
+| `elasticsearch` | `9200` | Logs, metrics, and traces backend — native OTLP/HTTP intake (`/_otlp`) |
 | `kibana` | `5601` | Log/metrics browser; renders `trace_id` as a "View in Langfuse" link (no login) |
 | `openobserve` | `5080`, `5081` | Unified logs + metrics + traces UI (OTLP/HTTP + gRPC; shared UI login) |
 | `otel-collector` | `4317`, `4318` | Single OTLP receiver; traces → Langfuse + OpenObserve, logs/metrics → Elasticsearch + OpenObserve |

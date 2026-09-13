@@ -64,6 +64,8 @@ from .observability import (
     TelemetryGranularity,
     TELEMETRY_LEVELS,
 )
+from .telemetry_runtime import TelemetryRuntime
+from .telemetry_schema import TelemetryFields, TelemetryEvents
 from .tools import ToolRegistry
 from .guards import (
     GuardConfig,
@@ -170,6 +172,9 @@ __all__ = [
     "HARNESS_SETTINGS",
     "TelemetryGranularity",
     "TELEMETRY_LEVELS",
+    "TelemetryRuntime",
+    "TelemetryFields",
+    "TelemetryEvents",
     # Tools
     "ToolRegistry",
     # Guards

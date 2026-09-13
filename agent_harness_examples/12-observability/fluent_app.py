@@ -100,9 +100,6 @@ from agent_harness.prompts import StaticPrompts
 from agent_harness.guards import ContentFilterConfig, TokenLimitsConfig
 from agent_harness.evaluators import CustomEvaluator
 from agent_harness.observability import Observability
-from agent_harness.logging import OTELLogger
-from agent_harness.tracing import OTELTracer
-from agent_harness.metrics import OTELMetrics
 from agent_harness.errorhandling import ErrorHandlingConfig
 
 load_dotenv()
@@ -472,10 +469,12 @@ def build_agent(
 
     # Configure observability: OTel only (console rendered by the OTel exporter)
     if observability is None:
-        observability = Observability(
-            loggers=[OTELLogger(service_name=OBSERVABILITY_SERVICE_NAME, otlp_endpoint=OTEL_ENDPOINT, console=True)],
-            tracers=[OTELTracer(service_name=OBSERVABILITY_SERVICE_NAME, otlp_endpoint=OTEL_ENDPOINT, sample_rate=1.0, create_spans=True)],
-            metrics_list=[OTELMetrics(service_name=OBSERVABILITY_SERVICE_NAME, otlp_endpoint=OTEL_ENDPOINT)],
+        observability = Observability.configure(
+            service_name=OBSERVABILITY_SERVICE_NAME,
+            endpoint=OTEL_ENDPOINT,
+            sample_rate=1.0,
+            create_spans=True,
+            console=True,
         )
 
     # Content filter: masks inappropriate words in agent output
@@ -621,10 +620,7 @@ async def main():
     # Allow OTel batch exporters time to flush remaining data
     await asyncio.sleep(5)
 
-    # Gracefully close any logger connections
-    for lg in getattr(observability, "_loggers", []):
-        if hasattr(lg, "close"):
-            lg.close()
+    await observability.shutdown()
 
     log.info("all_scenarios_complete")
     log.info("view_traces_in_langfuse", url="http://localhost:3000")

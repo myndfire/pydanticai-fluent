@@ -51,7 +51,9 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp_http/langfuse, otlp_http/openobserve]
+      # Elasticsearch and OpenObserve receive complete mirrors. Langfuse is an
+      # additional trace-oriented destination.
+      exporters: [otlp_http/elasticsearch, otlp_http/openobserve, otlp_http/langfuse]
     metrics:
       receivers: [otlp]
       processors: [filter/drop_minimal_metrics, batch]

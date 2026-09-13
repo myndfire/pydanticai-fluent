@@ -10,6 +10,26 @@ A fluent, builder-style API for configuring [pydantic-ai](https://github.com/pyd
 - **Observability** — unified facade combining logging (structlog, file, **Elasticsearch**, Logfire, OTLP), tracing (OTLP → **Langfuse**, Logfire, InMemory), and metrics (OTLP, Logfire, InMemory). The shipped dev stack routes logs → Elasticsearch, traces → Langfuse, and browses them in Kibana via the OTel Collector.
 - **Guards** — retry logic with exponential backoff, fallback models, callbacks; circuit breaker; guardrails for content filtering, PII detection, and cost limits.
 - **Error handling** — custom error handlers with source classification (LLM, tool, memory, unknown); pipeline error recovery.
+
+### Production Observability
+
+Configure one shared OTLP runtime for logs, metrics, and traces:
+
+```python
+observability = Observability.configure(
+    service_name="orders-agent",
+    endpoint="http://otel-collector:4317",
+    headers={"authorization": "Bearer ..."},
+)
+
+async with observability:
+    agent = ManagedAgent().with_observability(observability)
+    result = await agent.run(prompt, history, session_id)
+```
+
+The collector fans out identical telemetry to Elasticsearch and OpenObserve.
+Failures share `error.id`, `run.id`, `trace_id`, and `span_id`, making it
+possible to start in either error dashboard and follow the same drill-down.
 - **Orchestration** — multi-agent patterns: tool-driven delegation, sequential pipelines, classify-and-route, parallel fan-out/fan-in.
 - **Tools** — plain-function and context-aware tool registration with automatic `RunContext` detection.
 - **Prompts** — static strings or Jinja2 templates from MongoDB.

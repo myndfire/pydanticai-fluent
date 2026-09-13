@@ -29,6 +29,13 @@ from .logging import Logger, OTELLogger, app_code_location, get_harness_call_sit
 from .errorhandling import ErrorContext
 from .tracing import Tracer, NoOpTracer, OTELTracer
 from .metrics import MetricsCollector, NoOpMetrics, MetricNames, OTELMetrics
+from .telemetry_runtime import TelemetryRuntime
+from .telemetry_schema import (
+    TelemetryFields,
+    bounded_metric_attributes,
+    execution_context,
+    new_error_id,
+)
 
 
 from pydantic import Field
@@ -208,6 +215,17 @@ def build_error_attributes(
         attrs["exception.stacktrace"] = stack_trace
     attrs["error.source"] = source or "unknown"
     attrs["error.handled"] = handled
+    error_id = getattr(ctx, "error_id", None) if ctx is not None else None
+    if exception is not None:
+        error_id = error_id or getattr(exception, "_telemetry_error_id", None)
+        if error_id is None:
+            error_id = new_error_id()
+            try:
+                setattr(exception, "_telemetry_error_id", error_id)
+            except Exception:
+                pass
+    if error_id:
+        attrs[TelemetryFields.ERROR_ID] = error_id
 
     location: dict = {}
     if exception is not None:
@@ -251,9 +269,15 @@ def _error_attrs(
             handled=bool(context.get("error_handled", False)),
         )
     callsite = context.get("_error_callsite") or get_harness_call_site() or None
-    return build_error_attributes(
+    attrs = build_error_attributes(
         ctx, exception=exception, callsite=callsite, limit=limit
     )
+    if TelemetryFields.ERROR_ID not in attrs:
+        attrs[TelemetryFields.ERROR_ID] = context.get(
+            TelemetryFields.ERROR_ID,
+            context.get("error_id", new_error_id()),
+        )
+    return attrs
 
 
 def _error_body(event_name: str, attrs: dict) -> str:
@@ -423,6 +447,15 @@ class Observability:
         )
     """
 
+    @classmethod
+    def configure(cls, service_name: str = "agent", **kwargs) -> "Observability":
+        """Create the canonical OTLP-backed observability stack."""
+        if "endpoint" in kwargs and "otlp_endpoint" not in kwargs:
+            kwargs["otlp_endpoint"] = kwargs.pop("endpoint")
+        return ObservabilityBuilder(service_name=service_name).with_otel_observability(
+            **kwargs
+        ).build()
+
     def __init__(
         self,
         logger: Optional[Logger] = None,
@@ -457,6 +490,7 @@ class Observability:
             self._loggers: list[Logger] = list(builder._loggers)
             self._tracers: list[Tracer] = list(builder._tracers)
             self._metrics: list[MetricsCollector] = list(builder._metrics)
+            self._runtime = builder._runtime
             if granularity is None:
                 granularity = builder.granularity
         else:
@@ -471,9 +505,17 @@ class Observability:
             self._metrics = metrics_list or []
             if metrics:
                 self._metrics.append(metrics)
+            self._runtime = None
 
         # Telemetry granularity drives what is emitted across logs/metrics/traces.
         self.granularity = TelemetryGranularity(granularity)
+        if self._runtime is None:
+            self._runtime = TelemetryRuntime(
+                self.service_name,
+                environment=HARNESS_SETTINGS.app_env,
+                host=socket.gethostname(),
+                telemetry_level=self.granularity.level,
+            )
 
         # Priority: passed arg > env var > None (full)
         self.traceback_frame_limit = (
@@ -500,6 +542,7 @@ class Observability:
                     host=socket.gethostname(),
                     console=HARNESS_SETTINGS.telemetry_console,
                     telemetry_level=self.granularity.level,
+                    runtime=self._runtime,
                 )
             ]
         if not self._tracers:
@@ -507,6 +550,7 @@ class Observability:
                 OTELTracer(
                     service_name=self.service_name,
                     telemetry_level=self.granularity.level,
+                    runtime=self._runtime,
                 )
             ]
         # Metrics are not exported at the minimal level (low-noise mode).
@@ -515,6 +559,7 @@ class Observability:
                 OTELMetrics(
                     service_name=self.service_name,
                     telemetry_level=self.granularity.level,
+                    runtime=self._runtime,
                 )
             ]
 
@@ -592,6 +637,8 @@ class Observability:
         """
         import structlog as _structlog
 
+        context = execution_context(context)
+        context.setdefault(TelemetryFields.OPERATION, operation)
         _structlog.contextvars.bind_contextvars(**context)
         start_time = datetime.now()
         try:
@@ -667,7 +714,9 @@ class Observability:
             else f"{operation}_total"
         )
         labels = {
-            k: str(v) for k, v in context.items() if k in ("model", "session_id")
+            k: str(v)
+            for k, v in execution_context(context).items()
+            if k in (TelemetryFields.MODEL, TelemetryFields.PROVIDER)
         }
         for m in self._metrics:
             m.counter(name, **labels)
@@ -680,7 +729,11 @@ class Observability:
             if operation == "agent_run"
             else f"{operation}_duration_seconds"
         )
-        labels = {k: str(v) for k, v in context.items() if k in ("model", "status")}
+        labels = {
+            k: str(v)
+            for k, v in execution_context(context).items()
+            if k in (TelemetryFields.MODEL, TelemetryFields.PROVIDER, TelemetryFields.STATUS)
+        }
         for m in self._metrics:
             m.histogram(name, duration, **labels)
 
@@ -738,17 +791,17 @@ class Observability:
             raise
 
     def log_debug(self, message: str, **context):
-        enriched = {**self._base_context, **context}
+        enriched = {**self._base_context, **execution_context(context)}
         for lg in self._loggers:
             lg.debug(message, **enriched)
 
     def log_info(self, message: str, **context):
-        enriched = {**self._base_context, **context}
+        enriched = {**self._base_context, **execution_context(context)}
         for lg in self._loggers:
             lg.info(message, **enriched)
 
     def log_warning(self, message: str, **context):
-        enriched = {**self._base_context, **context}
+        enriched = {**self._base_context, **execution_context(context)}
         for lg in self._loggers:
             lg.warning(message, **enriched)
 
@@ -904,6 +957,7 @@ class Observability:
     def record_metric(
         self, metric_type: str, name: str, value: Union[float, int], **labels
     ):
+        labels = bounded_metric_attributes(labels)
         for m in self._metrics:
             if metric_type == "counter":
                 m.counter(name, int(value), **labels)
@@ -913,6 +967,48 @@ class Observability:
                 m.histogram(name, float(value), **labels)
             elif metric_type == "summary":
                 m.summary(name, float(value), **labels)
+
+    def record_error(
+        self,
+        exception: BaseException,
+        *,
+        source: str = "unknown",
+        handled: bool = False,
+        **context,
+    ) -> dict:
+        """Record one correlated error across logs, spans, and metrics."""
+        if not getattr(exception, "_error_source", None):
+            exception._error_source = source
+        context = {
+            **context,
+            "error_source": source,
+            "error_handled": handled,
+        }
+        attrs = _error_attrs(exception, context, self.traceback_frame_limit)
+        self._set_span_error_attributes(attrs, exception)
+        self.log_error(_error_body("agent.error", attrs), exception=exception, **attrs)
+        self.record_metric(
+            "counter",
+            MetricNames.AGENT_ERRORS,
+            1,
+            operation=context.get("operation.name", "agent.run"),
+            **attrs,
+        )
+        return attrs
+
+    def flush(self) -> None:
+        """Flush all three signals through the shared runtime."""
+        self._runtime.flush()
+
+    async def shutdown(self) -> None:
+        """Flush and shut down all providers exactly once."""
+        self._runtime.shutdown()
+
+    async def __aenter__(self) -> "Observability":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.shutdown()
 
     def add_span_event(self, name: str, **attributes):
         for t in self._tracers:
@@ -942,6 +1038,7 @@ class ObservabilityBuilder:
         self._loggers: list[Logger] = []
         self._tracers: list[Tracer] = []
         self._metrics: list[MetricsCollector] = []
+        self._runtime: TelemetryRuntime | None = None
 
     def with_otel_observability(
         self,
@@ -955,6 +1052,8 @@ class ObservabilityBuilder:
         shutdown_on_exit: bool = True,
         granularity: Optional[str] = None,
         console: Optional[bool] = None,
+        environment: Optional[str] = None,
+        host: Optional[str] = None,
     ) -> "ObservabilityBuilder":
         """Add complete OpenTelemetry observability (logging + tracing + metrics).
 
@@ -995,6 +1094,14 @@ class ObservabilityBuilder:
         resolved = TelemetryGranularity(self.granularity)
         if console is None:
             console = HARNESS_SETTINGS.telemetry_console
+        self._runtime = TelemetryRuntime(
+            self.service_name,
+            environment=environment or HARNESS_SETTINGS.app_env,
+            host=host or socket.gethostname(),
+            telemetry_level=resolved.level,
+            flush_on_exit=flush_on_exit,
+            shutdown_on_exit=shutdown_on_exit,
+        )
 
         self._loggers.append(
             OTELLogger(
@@ -1006,6 +1113,8 @@ class ObservabilityBuilder:
                 host=socket.gethostname(),
                 console=console,
                 telemetry_level=resolved.level,
+                headers=headers,
+                runtime=self._runtime,
             )
         )
         self._tracers.append(
@@ -1020,6 +1129,8 @@ class ObservabilityBuilder:
                 shutdown_on_exit=shutdown_on_exit,
                 telemetry_level=resolved.level,
                 console=console,
+                headers=headers,
+                runtime=self._runtime,
             )
         )
         self._metrics.append(
@@ -1030,6 +1141,8 @@ class ObservabilityBuilder:
                 shutdown_on_exit=shutdown_on_exit,
                 telemetry_level=resolved.level,
                 console=console,
+                headers=headers,
+                runtime=self._runtime,
             )
         )
         return self

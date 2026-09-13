@@ -325,6 +325,8 @@ class OTELLogger:
         self,
         service_name: str = "agent",
         otlp_endpoint: str = "localhost:4317",
+        headers: dict[str, str] | None = None,
+        runtime: Any = None,
         flush_on_exit: bool = True,
         shutdown_on_exit: bool = True,
         environment: str = "development",
@@ -353,6 +355,8 @@ class OTELLogger:
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
+        self.headers = headers or {}
+        self.runtime = runtime
         self.environment = environment
         self.host = host
         self.console = console
@@ -382,14 +386,19 @@ class OTELLogger:
 
             from ._otel import build_resource, register_atexit
 
-            resource = build_resource(
+            resource = self.runtime.resource if self.runtime else build_resource(
                 self.service_name,
                 environment=self.environment,
                 host=self.host,
                 telemetry_level=self.telemetry_level,
+                extra={"service.version": os.getenv("SERVICE_VERSION", "0.1.0")},
             )
 
-            exporter = OTLPLogExporter(endpoint=self.otlp_endpoint, insecure=True)
+            exporter = OTLPLogExporter(
+                endpoint=self.otlp_endpoint,
+                headers=self.headers or None,
+                insecure=True,
+            )
             self._provider = LoggerProvider(resource=resource)
             self._provider.add_log_record_processor(
                 BatchLogRecordProcessor(exporter)
@@ -408,12 +417,15 @@ class OTELLogger:
 
             print(f"✅ OTEL logging initialized: {self.otlp_endpoint}")
 
-            register_atexit(
-                self._provider,
-                flush_on_exit=self._flush_on_exit,
-                shutdown_on_exit=self._shutdown_on_exit,
-                is_shut_down=lambda: self._shut_down,
-            )
+            if self.runtime:
+                self.runtime.register(self._provider)
+            else:
+                register_atexit(
+                    self._provider,
+                    flush_on_exit=self._flush_on_exit,
+                    shutdown_on_exit=self._shutdown_on_exit,
+                    is_shut_down=lambda: self._shut_down,
+                )
 
         except Exception as e:
             print(f"⚠️  Failed to setup OTEL logging: {str(e)}")

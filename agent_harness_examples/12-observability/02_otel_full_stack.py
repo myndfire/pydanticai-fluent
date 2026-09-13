@@ -69,7 +69,7 @@ import structlog
 
 from pydantic_ai import RunContext
 
-from agent_harness.observability import Observability, ObservabilityBuilder
+from agent_harness.observability import Observability
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
@@ -159,9 +159,10 @@ async def main():
         log.debug("docker_command", command="docker compose -f docker-compose.yml up -d elasticsearch otel-collector grafana jaeger prometheus")
         return
 
-    obs = Observability(
-        builder=ObservabilityBuilder(service_name=SERVICE_NAME)
-        .with_otel_observability(otlp_endpoint=OTEL_ENDPOINT, sample_rate=1.0)
+    obs = Observability.configure(
+        service_name=SERVICE_NAME,
+        endpoint=OTEL_ENDPOINT,
+        sample_rate=1.0,
     )
 
     log.debug("loggers", loggers=[type(lg).__name__ for lg in obs._loggers])
@@ -215,9 +216,7 @@ async def main():
 
     log.debug("section", title="Flushing OTLP batch exporters")
     await asyncio.sleep(7)
-    for lg in obs._loggers:
-        if hasattr(lg, "close"):
-            lg.close()
+    await obs.shutdown()
     log.debug("flushed")
 
     log.debug("separator", char="=", count=60)

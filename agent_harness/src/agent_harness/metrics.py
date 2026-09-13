@@ -131,6 +131,8 @@ class OTELMetrics:
         self,
         service_name: str = "agent",
         otlp_endpoint: str = "localhost:4317",
+        headers: dict[str, str] | None = None,
+        runtime: Any = None,
         flush_on_exit: bool = True,
         shutdown_on_exit: bool = True,
         telemetry_level: str = "standard",
@@ -154,6 +156,8 @@ class OTELMetrics:
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
+        self.headers = headers or {}
+        self.runtime = runtime
         self.telemetry_level = telemetry_level
         self.console = console
         self._flush_on_exit = flush_on_exit or shutdown_on_exit
@@ -176,11 +180,28 @@ class OTELMetrics:
 
             from ._otel import build_resource, register_atexit
 
-            resource = build_resource(
-                self.service_name, telemetry_level=self.telemetry_level
+            existing = metrics.get_meter_provider()
+            if not _is_proxy_provider(existing):
+                # Never construct an unused provider/exporter when another
+                # application already owns the process-wide meter provider.
+                self._meter = metrics.get_meter(self.service_name)
+                self._provider = existing
+                self._counters = {}
+                self._gauges = {}
+                self._histograms = {}
+                return
+
+            resource = self.runtime.resource if self.runtime else build_resource(
+                self.service_name,
+                telemetry_level=self.telemetry_level,
+                extra={"service.version": "0.1.0"},
             )
 
-            exporter = OTLPMetricExporter(endpoint=self.otlp_endpoint, insecure=True)
+            exporter = OTLPMetricExporter(
+                endpoint=self.otlp_endpoint,
+                headers=self.headers or None,
+                insecure=True,
+            )
             readers = [
                 PeriodicExportingMetricReader(
                     exporter, export_interval_millis=5000
@@ -201,28 +222,20 @@ class OTELMetrics:
             # OpenTelemetry allows only one global MeterProvider per process.
             # Reuse an already-registered provider instead of overriding it
             # (which OTEL rejects with "Overriding of current MeterProvider").
-            existing = metrics.get_meter_provider()
             if _is_proxy_provider(existing):
                 metrics.set_meter_provider(provider)
                 self._meter = metrics.get_meter(self.service_name)
                 self._provider = provider
                 print(f"✅ OTLP metrics initialized: {self.otlp_endpoint}")
-                register_atexit(
-                    provider,
-                    flush_on_exit=self._flush_on_exit,
-                    shutdown_on_exit=self._shutdown_on_exit,
-                    is_shut_down=lambda: self._shut_down,
-                )
-            else:
-                # A provider is already registered. We cannot retrofit our OTLP
-                # reader onto it, so attach to the existing one. Don't register
-                # atexit — the original owner already did.
-                self._meter = metrics.get_meter(self.service_name)
-                self._provider = existing
-                print(
-                    f"✅ OTLP metrics attached to existing MeterProvider (reuse): "
-                    f"{self.otlp_endpoint}"
-                )
+                if self.runtime:
+                    self.runtime.register(provider)
+                else:
+                    register_atexit(
+                        provider,
+                        flush_on_exit=self._flush_on_exit,
+                        shutdown_on_exit=self._shutdown_on_exit,
+                        is_shut_down=lambda: self._shut_down,
+                    )
 
             self._counters = {}
             self._gauges = {}

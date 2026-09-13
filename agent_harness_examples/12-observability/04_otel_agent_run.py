@@ -53,7 +53,7 @@ import structlog
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
-from agent_harness.observability import Observability, ObservabilityBuilder
+from agent_harness.observability import Observability
 
 load_dotenv()
 
@@ -91,9 +91,9 @@ async def main():
         log.debug("docker_command", command="docker compose -f docker-compose.yml up -d otel-collector")
         return
 
-    obs = Observability(
-        builder=ObservabilityBuilder(service_name=SERVICE_NAME)
-        .with_otel_observability(otlp_endpoint=OTEL_COLLECTOR)
+    obs = Observability.configure(
+        service_name=SERVICE_NAME,
+        endpoint=OTEL_COLLECTOR,
     )
 
     agent = (
@@ -130,6 +130,7 @@ async def main():
     log.debug("service_filter", service_name=SERVICE_NAME)
     log.debug("info", detail="Each agent.run() + tool call creates spans automatically.")
     log.debug("separator", char="=", count=60)
+    await obs.shutdown()
 
 
 if __name__ == "__main__":

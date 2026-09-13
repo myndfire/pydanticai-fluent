@@ -46,7 +46,7 @@ import os
 from dotenv import load_dotenv
 import structlog
 
-from agent_harness.observability import Observability, ObservabilityBuilder
+from agent_harness.observability import Observability
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
@@ -87,13 +87,11 @@ async def main():
         log.debug("docker_command", command="docker compose -f docker-compose.yml up -d otel-collector jaeger")
         return
 
-    obs = Observability(
-        builder=ObservabilityBuilder(service_name=SERVICE_NAME)
-        .with_otel_observability(
-            otlp_endpoint=OTEL_COLLECTOR,
-            sample_rate=1.0,
-            create_spans=True,
-        )
+    obs = Observability.configure(
+        service_name=SERVICE_NAME,
+        endpoint=OTEL_COLLECTOR,
+        sample_rate=1.0,
+        create_spans=True,
     )
 
     async with obs.observe("manual_span", op="test", value=42):
@@ -124,6 +122,7 @@ async def main():
     log.debug("view_traces", url="http://localhost:16686")
     log.debug("service_filter", service_name=SERVICE_NAME)
     log.debug("separator", char="=", count=60)
+    await obs.shutdown()
 
 
 if __name__ == "__main__":
