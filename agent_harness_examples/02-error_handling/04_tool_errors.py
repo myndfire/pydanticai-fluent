@@ -35,6 +35,7 @@ Setup
 """
 
 import asyncio
+import os
 
 import structlog
 
@@ -43,8 +44,10 @@ from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.tools import ToolRegistry
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
+from agent_harness.guards import AgentRetryConfig
 
 log = structlog.get_logger()
+MODEL_NAME = os.getenv("ERROR_HANDLING_MODEL_NAME", "gpt-oss:20b")
 
 
 # ── Tool that raises ─────────────────────────────────────────────────
@@ -101,7 +104,9 @@ async def main():
 
     agent = (
         ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name="gpt-oss:20b"))
+        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+        .with_agent_retries(AgentRetryConfig().with_max_retries(0))
+        .with_workflow_context("error-handling", "tool-errors")
         .with_tools(tools)
         .with_error_handling(config)
     )

@@ -23,7 +23,13 @@ class TelemetryFields:
     OPERATION = "operation.name"
     MODEL = "model.name"
     PROVIDER = "model.provider"
+    REQUESTED_MODEL = "model.requested.name"
+    REQUESTED_PROVIDER = "model.requested.provider"
+    RESPONSE_MODEL = "model.response.name"
+    RESPONSE_PROVIDER = "model.response.provider"
     COMPONENT = "component"
+    WORKFLOW = "workflow.name"
+    WORKFLOW_STEP = "workflow.step"
     STATUS = "status"
 
 

@@ -77,10 +77,14 @@ def _ctx_model_name(ctx: Any) -> Any:
 
 
 def _run_fields(ctx: Any) -> dict[str, Any]:
+    model = _ctx_model_name(ctx)
+    provider = getattr(getattr(ctx, "model", None), "system", None)
     return {
         "agent_name": _agent_name(ctx),
         "run_id": getattr(ctx, "run_id", None),
-        "model": _ctx_model_name(ctx),
+        "model": model,
+        "model.requested.name": model,
+        "model.requested.provider": provider,
     }
 
 
@@ -152,6 +156,12 @@ def build_span_logging_capability(
                     status="error",
                     error_source="llm",
                     model=_ctx_model_name(ctx),
+                    **{
+                        "model.requested.name": _ctx_model_name(ctx),
+                        "model.requested.provider": getattr(
+                            getattr(ctx, "model", None), "system", None
+                        ),
+                    },
                     performance={"duration_seconds": round(time.perf_counter() - start, 4)},
                 )
             raise
@@ -164,6 +174,14 @@ def build_span_logging_capability(
                 component="model",
                 status="ok",
                 model=getattr(response, "model_name", None) or _ctx_model_name(ctx),
+                **{
+                    "model.requested.name": _ctx_model_name(ctx),
+                    "model.requested.provider": getattr(
+                        getattr(ctx, "model", None), "system", None
+                    ),
+                    "model.response.name": getattr(response, "model_name", None),
+                    "model.response.provider": getattr(response, "provider_name", None),
+                },
                 provider=getattr(response, "provider_name", None)
                 or getattr(getattr(ctx, "model", None), "system", None),
                 finish_reason=getattr(response, "finish_reason", None),

@@ -274,6 +274,10 @@ class _StructlogBridge:
                 for k, v in event_dict.items()
                 if k not in ("level", "timestamp")
             }
+            # ``message`` is a valid application field in structlog events,
+            # but it is reserved as the positional body in ``_emit``.
+            if "message" in context:
+                context["log.message"] = context.pop("message")
             active._emit(str(event), level, **context)
         return event_dict
 

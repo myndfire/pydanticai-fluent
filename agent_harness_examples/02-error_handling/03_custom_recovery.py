@@ -42,6 +42,7 @@ from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
+from agent_harness.guards import AgentRetryConfig
 
 log = structlog.get_logger()
 
@@ -121,6 +122,7 @@ async def main():
             provider="ollama",
             model_name="recovery-test-model-fail",
         ))
+        .with_workflow_context("error-handling", "per-source-recovery")
         .with_error_handling(config)
     )
 
@@ -146,6 +148,7 @@ async def main():
                 provider="ollama",
                 model_name=f"fail-{i}",
             ))
+            .with_workflow_context("error-handling", "multiple-failures")
             .with_error_handling(config)
         )
         history_i = await MessageHistory().load(f"recover-multi-{i}", memory)
@@ -171,6 +174,8 @@ async def main():
             provider="ollama",
             model_name="stack-trace-test-model",
         ))
+        .with_agent_retries(AgentRetryConfig().with_max_retries(0))
+        .with_workflow_context("error-handling", "stack-trace-capture")
         .with_error_handling(stack_config)
     )
 

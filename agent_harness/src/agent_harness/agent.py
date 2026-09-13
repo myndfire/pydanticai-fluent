@@ -261,6 +261,7 @@ class ManagedAgent:
         self.guards.observability = self._observability  # defer; .with_observability() propagates later
         self.error_handling = ErrorHandlingConfig()
         self._enrichment: list[LogEnrichmentProvider] = []
+        self._workflow_context: dict[str, str] = {}
         # Max innermost traceback frames; unset/None/0 keeps the full traceback.
         self.traceback_frame_limit = HARNESS_SETTINGS.default_traceback_frames
         if self.traceback_frame_limit is not None and self._observability is not None:
@@ -446,6 +447,15 @@ class ManagedAgent:
             Self for chaining
         """
         self._enrichment.extend(providers)
+        return self
+
+    def with_workflow_context(
+        self, workflow: str, step: Optional[str] = None
+    ) -> "ManagedAgent":
+        """Attach generic workflow scope to every execution record."""
+        self._workflow_context = {"workflow.name": workflow}
+        if step:
+            self._workflow_context["workflow.step"] = step
         return self
 
     def with_short_term_memory(self, provider: MemoryProvider) -> "ManagedAgent":
@@ -911,8 +921,16 @@ class ManagedAgent:
             "model": self.model,
             "model_settings": self._model_settings,
         }
+        provider, _, model_name = self.model.partition(":")
+        context.update(
+            {
+                "model.requested.name": model_name or self.model,
+                "model.requested.provider": provider,
+            }
+        )
         if execution is not None:
             context.update(execution.as_dict())
+        context.update(self._workflow_context)
         if prompt_id != "default":
             context["prompt_id"] = prompt_id
         for provider in self._enrichment:
@@ -1092,6 +1110,8 @@ class ManagedAgent:
         enrichment: Optional[LogContext] = None,
         conversation_id: Optional[str] = None,
         execution: Optional[ExecutionContext] = None,
+        workflow: Optional[str] = None,
+        step: Optional[str] = None,
         **kwargs,
     ) -> Any:
         """
@@ -1137,6 +1157,10 @@ class ManagedAgent:
             conversation_id=conversation_id or session_id,
         )
         context = self._build_run_context(session_id, prompt_id, enrichment, execution)
+        if workflow:
+            context["workflow.name"] = workflow
+        if step:
+            context["workflow.step"] = step
         timeline = _RunTimeline(start_time)
         execution_token = CURRENT_EXECUTION.set(execution)
 
@@ -1322,6 +1346,8 @@ class ManagedAgent:
         enrichment: Optional[LogContext] = None,
         conversation_id: Optional[str] = None,
         execution: Optional[ExecutionContext] = None,
+        workflow: Optional[str] = None,
+        step: Optional[str] = None,
         **kwargs,
     ):
         """Run agent with streaming output, yielding text chunks in real-time.
@@ -1362,6 +1388,10 @@ class ManagedAgent:
             conversation_id=conversation_id or session_id,
         )
         context = self._build_run_context(session_id, prompt_id, enrichment, execution)
+        if workflow:
+            context["workflow.name"] = workflow
+        if step:
+            context["workflow.step"] = step
 
         async with self.observability.observe("agent_run_stream", **context):
             execution.budget.check()

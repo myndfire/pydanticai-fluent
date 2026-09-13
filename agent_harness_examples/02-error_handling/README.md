@@ -150,6 +150,11 @@ Prints a full recovery log summary at the end with timestamps, source, error typ
 
 **Models:** `recovery-test-model-fail`, `fail-1/2/3`, `stack-trace-test-model` (all broken).
 
+The examples also emit generic workflow scope fields. For example, tool errors
+use `workflow.name=error-handling` and `workflow.step=tool-errors`, while stack
+trace recovery uses `workflow.step=stack-trace-capture`. Use those fields with
+`run.id` and `session.id` to separate records from different examples.
+
 ---
 
 ### 04 — Tool Errors
