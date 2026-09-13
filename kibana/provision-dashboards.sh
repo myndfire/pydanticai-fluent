@@ -39,6 +39,9 @@ LOGS_DATA_VIEW_TITLE="logs-generic.otel-default*"
 TRACES_DATA_VIEW_ID="7f6f1a30-63b2-4c9b-8b0c-3f8bfe8d9a10"
 TRACES_DATA_VIEW_TITLE="traces-generic.otel-default*"
 
+METRICS_DATA_VIEW_ID="a3c1d2e4-5b6f-47a8-9c0d-1e2f3a4b5c6d"
+METRICS_DATA_VIEW_TITLE="metrics-generic.otel-default*"
+
 echo "==> Waiting for Kibana at ${KIBANA_URL} ..."
 for i in $(seq 1 120); do
   status="$(
@@ -154,6 +157,7 @@ PY
 
 ensure_data_view "${LOGS_DATA_VIEW_ID}" "${LOGS_DATA_VIEW_TITLE}" "${TRACE_LINK_BASE}"
 ensure_data_view "${TRACES_DATA_VIEW_ID}" "${TRACES_DATA_VIEW_TITLE}"
+ensure_data_view "${METRICS_DATA_VIEW_ID}" "${METRICS_DATA_VIEW_TITLE}"
 
 if [[ ! -d "${SAVED_OBJECTS_DIR}" ]]; then
   echo "ERROR: saved-objects directory not found: ${SAVED_OBJECTS_DIR}" >&2

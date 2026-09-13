@@ -19,8 +19,7 @@ import os
 import structlog
 from typing import Protocol, Any, Union
 
-from pydantic_ai import Agent
-
+from ._agent_factory import build_harness_agent
 from .model_config import ModelConfig, build_model_ref
 
 
@@ -54,7 +53,12 @@ class QualityCheck:
         """
         self.threshold = threshold
         self.judge_model = judge_model
-        self._judge_agent = Agent(build_model_ref(judge_model))
+        # Set by ManagedAgent so the judge agent can correlate spans to logs.
+        self._observability = None
+        self._judge_agent = build_harness_agent(
+            build_model_ref(judge_model),
+            observability_getter=lambda: self._observability,
+        )
         self._logger = structlog.get_logger()
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> None:

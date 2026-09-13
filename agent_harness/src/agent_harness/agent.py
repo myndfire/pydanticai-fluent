@@ -23,6 +23,8 @@ from datetime import datetime
 from typing import Any, Optional, TypeVar, Union
 
 from .log_enrichment import LogContext, LogEnrichmentProvider
+from ._agent_factory import build_harness_agent
+from .logging import caller_code_location, set_harness_call_site
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, UserContent
@@ -145,6 +147,43 @@ def extract_clean_output(result) -> str:
     return str(result.output) if hasattr(result, "output") else str(result)
 
 
+class _RunTimeline:
+    """Collects ordered segment timestamps for an agent run.
+
+    Produces a non-overlapping latency breakdown: each segment is measured from
+    the previous mark, and the remainder becomes ``overhead_seconds``.
+    """
+
+    _SEGMENTS = (
+        ("memory_load", "memory_load_seconds"),
+        ("prompt_fetch", "prompt_fetch_seconds"),
+        ("agent_core", "agent_core_seconds"),
+        ("memory_save", "memory_save_seconds"),
+        ("evaluators", "evaluator_seconds"),
+    )
+
+    def __init__(self, start: float):
+        self._start = start
+        self._marks: dict[str, float] = {"start": start}
+
+    def mark(self, name: str) -> None:
+        self._marks[name] = time.time()
+
+    def breakdown(self) -> dict:
+        total = time.time() - self._start
+        out: dict = {"total_seconds": total}
+        previous = self._start
+        measured = 0.0
+        for name, key in self._SEGMENTS:
+            current = self._marks.get(name, previous)
+            segment = max(0.0, current - previous)
+            out[key] = segment
+            measured += segment
+            previous = current
+        out["overhead_seconds"] = max(0.0, total - measured)
+        return out
+
+
 class ManagedAgent:
     """
     Elegant agent with fluent configuration API.
@@ -202,9 +241,10 @@ class ManagedAgent:
         self._output_type: Optional[Any] = None
         self._output_retries: int = 3
         model_config = model or ModelConfig(provider="ollama", model_name="gpt-oss:20b")
-        self._agent: Agent[Any, Any] = Agent(
-            model=build_model(model_config), deps_type=deps_type,
+        self._agent: Agent[Any, Any] = build_harness_agent(
+            build_model(model_config), deps_type=deps_type,
             model_settings=model_settings,
+            observability_getter=lambda: self._observability,
         )
         self.model = f"{model_config.provider}:{model_config.model_name}"
         self._deps_type = deps_type
@@ -213,11 +253,12 @@ class ManagedAgent:
         self._observability = observability  # Could be None; created lazily via property
         self.tools = tools or ToolRegistry(self._observability)
         self.evaluators = evaluators or []
+        self._attach_observability_to_evaluators()
         self.guards = guards or GuardConfig()
         self.guards.observability = self._observability  # defer; .with_observability() propagates later
         self.error_handling = ErrorHandlingConfig()
         self._enrichment: list[LogEnrichmentProvider] = []
-        # Default from env var HARNESS_DEFAULT_TRACEBACK_FRAMES, or None (full)
+        # Max innermost traceback frames; unset/None/0 keeps the full traceback.
         self.traceback_frame_limit = HARNESS_SETTINGS.default_traceback_frames
         if self.traceback_frame_limit is not None and self._observability is not None:
             self._observability.traceback_frame_limit = self.traceback_frame_limit
@@ -260,6 +301,7 @@ class ManagedAgent:
         guard_runner = getattr(self, "_guard_runner", None)
         if guard_runner is not None:
             guard_runner._observability = observability
+        self._attach_observability_to_evaluators()
 
     @property
     def observability(self) -> Observability:
@@ -278,6 +320,16 @@ class ManagedAgent:
     @observability.setter
     def observability(self, value: Observability):
         self._propagate_observability(value)
+
+    def _attach_observability_to_evaluators(self) -> None:
+        """Give opt-in evaluators (e.g. ``QualityCheck``) the observability stack.
+
+        Agent-backed evaluators build their own PydanticAI agent; handing them
+        the stack lets that agent correlate its spans to logs like the main one.
+        """
+        for evaluator in getattr(self, "evaluators", []):
+            if hasattr(evaluator, "_observability"):
+                evaluator._observability = self._observability
 
     def _warn_if_provider_ignored_max_tokens(self, result: Any, context: dict) -> None:
         """Canary: warn when a provider generated more than the configured max_tokens.
@@ -343,7 +395,9 @@ class ManagedAgent:
         if self._output_type is not None:
             kwargs["output_type"] = self._output_type
             kwargs["retries"] = self._output_retries
-        self._agent = Agent(**kwargs)
+        self._agent = build_harness_agent(
+            observability_getter=lambda: self._observability, **kwargs
+        )
         if self.tools.get_tools():
             self.tools.register_to_agent(self._agent)
 
@@ -454,6 +508,7 @@ class ManagedAgent:
     def with_evaluators(self, *evaluators: Evaluator) -> "ManagedAgent":
         """Add evaluators."""
         self.evaluators.extend(evaluators)
+        self._attach_observability_to_evaluators()
         return self
 
     def with_error_handling(self, config: ErrorHandlingConfig) -> "ManagedAgent":
@@ -822,6 +877,174 @@ class ManagedAgent:
         """Check if queue configuration is present."""
         return hasattr(self, "_rabbitmq_config") and self._rabbitmq_config
 
+    # ── Run helpers (shared by run and run_stream) ─────────────────
+    def _build_run_context(
+        self, session_id: str, prompt_id: str, enrichment: Optional[LogContext]
+    ) -> dict:
+        """Build the per-run log/trace context."""
+        context = {
+            "session_id": session_id,
+            "model": self.model,
+            "model_settings": self._model_settings,
+        }
+        if prompt_id != "default":
+            context["prompt_id"] = prompt_id
+        for provider in self._enrichment:
+            context.update(provider.enrich())
+        if enrichment:
+            context.update(enrichment.enrich())
+        return context
+
+    async def _load_history(
+        self, message_history: MessageHistory, session_id: str
+    ) -> None:
+        """Load short- and long-term memory into the message history."""
+        try:
+            if self._short_term_memory:
+                await message_history.load(session_id, self._short_term_memory)
+            if self._long_term_memory:
+                await message_history.load(session_id, self._long_term_memory)
+        except Exception as e:
+            e._error_source = "memory"
+            raise
+
+    async def _apply_system_prompt(self, prompt_id: str, prompt_vars: dict) -> None:
+        """Fetch the system prompt and attach it to the underlying agent."""
+        try:
+            system_prompt = await self.prompts.get_system_prompt(
+                prompt_id=prompt_id, **prompt_vars
+            )
+            if system_prompt:
+                self._agent._system_prompts = (system_prompt,)
+        except Exception as e:
+            e._error_source = "prompt"
+            raise
+
+    async def _run_evaluators(
+        self, prompt_text: str, evaluation_target: Any, context: dict
+    ) -> None:
+        """Run every configured evaluator with lifecycle + duration logging."""
+        self._attach_observability_to_evaluators()
+        session_id = context.get("session_id")
+        for evaluator in self.evaluators:
+            try:
+                evaluator_name = getattr(evaluator, "name", type(evaluator).__name__)
+                self.observability.log_info(
+                    "evaluator_started",
+                    component="evaluators",
+                    evaluator=evaluator_name,
+                    session_id=session_id,
+                )
+                started = time.time()
+                await evaluator.evaluate(prompt_text, evaluation_target, context)
+                self.observability.log_info(
+                    "evaluator_completed",
+                    component="evaluators",
+                    evaluator=evaluator_name,
+                    session_id=session_id,
+                    performance={"duration_seconds": time.time() - started},
+                )
+            except Exception as e:
+                e._error_source = "evaluator"
+                self.observability.log_error(
+                    "evaluator_failed",
+                    component="evaluators",
+                    exception=e,
+                    evaluator=getattr(evaluator, "name", type(evaluator).__name__),
+                    session_id=session_id,
+                )
+                raise
+
+    def _turn_usage_from_summary(
+        self, turn_summary: dict
+    ) -> tuple[Optional[UsageData], Optional[float], dict, dict, int]:
+        """Derive (usage, cost, cost_breakdown, latency_breakdown, turn_count)."""
+        if not turn_summary.get("turn_count"):
+            return None, None, {}, {}, 0
+        tok = turn_summary["token_usage"]
+        usage = UsageData(
+            input_tokens=tok["input_tokens"],
+            output_tokens=tok["output_tokens"],
+            reasoning_tokens=tok["reasoning_tokens"],
+            total_tokens=tok["total_tokens"],
+            prompt_tokens=tok["input_tokens"],
+            completion_tokens=tok["output_tokens"],
+        )
+        cost = turn_summary["cost"].get("total_usd")
+        if not self.observability.granularity.standard:
+            return usage, cost, {}, {}, 0
+        return (
+            usage,
+            cost,
+            dict(turn_summary["cost"]),
+            dict(turn_summary["latency"]),
+            turn_summary["turn_count"],
+        )
+
+    def _build_turn_data(
+        self,
+        messages: list,
+        usage: Optional[UsageData],
+        cost: Optional[float],
+        cost_breakdown: dict,
+        latency_breakdown: dict,
+        turn_count: int,
+        duration: float,
+        status: str,
+        error: Optional[dict] = None,
+    ) -> TurnData:
+        """Assemble a conversation-turn record (shared by run and run_stream)."""
+        return TurnData(
+            turn_id=str(uuid.uuid4()),
+            timestamp=datetime.now(),
+            completed_at=datetime.now(),
+            messages=messages,
+            usage=usage,
+            duration_seconds=duration,
+            cost=cost,
+            cost_breakdown=cost_breakdown,
+            billing_mode=self.guards.token_limits.billing_mode
+            if self.guards.token_limits
+            else "output_plus_reasoning",
+            latency_breakdown=latency_breakdown,
+            turn_count=turn_count,
+            model=self.model,
+            status=status,
+            error=error,
+        )
+
+    def _enforce_turn_limit(self, session_id: str) -> Any:
+        """Return a handled result when the conversation turn limit is hit."""
+        tl = self.guards.turn_limits
+        if not tl:
+            return None
+        count = self._turn_counts.get(session_id, 0) + 1
+        self._turn_counts[session_id] = count
+        if tl.max_turns is not None and count > tl.max_turns:
+            error_ctx = ErrorContext(
+                error_type="TurnLimitExceeded",
+                error_message=f"Turn {count} exceeds max {tl.max_turns}",
+                source="guardrail",
+                session_id=session_id,
+            )
+            if tl._on_turn_limit:
+                return tl._on_turn_limit(error_ctx)
+            raise RuntimeError(error_ctx.error_message)
+        return None
+
+    def _emit_run_summary(
+        self, turn_summary: dict, context: dict, latency_breakdown: dict, status: str
+    ) -> None:
+        """Emit the run summary and attach the latency breakdown to the turn."""
+        self.observability.log_run_summary(
+            turn_summary, context, latency_breakdown, status=status
+        )
+        if self._last_turn is not None and self.observability.granularity.standard:
+            self._last_turn.latency_breakdown = {
+                **self._last_turn.latency_breakdown,
+                **latency_breakdown,
+            }
+
     async def run(
         self,
         prompt: Union[str, Sequence[UserContent]],
@@ -858,6 +1081,11 @@ class ManagedAgent:
         """
         start_time = time.time()
         token_usage_logged = False
+        # Capture the caller's location so failures raised inside pydantic-ai's
+        # own asyncio task (which drops the caller frame) still attribute back
+        # to the application. Propagates to hooks/spans via the contextvar.
+        callsite = caller_code_location()
+        set_harness_call_site(callsite)
 
         prompt_id = kwargs.pop("prompt_id", "default")
         prompt_vars = {k: v for k, v in kwargs.items() if not k.startswith("_")}
@@ -866,64 +1094,22 @@ class ManagedAgent:
         # The original prompt is what reaches the model.
         prompt_text = prompt_to_text(prompt)
 
-        context = {
-            "session_id": session_id,
-            "model": self.model,
-            "model_settings": self._model_settings,
-        }
-        # Only carry prompt_id when it's meaningful; the default adds noise to
-        # every log record without aiding debugging.
-        if prompt_id != "default":
-            context["prompt_id"] = prompt_id
-
-        # Merge agent-level enrichment providers
-        for provider in self._enrichment:
-            context.update(provider.enrich())
-
-        # Merge per-run enrichment (wins over agent-level on conflicts)
-        if enrichment:
-            context.update(enrichment.enrich())
+        context = self._build_run_context(session_id, prompt_id, enrichment)
+        timeline = _RunTimeline(start_time)
 
         try:
             async with self.observability.observe("agent_run", **context):
-                try:
-                    if self._short_term_memory:
-                        await message_history.load(session_id, self._short_term_memory)
-                    if self._long_term_memory:
-                        await message_history.load(session_id, self._long_term_memory)
-                except Exception as e:
-                    e._error_source = "memory"
-                    raise
+                await self._load_history(message_history, session_id)
+                timeline.mark("memory_load")
 
-                # ── Turn limits check ───────────────────────────
-                if self.guards.turn_limits:
-                    tl = self.guards.turn_limits
-                    count = self._turn_counts.get(session_id, 0) + 1
-                    self._turn_counts[session_id] = count
-                    if tl.max_turns is not None and count > tl.max_turns:
-                        error_ctx = ErrorContext(
-                            error_type="TurnLimitExceeded",
-                            error_message=(
-                                f"Turn {count} exceeds max {tl.max_turns}"
-                            ),
-                            source="guardrail",
-                            session_id=session_id,
-                        )
-                        if tl._on_turn_limit:
-                            return tl._on_turn_limit(error_ctx)
-                        raise RuntimeError(error_ctx.error_message)
+                handled = self._enforce_turn_limit(session_id)
+                if handled is not None:
+                    return handled
 
                 history = message_history.messages
 
-                try:
-                    system_prompt = await self.prompts.get_system_prompt(
-                        prompt_id=prompt_id, **prompt_vars
-                    )
-                    if system_prompt:
-                        self._agent._system_prompts = (system_prompt,)
-                except Exception as e:
-                    e._error_source = "prompt"
-                    raise
+                await self._apply_system_prompt(prompt_id, prompt_vars)
+                timeline.mark("prompt_fetch")
 
                 result = await self._guard_runner.run_with_guards(
                     agent=self._agent,
@@ -933,6 +1119,7 @@ class ManagedAgent:
                     conversation_id=conversation_id or session_id,
                 )
 
+                timeline.mark("agent_core")
                 duration = time.time() - start_time
                 status = "success" if result.success else "error"
                 if hasattr(result, "used_fallback") and result.used_fallback:
@@ -945,58 +1132,33 @@ class ManagedAgent:
 
                 serialized_messages = filter_thinking_parts(new_messages)
 
-                # Log token usage (per-request logging)
-                self.observability.log_token_usage(result, context)
+                # Log per-turn metrics and collect the run aggregate.
+                turn_summary = self.observability.log_turns(result, context)
                 token_usage_logged = True
                 self._warn_if_provider_ignored_max_tokens(result, context)
 
                 try:
-                    usage = None
-                    if hasattr(result, "usage") and result.usage:
-                        u = result.usage
-                        if (
-                            hasattr(u, "requests")
-                            and isinstance(getattr(u, "requests", None), list)
-                            and u.requests
-                        ):
-                            u = u.requests[0]
-                        usage = UsageData(
-                            input_tokens=getattr(u, "input_tokens", 0) or 0,
-                            output_tokens=getattr(u, "output_tokens", 0) or 0,
-                            reasoning_tokens=getattr(u, "reasoning_tokens", 0) or 0,
-                            total_tokens=getattr(u, "total_tokens", 0) or 0,
-                            prompt_tokens=getattr(u, "input_tokens", 0) or 0,
-                            completion_tokens=getattr(u, "output_tokens", 0) or 0,
-                        )
-                    else:
-                        for msg in new_messages:
-                            if isinstance(msg, ModelResponse) and getattr(msg, "usage", None):
-                                u = msg.usage
-                                usage = UsageData(
-                                    input_tokens=getattr(u, "input_tokens", 0) or 0,
-                                    output_tokens=getattr(u, "output_tokens", 0) or 0,
-                                    reasoning_tokens=getattr(u, "reasoning_tokens", 0) or 0,
-                                    total_tokens=getattr(u, "total_tokens", 0) or 0,
-                                    prompt_tokens=getattr(u, "input_tokens", 0) or 0,
-                                    completion_tokens=getattr(u, "output_tokens", 0) or 0,
-                                )
-                                break
-
-                    turn = TurnData(
-                        turn_id=str(uuid.uuid4()),
-                        timestamp=datetime.now(),
-                        completed_at=datetime.now(),
-                        messages=serialized_messages,
-                        usage=usage,
-                        duration_seconds=duration,
-                        cost_breakdown={},
-                        billing_mode=self.guards.token_limits.billing_mode if self.guards.token_limits else "output_plus_reasoning",
-                        latency_breakdown={},
-                        model=self.model,
-                        status=status,
-                        error=None if result.success else {
-                            "error_type": result.error_context.error_type if result.error_context else "Unknown",
-                            "error_message": result.error_context.error_message if result.error_context else "Unknown",
+                    usage, cost, cost_breakdown, latency_breakdown, turn_count = (
+                        self._turn_usage_from_summary(turn_summary)
+                    )
+                    turn = self._build_turn_data(
+                        serialized_messages,
+                        usage,
+                        cost,
+                        cost_breakdown,
+                        latency_breakdown,
+                        turn_count,
+                        duration,
+                        status,
+                        error=None
+                        if result.success
+                        else {
+                            "error_type": result.error_context.error_type
+                            if result.error_context
+                            else "Unknown",
+                            "error_message": result.error_context.error_message
+                            if result.error_context
+                            else "Unknown",
                         },
                     )
 
@@ -1014,29 +1176,10 @@ class ManagedAgent:
                         e._error_source = "memory"
                         raise
 
-                for evaluator in self.evaluators:
-                    try:
-                        evaluator_name = getattr(evaluator, "name", type(evaluator).__name__)
-                        self.observability.log_info(
-                            "evaluator_started",
-                            evaluator=evaluator_name,
-                            session_id=session_id,
-                        )
-                        await evaluator.evaluate(prompt_text, result, context)
-                        self.observability.log_info(
-                            "evaluator_completed",
-                            evaluator=evaluator_name,
-                            session_id=session_id,
-                        )
-                    except Exception as e:
-                        e._error_source = "evaluator"
-                        self.observability.log_error(
-                            "evaluator_failed",
-                            exception=e,
-                            evaluator=getattr(evaluator, "name", type(evaluator).__name__),
-                            session_id=session_id,
-                        )
-                        raise
+                timeline.mark("memory_save")
+
+                await self._run_evaluators(prompt_text, result, context)
+                timeline.mark("evaluators")
 
                 try:
                     if self._agent._output_type is None:
@@ -1045,6 +1188,10 @@ class ManagedAgent:
                     e._error_source = "output"
                     raise
 
+                self._emit_run_summary(
+                    turn_summary, context, timeline.breakdown(), status=status
+                )
+
                 return result
 
         except Exception as e:
@@ -1052,19 +1199,26 @@ class ManagedAgent:
             if self.traceback_frame_limit is not None and self.traceback_frame_limit >= 0:
                 e.__traceback__ = _truncate_traceback(e.__traceback__, self.traceback_frame_limit)
             source = getattr(e, "_error_source", "unknown")
-            # Log token usage even on failure (if result was partially produced)
+            # Capture turn metrics even on failure (if a result was produced).
             if not token_usage_logged:
                 if "result" in locals() and result is not None:
-                    self.observability.log_token_usage(result, context)
+                    try:
+                        fail_summary = self.observability.log_turns(result, context)
+                        self.observability.log_run_summary(
+                            fail_summary,
+                            context,
+                            {"total_seconds": time.time() - start_time},
+                            status="error",
+                        )
+                    except Exception:
+                        pass
                 else:
-                    # No result object: log the accumulated usage captured on the
-                    # exception, as token_usage (not the duplicate cumulative field).
                     cumulative = getattr(e, "_cumulative_usage", None)
                     if cumulative:
                         self.observability.log_info(
-                            "token_usage",
+                            "run_summary",
                             token_usage=cumulative,
-                            phase="error",
+                            run={"status": "error", "turn_count": 0},
                             **context,
                         )
             error_result = self._error_handler.handle_error(
@@ -1145,52 +1299,28 @@ class ManagedAgent:
         from pydantic_ai.usage import UsageLimits, UsageLimitExceeded
 
         start_time = time.time()
+        callsite = caller_code_location()
+        set_harness_call_site(callsite)
 
         prompt_id = kwargs.pop("prompt_id", "default")
         prompt_vars = {k: v for k, v in kwargs.items() if not k.startswith("_")}
         prompt_text = prompt_to_text(prompt)
 
-        context = {
-            "session_id": session_id,
-            "model": self.model,
-            "model_settings": self._model_settings,
-        }
-        # Only carry prompt_id when it's meaningful; the default adds noise to
-        # every log record without aiding debugging.
-        if prompt_id != "default":
-            context["prompt_id"] = prompt_id
-
-        # Merge enrichment
-        for provider in self._enrichment:
-            context.update(provider.enrich())
-        if enrichment:
-            context.update(enrichment.enrich())
+        context = self._build_run_context(session_id, prompt_id, enrichment)
 
         async with self.observability.observe("agent_run_stream", **context):
-            # Memory load
-            if self._short_term_memory:
-                await message_history.load(session_id, self._short_term_memory)
-            if self._long_term_memory:
-                await message_history.load(session_id, self._long_term_memory)
+            await self._load_history(message_history, session_id)
 
             history = message_history.messages
 
-            # System prompt
-            system_prompt = await self.prompts.get_system_prompt(
-                prompt_id=prompt_id, **prompt_vars
-            )
-            if system_prompt:
-                self._agent._system_prompts = (system_prompt,)
+            await self._apply_system_prompt(prompt_id, prompt_vars)
 
-            # Build UsageLimits from token_limits config
+            # Limits are enforced by the harness after each response so a
+            # violation surfaces as one consistent event (see guards). Passing
+            # pydantic-ai UsageLimits would raise UsageLimitExceeded mid-run
+            # inside its own task, losing the caller frame and duplicating the
+            # error across the child span and the log record.
             usage_limits = None
-            if self.guards.token_limits:
-                tl = self.guards.token_limits
-                usage_limits = UsageLimits(
-                    input_tokens_limit=tl.max_input_tokens,
-                    output_tokens_limit=tl.max_output_tokens,
-                    total_tokens_limit=tl.max_total_tokens,
-                )
 
             try:
                 async with self._agent.run_stream(
@@ -1204,9 +1334,9 @@ class ManagedAgent:
                         collected += chunk
                         yield chunk
 
-                    # Log token usage after stream completes
+                    # Log per-turn metrics after stream completes
                     duration = time.time() - start_time
-                    self.observability.log_token_usage(result, context)
+                    turn_summary = self.observability.log_turns(result, context)
                     self._warn_if_provider_ignored_max_tokens(result, context)
 
                     # Capture reasoning traces if enabled
@@ -1225,35 +1355,24 @@ class ManagedAgent:
                             pass
 
                     # Build TurnData for memory
-                    usage = None
-                    if hasattr(result, "usage") and result.usage:
-                        u = result.usage
-                        usage = UsageData(
-                            input_tokens=getattr(u, "input_tokens", 0) or 0,
-                            output_tokens=getattr(u, "output_tokens", 0) or 0,
-                            reasoning_tokens=getattr(u, "reasoning_tokens", 0) or 0,
-                            total_tokens=(getattr(u, "input_tokens", 0) or 0) + (getattr(u, "output_tokens", 0) or 0),
-                            prompt_tokens=getattr(u, "input_tokens", 0) or 0,
-                            completion_tokens=getattr(u, "output_tokens", 0) or 0,
-                        )
+                    usage, cost, cost_breakdown, latency_breakdown, turn_count = (
+                        self._turn_usage_from_summary(turn_summary)
+                    )
 
                     messages = []
                     if reasoning_traces:
                         messages.append({"role": "system", "content": f"Reasoning traces: {reasoning_traces}"})
                     messages.append({"role": "assistant", "content": collected})
 
-                    turn = TurnData(
-                        turn_id=str(uuid.uuid4()),
-                        timestamp=datetime.now(),
-                        completed_at=datetime.now(),
-                        messages=messages,
-                        usage=usage,
-                        duration_seconds=duration,
-                        cost_breakdown={},
-                        billing_mode=self.guards.token_limits.billing_mode if self.guards.token_limits else "output_plus_reasoning",
-                        latency_breakdown={},
-                        model=self.model,
-                        status="success",
+                    turn = self._build_turn_data(
+                        messages,
+                        usage,
+                        cost,
+                        cost_breakdown,
+                        latency_breakdown,
+                        turn_count,
+                        duration,
+                        "success",
                     )
                     self._last_turn = turn
 
@@ -1265,16 +1384,14 @@ class ManagedAgent:
                             except Exception:
                                 pass
 
-                    # Run evaluators
-                    for evaluator in self.evaluators:
-                        try:
-                            evaluator_name = getattr(evaluator, "name", type(evaluator).__name__)
-                            self.observability.log_info("evaluator_started", evaluator=evaluator_name, session_id=session_id)
-                            await evaluator.evaluate(prompt_text, collected, context)
-                            self.observability.log_info("evaluator_completed", evaluator=evaluator_name, session_id=session_id)
-                        except Exception as e:
-                            self.observability.log_error("evaluator_failed", exception=e, evaluator=getattr(evaluator, "name", type(evaluator).__name__), session_id=session_id)
-                            raise
+                    await self._run_evaluators(prompt_text, collected, context)
+
+                    self._emit_run_summary(
+                        turn_summary,
+                        context,
+                        {"total_seconds": time.time() - start_time},
+                        status="success",
+                    )
 
             except UsageLimitExceeded as e:
                 duration = time.time() - start_time

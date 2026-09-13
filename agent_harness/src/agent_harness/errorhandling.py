@@ -54,6 +54,7 @@ class ErrorContext:
     attempt: int = 1
     max_attempts: int = 1
     will_retry: bool = False
+    handled: bool = False  # True when a guardrail/callback recovered the error
 
 
 @dataclass

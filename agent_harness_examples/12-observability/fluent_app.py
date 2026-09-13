@@ -100,7 +100,7 @@ from agent_harness.prompts import StaticPrompts
 from agent_harness.guards import ContentFilterConfig, TokenLimitsConfig
 from agent_harness.evaluators import CustomEvaluator
 from agent_harness.observability import Observability
-from agent_harness.logging import ConsoleLogger, OTELLogger
+from agent_harness.logging import OTELLogger
 from agent_harness.tracing import OTELTracer
 from agent_harness.metrics import OTELMetrics
 from agent_harness.errorhandling import ErrorHandlingConfig
@@ -470,10 +470,10 @@ def build_agent(
     # Register tools that the agent can call during execution
     tools = ToolRegistry().add_many(get_inventory_price, calculate_risk)
 
-    # Configure observability: console for local dev, OTel for production
+    # Configure observability: OTel only (console rendered by the OTel exporter)
     if observability is None:
         observability = Observability(
-            loggers=[ConsoleLogger(), OTELLogger(service_name=OBSERVABILITY_SERVICE_NAME, otlp_endpoint=OTEL_ENDPOINT)],
+            loggers=[OTELLogger(service_name=OBSERVABILITY_SERVICE_NAME, otlp_endpoint=OTEL_ENDPOINT, console=True)],
             tracers=[OTELTracer(service_name=OBSERVABILITY_SERVICE_NAME, otlp_endpoint=OTEL_ENDPOINT, sample_rate=1.0, create_spans=True)],
             metrics_list=[OTELMetrics(service_name=OBSERVABILITY_SERVICE_NAME, otlp_endpoint=OTEL_ENDPOINT)],
         )
@@ -549,7 +549,7 @@ async def run_scenario(agent: ManagedAgent, observability, session_id: str, prom
     memory = InMemoryProvider()
     history = await MessageHistory().load(session_id, memory)
 
-    async with observability.observe("scenario", session_id=session_id, prompt=prompt):
+    async with observability.observe("scenario", component="app", session_id=session_id, prompt=prompt):
         result = await agent.run(prompt, history, session_id, save_to=[memory])
 
         # The enclosing observe() emits ``scenario_completed`` (with duration),

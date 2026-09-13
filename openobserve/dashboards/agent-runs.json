@@ -1,0 +1,506 @@
+{
+  "title": "Agent Harness \u2014 Agent Runs",
+  "description": "Agent request volume, models, components, status, and turn counts.",
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "p1",
+          "type": "line",
+          "title": "Runs over time",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS x, count(*) AS y FROM \"agent_harness\" WHERE event_name='run_summary' GROUP BY histogram(_timestamp)",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "x",
+                    "alias": "x",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "x",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "y",
+                    "alias": "y",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "y",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false
+                  }
+                ],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 96,
+            "h": 18,
+            "i": 1
+          }
+        },
+        {
+          "id": "p2",
+          "type": "pie",
+          "title": "Runs by model",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT model AS x, count(*) AS y FROM \"agent_harness\" WHERE event_name='run_summary' GROUP BY model",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "x",
+                    "alias": "x",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "x",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "y",
+                    "alias": "y",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "y",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false
+                  }
+                ],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 18,
+            "w": 96,
+            "h": 18,
+            "i": 2
+          }
+        },
+        {
+          "id": "p3",
+          "type": "bar",
+          "title": "Runs by component",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT component AS x, count(*) AS y FROM \"agent_harness\" WHERE event_name='run_summary' GROUP BY component",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "x",
+                    "alias": "x",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "x",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "y",
+                    "alias": "y",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "y",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false
+                  }
+                ],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 36,
+            "w": 96,
+            "h": 18,
+            "i": 3
+          }
+        },
+        {
+          "id": "p4",
+          "type": "table",
+          "title": "Run status",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT run_status AS status, count(*) AS count FROM \"agent_harness\" WHERE event_name='run_summary' GROUP BY run_status",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "status",
+                    "alias": "status",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "status",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "count",
+                    "alias": "count",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "count",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 54,
+            "w": 96,
+            "h": 18,
+            "i": 4
+          }
+        },
+        {
+          "id": "p5",
+          "type": "table",
+          "title": "Avg turns & duration",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT avg(run_turn_count) AS avg_turns, avg(latency_total_seconds) AS avg_duration_seconds FROM \"agent_harness\" WHERE event_name='run_summary'",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "avg_turns",
+                    "alias": "avg_turns",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "avg_turns",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "avg_duration_seconds",
+                    "alias": "avg_duration_seconds",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "avg_duration_seconds",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 72,
+            "w": 96,
+            "h": 18,
+            "i": 5
+          }
+        },
+        {
+          "id": "p6",
+          "type": "table",
+          "title": "Top sessions by runs",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT session_id, count(*) AS runs FROM \"agent_harness\" WHERE event_name='run_summary' GROUP BY session_id ORDER BY runs DESC LIMIT 20",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "session_id",
+                    "alias": "session_id",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "session_id",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "runs",
+                    "alias": "runs",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "runs",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 90,
+            "w": 96,
+            "h": 18,
+            "i": 6
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "1d"
+  },
+  "variables": {
+    "list": [],
+    "showDynamicFilters": false
+  }
+}

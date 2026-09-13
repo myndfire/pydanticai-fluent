@@ -104,8 +104,7 @@ async def main():
 
     log.debug("separator", char="=", count=60)
     log.debug("builder_methods")
-    log.debug("method", method="with_otel_observability", params="endpoint, sample_rate, create_spans, headers")
-    log.debug("method", method="with_logfire_observability", params="send_to_logfire")
+    log.debug("method", method="with_otel_observability", params="endpoint, sample_rate, create_spans, headers, granularity, console")
     log.debug("usage")
     log.debug("usage_example", example="obs = Observability(builder=ObservabilityBuilder().with_otel_observability())")
     log.debug("usage_example", example="obs = ObservabilityBuilder().with_otel_observability().build()")

@@ -12,16 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Structured logging to Elasticsearch and other backends."""
+"""OpenTelemetry-only structured logging.
 
-import asyncio
+Every log record is emitted through OpenTelemetry (OTLP export to the
+collector) so the telemetry pipeline has a single egress. Local console output
+is rendered by the OTel ``ConsoleLogExporter`` rather than a separate
+structlog ``PrintLogger`` backend.
+
+Existing ``structlog.get_logger()`` call sites keep working: they are bridged
+to OTel by :func:`configure_structlog_otel_bridge`, which routes structlog
+events into the active :class:`OTELLogger`.
+"""
+
+import contextvars
 import json
 import math
 import os
+import socket
+import sys
 import sysconfig
 from collections.abc import Mapping
 from typing import Protocol, Any
-from datetime import datetime, date
+
 import structlog
 
 
@@ -89,7 +101,7 @@ def _is_harness_or_internal_frame(filename: str) -> bool:
 
 
 def _app_callsite() -> dict:
-    """Return the first non-harness/non-stdlib frame for OTel code.* attributes.
+    """Return the first non-harness/non-stdlib frame for OTel ``code.*``.
 
     Walks the stack from the caller of the logger outward, skipping any frame
     that lives inside the agent_harness package, the Python stdlib, or a
@@ -99,8 +111,8 @@ def _app_callsite() -> dict:
     Returns
     -------
     dict
-        ``{"code.file.path": ..., "code.function": ..., "code.line.number": ...}``
-        or an empty dict if no suitable frame is found.
+        ``code.file.path`` / ``code.function`` / ``code.line.number`` /
+        ``code.namespace`` or an empty dict if no suitable frame is found.
     """
     import inspect
 
@@ -111,8 +123,72 @@ def _app_callsite() -> dict:
                 "code.file.path": os.path.relpath(filename),
                 "code.function": frame_info.function,
                 "code.line.number": frame_info.lineno,
+                "code.namespace": frame_info.frame.f_globals.get("__name__", ""),
             }
     return {}
+
+
+def app_code_location(tb) -> dict:
+    """Return ``code.*`` for the DEEPEST user frame in a traceback.
+
+    Walks the traceback and keeps the last frame that is not inside
+    agent_harness, the Python stdlib, or a third-party site-package -- i.e. the
+    user-code frame closest to where the exception was raised. Returns ``{}``
+    when the stack is entirely internal (e.g. an error raised inside
+    pydantic-ai, whose asyncio task drops the caller's frame).
+    """
+    deepest: dict = {}
+    current = tb
+    while current is not None:
+        frame = current.tb_frame
+        if not _is_harness_or_internal_frame(frame.f_code.co_filename):
+            deepest = {
+                "code.file.path": os.path.relpath(frame.f_code.co_filename),
+                "code.function": frame.f_code.co_name,
+                "code.line.number": frame.f_lineno,
+                "code.namespace": frame.f_globals.get("__name__", ""),
+            }
+        current = current.tb_next
+    return deepest
+
+
+def caller_code_location() -> dict:
+    """Return ``code.*`` for the first user frame on the CURRENT stack.
+
+    Used to capture the caller of ``ManagedAgent.run()`` so failures raised
+    inside pydantic-ai's separate asyncio task can still be attributed back to
+    the application. Fast (frame walk, no ``inspect.stack()``).
+    """
+    frame = sys._getframe(1)
+    while frame is not None:
+        if not _is_harness_or_internal_frame(frame.f_code.co_filename):
+            return {
+                "code.file.path": os.path.relpath(frame.f_code.co_filename),
+                "code.function": frame.f_code.co_name,
+                "code.line.number": frame.f_lineno,
+                "code.namespace": frame.f_globals.get("__name__", ""),
+            }
+        frame = frame.f_back
+    return {}
+
+
+# Per-run caller call site, read by observability/tracing when an error has no
+# user frame of its own (pydantic-ai runs the agent in its own asyncio task, so
+# the caller frame is not on the failing stack).
+_HARNESS_CALL_SITE: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "harness_call_site", default={}
+)
+
+
+def set_harness_call_site(location: dict | None) -> None:
+    """Record the current run's caller call site for error attribution."""
+    _HARNESS_CALL_SITE.set(location or {})
+
+
+def get_harness_call_site() -> dict:
+    """Return the current run's caller call site (``{}`` if unset)."""
+    return _HARNESS_CALL_SITE.get()
+
 
 
 class Logger(Protocol):
@@ -135,348 +211,101 @@ class Logger(Protocol):
         ...
 
 
-class LogfireLogger:
-    """Logfire structured logging with automatic tracing integration."""
+# ── structlog → OTel bridge ────────────────────────────────────────────
+#
+# structlog remains the authoring API used across the examples, but all
+# records are funneled through the active OTELLogger so the only egress is
+# OTLP. ``ReturnLoggerFactory`` prevents structlog from rendering/printing on
+# its own.
+class _StructlogBridge:
+    """Routes structlog events into the active OTel logger."""
 
-    def __init__(self, service_name: str = "agent", logfire_instance: Any = None):
+    def __init__(self) -> None:
+        self._active: "OTELLogger | None" = None
+        self._fallback: "OTELLogger | None" = None
+        self._configured = False
+
+    def set_active(self, logger: "OTELLogger") -> None:
+        """Make ``logger`` the sink for structlog events and configure structlog."""
+        self._active = logger
+        self.configure()
+
+    def resolve(self) -> "OTELLogger | None":
+        """Return the active logger, lazily creating a default if needed.
+
+        The fallback lets ``structlog`` calls emitted before the harness builds
+        its own ``Observability`` still reach OTel (and the console exporter)
+        instead of a non-OTel print backend.
         """
-        Initialize Logfire logger.
-
-        Args:
-            service_name: Service name for log entries
-            logfire_instance: Optional Logfire instance (if None, will initialize)
-        """
-        self.service_name = service_name
-        self.logfire = logfire_instance
-        self._setup_logfire()
-        self._setup_structlog()
-
-    def _setup_logfire(self):
-        """Setup Logfire if not already configured."""
-        if self.logfire is not None:
-            return
-
-        try:
-            import logfire
-
-            # Skip if already configured
-            if getattr(logfire, "_configured", False):
-                self.logfire = logfire
-                return
-
-            # If a TracerProvider/MeterProvider is already registered (e.g. by
-            # OTEL), Logfire attempts to override it and OpenTelemetry logs a
-            # "Overriding of current ...Provider is not allowed" warning via the
-            # `logging` module (not `warnings`). Suppress those loggers while
-            # configuring Logfire, which then attaches to the existing provider.
-            import logging
-
-            otel_loggers = [
-                logging.getLogger("opentelemetry.trace"),
-                logging.getLogger("opentelemetry.metrics"),
-                logging.getLogger("opentelemetry.metrics._internal"),
-            ]
-            saved_levels = [(lg, lg.level) for lg in otel_loggers]
-            for lg in otel_loggers:
-                lg.setLevel(logging.ERROR)
-
+        if self._active is not None:
+            return self._active
+        if self._fallback is None:
             try:
-                logfire.configure(
-                    service_name=self.service_name,
-                    send_to_logfire=True,
-                    console=False,
+                console = os.getenv("HARNESS_TELEMETRY_CONSOLE", "true").lower() not in (
+                    "0",
+                    "false",
+                    "no",
                 )
-            finally:
-                for lg, level in saved_levels:
-                    lg.setLevel(level)
+                self._fallback = OTELLogger(
+                    service_name=os.getenv("OBSERVABILITY_SERVICE_NAME", "agent"),
+                    otlp_endpoint=os.getenv(
+                        "OTEL_COLLECTOR_ENDPOINT", "localhost:4317"
+                    ),
+                    environment=os.getenv("APP_ENV", "development"),
+                    host=socket.gethostname(),
+                    console=console,
+                )
+            except Exception:
+                self._fallback = None
+        return self._fallback
 
-            logfire._configured = True
-            self.logfire = logfire
-            print(f"✅ Logfire logger initialized")
+    def process(self, logger, method_name: str, event_dict: dict) -> dict:
+        """structlog processor that forwards the event to the active logger."""
+        event = event_dict.pop("event", "")
+        active = self.resolve()
+        if active is not None:
+            level = (
+                method_name
+                if method_name in ("debug", "info", "warning", "error")
+                else "info"
+            )
+            context = {
+                k: v
+                for k, v in event_dict.items()
+                if k not in ("level", "timestamp")
+            }
+            active._emit(str(event), level, **context)
+        return event_dict
 
-        except Exception as e:
-            print(f"⚠️  Failed to setup Logfire logger: {str(e)}")
-            # Fallback to console logger
-            self.logfire = None
-
-    def _setup_structlog(self):
-        """Configure structlog to use Logfire."""
+    def configure(self) -> None:
+        """Install the bridge processors once (idempotent)."""
+        if self._configured:
+            return
         try:
-            # Configure structlog with automatic call site tracking
             structlog.configure(
                 processors=[
                     structlog.contextvars.merge_contextvars,
                     structlog.processors.add_log_level,
-                    structlog.processors.CallsiteParameterAdder(
-                        parameters=[
-                            structlog.processors.CallsiteParameter.FUNC_NAME,
-                            structlog.processors.CallsiteParameter.PATHNAME,
-                            structlog.processors.CallsiteParameter.LINENO,
-                        ]
-                    ),
                     structlog.processors.TimeStamper(fmt="iso"),
                     structlog.processors.StackInfoRenderer(),
                     structlog.processors.format_exc_info,
-                    structlog.processors.JSONRenderer(),
+                    self.process,
                 ],
                 context_class=dict,
-                logger_factory=structlog.PrintLoggerFactory(),
-                cache_logger_on_first_use=True,
+                logger_factory=structlog.ReturnLoggerFactory(),
+                cache_logger_on_first_use=False,
             )
-
-        except Exception as e:
-            print(f"⚠️  Failed to configure structlog: {str(e)}")
-
-    def _log_to_logfire(self, level: str, message: str, context: dict):
-        """Send log to Logfire."""
-        if not self.logfire:
-            return
-
-        try:
-            log_method = getattr(self.logfire, level, self.logfire.info)
-            log_method(message, **context)
-        except Exception as e:
-            print(f"⚠️  Failed to log to Logfire: {str(e)}")
-
-    def debug(self, message: str, **context):
-        """Log debug message."""
-        if self.logfire:
-            self._log_to_logfire("debug", message, context)
-
-    def info(self, message: str, **context):
-        """Log info message."""
-        if self.logfire:
-            self._log_to_logfire("info", message, context)
-        else:
-            # Fallback to console
-            import structlog
-            logger = structlog.get_logger()
-            logger.info(message, **context)
-
-    def warning(self, message: str, **context):
-        """Log warning message."""
-        if self.logfire:
-            self._log_to_logfire("warning", message, context)
-
-    def error(self, message: str, **context):
-        """Log error message."""
-        if self.logfire:
-            self._log_to_logfire("error", message, context)
+            self._configured = True
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"⚠️  Failed to configure structlog→OTel bridge: {exc}")
 
 
-class ConsoleLogger:
-    """Simple console logger (default)."""
-
-    def __init__(self):
-        """Initialize console logger with clean human-readable output."""
-        import structlog.dev
-
-        structlog.configure(
-            processors=[
-                structlog.contextvars.merge_contextvars,
-                structlog.processors.add_log_level,
-                structlog.processors.TimeStamper(fmt="iso"),
-                structlog.dev.ConsoleRenderer(),
-            ],
-            context_class=dict,
-            logger_factory=structlog.PrintLoggerFactory(),
-            cache_logger_on_first_use=True,
-        )
-        self.logger = structlog.get_logger()
-
-    def debug(self, message: str, **context):
-        """Log debug message to console."""
-        self.logger.debug(message, **context)
-
-    def info(self, message: str, **context):
-        """Log info message to console."""
-        self.logger.info(message, **context)
-
-    def warning(self, message: str, **context):
-        """Log warning message to console."""
-        self.logger.warning(message, **context)
-
-    def error(self, message: str, **context):
-        """Log error message to console."""
-        self.logger.error(message, **context)
+_BRIDGE = _StructlogBridge()
 
 
-class ElasticsearchLogger:
-    """Elasticsearch structured logging with daily indices."""
-
-    def __init__(
-        self,
-        endpoint: str,
-        index_prefix: str = "agent-logs",
-        service_name: str = "agent",
-    ):
-        """
-        Initialize Elasticsearch logger.
-
-        Args:
-            endpoint: Elasticsearch endpoint URL
-            index_prefix: Index prefix (creates daily indices: prefix-YYYY.MM.DD)
-            service_name: Service name for log entries
-        """
-        self.endpoint = endpoint
-        self.index_prefix = index_prefix
-        self.service_name = service_name
-        self.es_client = None
-        self.logger = structlog.get_logger()
-        self._pending_tasks: list = []
-
-        self._setup_elasticsearch()
-
-    def _setup_elasticsearch(self):
-        """Setup Elasticsearch client."""
-        try:
-            from elasticsearch import AsyncElasticsearch
-
-            self.es_client = AsyncElasticsearch([self.endpoint])
-            self.logger.info("Elasticsearch logger initialized", endpoint=self.endpoint)
-
-        except Exception as e:
-            self.logger.warning(f"Failed to setup Elasticsearch: {str(e)}")
-            self.es_client = None
-
-    def debug(self, message: str, **context):
-        """Log debug message."""
-        self.logger.debug(message, **context)
-        if self.es_client:
-            import asyncio
-
-            task = asyncio.create_task(self._log_to_es("debug", message, context))
-            self._pending_tasks.append(task)
-
-    def info(self, message: str, **context):
-        """Log info message."""
-        self.logger.info(message, **context)
-        if self.es_client:
-            import asyncio
-
-            task = asyncio.create_task(self._log_to_es("info", message, context))
-            self._pending_tasks.append(task)
-
-    def warning(self, message: str, **context):
-        """Log warning message."""
-        self.logger.warning(message, **context)
-        if self.es_client:
-            import asyncio
-
-            task = asyncio.create_task(self._log_to_es("warning", message, context))
-            self._pending_tasks.append(task)
-
-    def error(self, message: str, **context):
-        """Log error message."""
-        self.logger.error(message, **context)
-        if self.es_client:
-            import asyncio
-
-            task = asyncio.create_task(self._log_to_es("error", message, context))
-            self._pending_tasks.append(task)
-
-    async def _log_to_es(self, level: str, message: str, context: dict):
-        """Log to Elasticsearch with daily indices."""
-        if not self.es_client:
-            return
-
-        try:
-            # Create daily index name
-            index_name = f"{self.index_prefix}-{date.today():%Y.%m.%d}"
-
-            # Prepare document
-            document = {
-                "timestamp": datetime.now().isoformat(),
-                "service_name": self.service_name,
-                "level": level,
-                "message": message,
-                **context,
-            }
-
-            # Suppress Logfire instrumentation for ES calls to avoid noisy "index" spans
-            import logfire
-
-            with logfire.suppress_instrumentation():
-                await self.es_client.index(index=index_name, document=document)
-
-        except Exception as e:
-            # Fail gracefully - don't break application
-            # Only log warning once per session to avoid spam
-            if not getattr(self, "_connection_error_logged", False):
-                self.logger.warning(f"Failed to log to Elasticsearch: {str(e)}")
-                self._connection_error_logged = True
-
-    async def close(self):
-        """Wait for pending tasks and close Elasticsearch connection."""
-        if self._pending_tasks:
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
-        if self.es_client:
-            await self.es_client.close()
-
-
-class FileLogger:
-    """File-based structured logging."""
-
-    def __init__(
-        self, log_file: str = "agent.log", rotation: str = "daily", retention: int = 7
-    ):
-        """
-        Initialize file logger with rotation.
-
-        Args:
-            log_file: Log file path
-            rotation: Rotation strategy ("daily", "size")
-            retention: Days/files to retain
-        """
-        self.log_file = log_file
-        self.rotation = rotation
-        self.retention = retention
-        self.logger = structlog.get_logger()
-
-        self._setup_file_logger()
-
-    def _setup_file_logger(self):
-        """Setup file logging with rotation."""
-        try:
-            import logging
-            from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
-
-            # Create handler based on rotation strategy
-            if self.rotation == "daily":
-                handler = TimedRotatingFileHandler(
-                    self.log_file, when="D", interval=1, backupCount=self.retention
-                )
-            else:
-                handler = RotatingFileHandler(
-                    self.log_file,
-                    maxBytes=10 * 1024 * 1024,  # 10MB
-                    backupCount=self.retention,
-                )
-
-            # Configure structlog to use file handler
-            logging.basicConfig(handlers=[handler], level=logging.INFO)
-
-            self.logger.info(f"File logger initialized: {self.log_file}")
-
-        except Exception as e:
-            self.logger.warning(f"Failed to setup file logger: {str(e)}")
-
-    def debug(self, message: str, **context):
-        """Log debug message to file."""
-        self.logger.debug(message, **context)
-
-    def info(self, message: str, **context):
-        """Log info message to Elasticsearch."""
-        self.logger.info(message, **context)
-
-    def warning(self, message: str, **context):
-        """Log warning message to Elasticsearch."""
-        self.logger.warning(message, **context)
-
-    def error(self, message: str, **context):
-        """Log error message to Elasticsearch."""
-        self.logger.error(message, **context)
+def configure_structlog_otel_bridge() -> None:
+    """Configure structlog to emit through OpenTelemetry (idempotent)."""
+    _BRIDGE.configure()
 
 
 class OTELLogger:
@@ -484,7 +313,12 @@ class OTELLogger:
 
     Sends log records to an OTel Collector (or any OTLP endpoint). Records
     emitted inside an active span automatically carry trace_id/span_id for
-    log-trace correlation.
+    log-trace correlation. Optionally also renders records to the local
+    console through the OTel ``ConsoleLogExporter``.
+
+    Records are emitted under an instrumentation-scope named after the
+    ``component`` attribute (falling back to ``service_name``), so backends can
+    group by subsystem.
     """
 
     def __init__(
@@ -495,6 +329,8 @@ class OTELLogger:
         shutdown_on_exit: bool = True,
         environment: str = "development",
         host: str | None = None,
+        console: bool = False,
+        telemetry_level: str = "standard",
     ):
         """
         Initialize OTEL logging.
@@ -508,48 +344,61 @@ class OTELLogger:
                 ``shutdown()`` on the LoggerProvider (default True). Implies
                 ``flush_on_exit``.
             environment: Deployment environment, exported once as the
-                ``deployment.environment`` resource attribute instead of being
-                repeated on every log record.
+                ``deployment.environment`` resource attribute.
             host: Hostname, exported once as the ``host.name`` resource attribute.
+            console: Also render records to the local console via the OTel
+                ``ConsoleLogExporter``.
+            telemetry_level: Granularity level exported as the
+                ``harness.telemetry.level`` resource attribute.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
         self.environment = environment
         self.host = host
+        self.console = console
+        self.telemetry_level = telemetry_level
         self._flush_on_exit = flush_on_exit or shutdown_on_exit
         self._shutdown_on_exit = shutdown_on_exit
         self._provider = None
-        self._logger = None
+        self._loggers: dict[str, Any] = {}
         self._shut_down = False
 
         self._setup_otlp()
+        _BRIDGE.set_active(self)
 
     def _setup_otlp(self):
         """Setup OTLP log exporter."""
         try:
             from opentelemetry._logs import SeverityNumber
             from opentelemetry.sdk._logs import LoggerProvider
-            from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+            from opentelemetry.sdk._logs.export import (
+                BatchLogRecordProcessor,
+                ConsoleLogExporter,
+                SimpleLogRecordProcessor,
+            )
             from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
                 OTLPLogExporter,
             )
-            from opentelemetry.sdk.resources import Resource
 
-            resource_attrs = {
-                "service.name": self.service_name,
-                "deployment.environment": self.environment,
-            }
-            if self.host:
-                resource_attrs["host.name"] = self.host
-            resource = Resource.create(resource_attrs)
+            from ._otel import build_resource, register_atexit
+
+            resource = build_resource(
+                self.service_name,
+                environment=self.environment,
+                host=self.host,
+                telemetry_level=self.telemetry_level,
+            )
 
             exporter = OTLPLogExporter(endpoint=self.otlp_endpoint, insecure=True)
             self._provider = LoggerProvider(resource=resource)
             self._provider.add_log_record_processor(
                 BatchLogRecordProcessor(exporter)
             )
+            if self.console:
+                self._provider.add_log_record_processor(
+                    SimpleLogRecordProcessor(ConsoleLogExporter())
+                )
 
-            self._logger = self._provider.get_logger(self.service_name)
             self._severity_map = {
                 "debug": SeverityNumber.DEBUG,
                 "info": SeverityNumber.INFO,
@@ -559,50 +408,51 @@ class OTELLogger:
 
             print(f"✅ OTEL logging initialized: {self.otlp_endpoint}")
 
-            if self._flush_on_exit or self._shutdown_on_exit:
-                import atexit
-
-                # The SDK's LoggerProvider.__init__ registers its own
-                # atexit handler. Unregister it to avoid duplicate shutdown
-                # when our handler also fires.
-                if getattr(self._provider, "_at_exit_handler", None) is not None:
-                    atexit.unregister(self._provider._at_exit_handler)
-                    self._provider._at_exit_handler = None
-
-                def _cleanup():
-                    try:
-                        if self._shut_down:
-                            return
-                        if self._shutdown_on_exit:
-                            self._provider.shutdown()
-                        elif self._flush_on_exit:
-                            self._provider.force_flush()
-                    except Exception:
-                        pass
-
-                atexit.register(_cleanup)
+            register_atexit(
+                self._provider,
+                flush_on_exit=self._flush_on_exit,
+                shutdown_on_exit=self._shutdown_on_exit,
+                is_shut_down=lambda: self._shut_down,
+            )
 
         except Exception as e:
             print(f"⚠️  Failed to setup OTEL logging: {str(e)}")
             self._provider = None
-            self._logger = None
+
+    def _logger_for(self, component: str):
+        """Return (and cache) the OTel logger for an instrumentation scope."""
+        if self._provider is None:
+            return None
+        if component not in self._loggers:
+            self._loggers[component] = self._provider.get_logger(component)
+        return self._loggers[component]
 
     def _emit(self, message: str, severity: str, **context):
         """Emit a structured log record via OTLP."""
-        if not self._logger:
+        if self._provider is None:
             return
+
+        component = context.pop("component", None) or self.service_name
+        logger = self._logger_for(component)
+        if logger is None:
+            return
+
+        # Callers may keep a stable `event_name` while the message body carries
+        # richer, human-readable detail (e.g. an error summary).
+        event_name = context.pop("event_name", None) or message
 
         severity_number = self._severity_map.get(severity)
         attrs = _flatten_telemetry_attrs(context)
+        attrs["component"] = component
         # OTel semantic convention for a log event name; Elasticsearch maps this
         # to the aggregatable top-level `event_name` keyword field.
-        attrs["event.name"] = message
+        attrs["event.name"] = event_name
         # Attach the application callsite only for actionable severities, and
         # never clobber an exception's raise-site `code.*` fields. This keeps
         # info-level records lean and avoids the per-emit `inspect.stack()` cost.
         if severity in ("warning", "error") and "code.file.path" not in attrs:
             attrs.update(_app_callsite())
-        self._logger.emit(
+        logger.emit(
             severity_number=severity_number,
             severity_text=severity.upper(),
             body=message,
@@ -634,7 +484,7 @@ class OTELLogger:
             except Exception:
                 pass
             self._provider = None
-            self._logger = None
+            self._loggers = {}
             self._shut_down = True
 
     def shutdown(self):

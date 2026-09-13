@@ -52,6 +52,7 @@ class TurnData:
     cost_breakdown: dict = field(default_factory=dict)  # {"reasoning": 0.001, "output": 0.005}
     billing_mode: str = "output_plus_reasoning"  # "output_plus_reasoning" or "output_only"
     latency_breakdown: dict = field(default_factory=dict)  # {"thinking": 5.2, "generation": 8.1, ...}
+    turn_count: int = 0  # number of internal model iterations in this run
     model: Optional[str] = None
     status: str = "success"
     error: Optional[dict] = None  # only on failure

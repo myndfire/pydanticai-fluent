@@ -1,0 +1,365 @@
+{
+  "title": "Agent Harness \u2014 Cost",
+  "description": "Best-effort USD cost per turn (priced models only).",
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "p1",
+          "type": "line",
+          "title": "Cost over time",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS x, sum(cost_total_usd) AS y FROM \"agent_harness\" WHERE event_name='agent_turn' GROUP BY histogram(_timestamp)",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "x",
+                    "alias": "x",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "x",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "y",
+                    "alias": "y",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "y",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false
+                  }
+                ],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 96,
+            "h": 18,
+            "i": 1
+          }
+        },
+        {
+          "id": "p2",
+          "type": "pie",
+          "title": "Cost by model",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT model AS x, sum(cost_total_usd) AS y FROM \"agent_harness\" WHERE event_name='agent_turn' GROUP BY model",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "x",
+                    "alias": "x",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "x",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "y",
+                    "alias": "y",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "y",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false
+                  }
+                ],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 18,
+            "w": 96,
+            "h": 18,
+            "i": 2
+          }
+        },
+        {
+          "id": "p3",
+          "type": "table",
+          "title": "Input vs output cost",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT sum(cost_input_usd) AS input_usd, sum(cost_output_usd) AS output_usd, sum(cost_total_usd) AS total_usd FROM \"agent_harness\" WHERE event_name='agent_turn'",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "input_usd",
+                    "alias": "input_usd",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "input_usd",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "output_usd",
+                    "alias": "output_usd",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "output_usd",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "total_usd",
+                    "alias": "total_usd",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "total_usd",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 36,
+            "w": 96,
+            "h": 18,
+            "i": 3
+          }
+        },
+        {
+          "id": "p4",
+          "type": "table",
+          "title": "Top sessions by cost",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT session_id, sum(cost_total_usd) AS total_usd FROM \"agent_harness\" WHERE event_name='agent_turn' GROUP BY session_id ORDER BY total_usd DESC LIMIT 20",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "session_id",
+                    "alias": "session_id",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "session_id",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "total_usd",
+                    "alias": "total_usd",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "total_usd",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 54,
+            "w": 96,
+            "h": 18,
+            "i": 4
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "1d"
+  },
+  "variables": {
+    "list": [],
+    "showDynamicFilters": false
+  }
+}

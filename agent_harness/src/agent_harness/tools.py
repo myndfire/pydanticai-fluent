@@ -29,6 +29,7 @@ def _log_tool_call(observability, tool_name: str, params: Dict[str, Any]) -> Non
     if observability:
         observability.log_info(
             "tool_call",
+            component="tools",
             func_name=tool_name,
             tool={"name": tool_name, "parameters": params},
         )
@@ -42,6 +43,7 @@ def _log_tool_result(observability, tool_name: str, params: Dict[str, Any], resu
     if observability:
         observability.log_info(
             "tool_result",
+            component="tools",
             func_name=tool_name,
             tool={"name": tool_name, "parameters": params},
             result=str(result)[:200],  # Truncate long results
@@ -56,6 +58,7 @@ def _log_tool_error(observability, tool_name: str, params: Dict[str, Any], error
     if observability:
         observability.log_error(
             "tool_error",
+            component="tools",
             func_name=tool_name,
             tool={"name": tool_name, "parameters": params},
             error={"type": type(error).__name__, "message": str(error)},

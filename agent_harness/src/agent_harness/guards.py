@@ -30,6 +30,7 @@ from pydantic_ai.usage import UsageLimits, UsageLimitExceeded
 
 from .errorhandling import ErrorContext, AgentRunResult, TokenUsageInfo
 from .model_config import build_model_ref
+from ._agent_factory import build_harness_agent
 
 # Forward reference for Observability to avoid circular imports at type-check time
 from typing import TYPE_CHECKING
@@ -426,6 +427,13 @@ class GuardConfig:
     observability: Optional["Observability"] = None
 
 
+class _GuardrailHandled(Exception):
+    """Internal signal that a guardrail callback produced a handled result."""
+
+    def __init__(self, result: AgentRunResult):
+        self.result = result
+
+
 class GuardRunner:
     """Execute agent runs with retry logic and guardrails."""
 
@@ -444,25 +452,30 @@ class GuardRunner:
             "completion_tokens": 0,
         }
 
-    def _accumulate_usage(self, result: Any) -> None:
-        """Extract and accumulate token usage from a result."""
-        usage = None
-        if hasattr(result, "usage"):
-            try:
-                usage = result.usage() if callable(result.usage) else result.usage
-            except Exception:
-                usage = None
+    def _extract_usage(self, result: Any) -> Any:
+        """Return a result's usage object (calling it when it is a method)."""
+        if result is None or not hasattr(result, "usage"):
+            return None
+        try:
+            usage = result.usage
+            return usage() if callable(usage) else usage
+        except Exception:
+            return None
 
-        if usage is not None:
-            self._cumulative_usage["input_tokens"] += getattr(usage, "input_tokens", 0) or 0
-            self._cumulative_usage["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
-            self._cumulative_usage["reasoning_tokens"] += getattr(usage, "reasoning_tokens", 0) or 0
-            self._cumulative_usage["total_tokens"] += (
-                getattr(usage, "total_tokens", 0)
-                or (getattr(usage, "input_tokens", 0) + getattr(usage, "output_tokens", 0))
-            )
-            self._cumulative_usage["prompt_tokens"] += getattr(usage, "input_tokens", 0) or 0
-            self._cumulative_usage["completion_tokens"] += getattr(usage, "output_tokens", 0) or 0
+    def _accumulate_usage(self, result: Any) -> None:
+        """Accumulate a result's token usage into the run totals."""
+        usage = self._extract_usage(result)
+        if usage is None:
+            return
+        input_tok = getattr(usage, "input_tokens", 0) or 0
+        output_tok = getattr(usage, "output_tokens", 0) or 0
+        cum = self._cumulative_usage
+        cum["input_tokens"] += input_tok
+        cum["output_tokens"] += output_tok
+        cum["reasoning_tokens"] += getattr(usage, "reasoning_tokens", 0) or 0
+        cum["total_tokens"] += getattr(usage, "total_tokens", 0) or (input_tok + output_tok)
+        cum["prompt_tokens"] += input_tok
+        cum["completion_tokens"] += output_tok
 
     def _build_token_usage_info(
         self, limit_type: str, limit_value: int, actual: int, usage_obj: Any = None
@@ -525,6 +538,7 @@ class GuardRunner:
     def _log(self, level: str, event: str, **kwargs) -> None:
         """Log via observability if available, otherwise bootstrap print fallback."""
         if self._observability:
+            kwargs.setdefault("component", "guards")
             getattr(self._observability, f"log_{level}")(event, **kwargs)
         # else: silently drop — Observability is initialized by ManagedAgent before run
 
@@ -538,6 +552,11 @@ class GuardRunner:
                     1,
                     limit_type=limit_type,
                     session_id=session_id,
+                    **{
+                        "error.type": "TokenLimitExceeded",
+                        "error.source": "guardrail",
+                        "error.handled": True,
+                    },
                 )
             except Exception:
                 pass
@@ -566,61 +585,16 @@ class GuardRunner:
         """
         session_id = kwargs.get("conversation_id")
 
-        # ── Circuit breaker gateway check ──────────────────────────
-        if self.config.circuit_breaker and self._circuit_open:
-            cb = self.config.circuit_breaker
-            if self._circuit_opened_at is not None:
-                elapsed = time.time() - self._circuit_opened_at
-                if elapsed >= cb.circuit_timeout:
-                    self._half_open_pending = True
-                else:
-                    error_ctx = ErrorContext(
-                        error_type="CircuitBreakerOpen",
-                        error_message=(
-                            f"Circuit breaker is open after {self._failure_count} "
-                            f"failures. Retry in {cb.circuit_timeout - int(elapsed)}s"
-                        ),
-                        source="guardrail",
-                        session_id=session_id,
-                        attempt=self._failure_count,
-                        max_attempts=cb.failure_threshold,
-                        will_retry=False,
-                    )
-                    if cb._on_error:
-                        return AgentRunResult(
-                            output=cb._on_error(error_ctx),
-                            success=False,
-                            error_context=error_ctx,
-                        )
-                    raise RuntimeError(error_ctx.error_message)
+        gated = self._circuit_breaker_gate(session_id)
+        if gated is not None:
+            return gated
 
-        # Reset cumulative token usage for this run
-        self._cumulative_usage = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "reasoning_tokens": 0,
-            "total_tokens": 0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-        }
-
-        # ── Retry loop with timeout ────────────────────────────────
-        last_exception = None
-
-        # Build pydantic-ai UsageLimits as a backstop so the model call is
-        # flagged/aborted as soon as limits are exceeded (non-streaming can only
-        # check after the response; the server-side `max_tokens` is the true
-        # mid-generation cap).
-        usage_limits = None
-        if self.config.token_limits:
-            tl = self.config.token_limits
-            usage_limits = UsageLimits(
-                input_tokens_limit=tl.max_input_tokens,
-                output_tokens_limit=tl.max_output_tokens,
-                total_tokens_limit=tl.max_total_tokens,
-            )
+        self._reset_cumulative_usage()
+        usage_limits = self._build_usage_limits()
+        last_exception: Optional[BaseException] = None
 
         for attempt in range(self.config.agent.max_retries):
+            result = None
             try:
                 result = await asyncio.wait_for(
                     agent.run(
@@ -631,407 +605,391 @@ class GuardRunner:
                     ),
                     timeout=self.config.agent.timeout,
                 )
-                usage_obj = None
-                if hasattr(result, "usage"):
-                    try:
-                        usage_obj = result.usage
-                    except Exception:
-                        usage_obj = None
-
-                # ── Circuit breaker: reset on success ──────────────
-                if self.config.circuit_breaker:
-                    self._failure_count = 0
-                    if self._half_open_pending:
-                        self._circuit_open = False
-                        self._half_open_pending = False
-
-                # ── Extract output ─────────────────────────────────
+                usage_obj = self._extract_usage(result)
+                self._reset_circuit_on_success()
                 output = result.output if hasattr(result, "output") else result
 
-                # ── Token limits check ─────────────────────────────
-                if self.config.token_limits and usage_obj:
-                    tl = self.config.token_limits
+                self._enforce_token_limits(usage_obj, session_id, attempt)
+                self._enforce_cost_limits(usage_obj, session_id, attempt)
+                output = self._apply_content_filter(output, session_id, attempt)
+                output = self._apply_pii_detection(output, session_id, attempt)
 
-                    input_tok = getattr(usage_obj, "input_tokens", 0) or 0
-                    output_tok = getattr(usage_obj, "output_tokens", 0) or 0
-                    reasoning_tok = getattr(usage_obj, "reasoning_tokens", 0) or 0
-                    total_tok = input_tok + output_tok
+                return self._build_success_result(result, output, usage_obj)
 
-                    # Hard stop: reasoning limit (Q1: B)
-                    if tl.max_reasoning_tokens is not None and reasoning_tok > tl.max_reasoning_tokens:
-                        error_ctx = self._guard_error_context(
-                            "TokenLimitExceeded",
-                            f"Reasoning tokens {reasoning_tok} > {tl.max_reasoning_tokens}",
-                            session_id=session_id,
-                            attempt=attempt,
-                            token_usage=self._build_token_usage_info(
-                                "reasoning", tl.max_reasoning_tokens, reasoning_tok, usage_obj
-                            ),
-                        )
-                        self._record_token_limit_metric(session_id, limit_type="reasoning")
-                        if tl._on_token_limit:
-                            return AgentRunResult(
-                                output=tl._on_token_limit(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise RuntimeError(error_ctx.error_message)
-
-                    if tl.max_input_tokens is not None and input_tok > tl.max_input_tokens:
-                        error_ctx = self._guard_error_context(
-                            "TokenLimitExceeded",
-                            f"Input tokens {input_tok} > {tl.max_input_tokens}",
-                            session_id=session_id,
-                            attempt=attempt,
-                            token_usage=self._build_token_usage_info(
-                                "input", tl.max_input_tokens, input_tok, usage_obj
-                            ),
-                        )
-                        self._record_token_limit_metric(session_id, limit_type="input")
-                        if tl._on_token_limit:
-                            return AgentRunResult(
-                                output=tl._on_token_limit(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise RuntimeError(error_ctx.error_message)
-
-                    if tl.max_output_tokens is not None and output_tok > tl.max_output_tokens:
-                        error_ctx = self._guard_error_context(
-                            "TokenLimitExceeded",
-                            f"Output tokens {output_tok} > {tl.max_output_tokens}",
-                            session_id=session_id,
-                            attempt=attempt,
-                            token_usage=self._build_token_usage_info(
-                                "output", tl.max_output_tokens, output_tok, usage_obj
-                            ),
-                        )
-                        self._record_token_limit_metric(session_id, limit_type="output")
-                        if tl._on_token_limit:
-                            return AgentRunResult(
-                                output=tl._on_token_limit(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise RuntimeError(error_ctx.error_message)
-
-                    if tl.max_total_tokens is not None and total_tok > tl.max_total_tokens:
-                        error_ctx = self._guard_error_context(
-                            "TokenLimitExceeded",
-                            f"Total tokens {total_tok} > {tl.max_total_tokens}",
-                            session_id=session_id,
-                            attempt=attempt,
-                            token_usage=self._build_token_usage_info(
-                                "total", tl.max_total_tokens, total_tok, usage_obj
-                            ),
-                        )
-                        self._record_token_limit_metric(session_id, limit_type="total")
-                        if tl._on_token_limit:
-                            return AgentRunResult(
-                                output=tl._on_token_limit(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise RuntimeError(error_ctx.error_message)
-
-                # ── Cost limits check ──────────────────────────────
-                if self.config.cost_limits and usage_obj:
-                    cl = self.config.cost_limits
-
-                    input_tok = getattr(usage_obj, "input_tokens", 0) or 0
-                    output_tok = getattr(usage_obj, "output_tokens", 0) or 0
-                    reasoning_tok = getattr(usage_obj, "reasoning_tokens", 0) or 0
-
-                    # Calculate costs based on billing mode
-                    input_cost = input_tok * (cl.cost_per_input_token or 0)
-                    if cl.billing_mode == "output_plus_reasoning":
-                        # Charge for both output and reasoning
-                        output_cost = (output_tok + reasoning_tok) * (cl.cost_per_output_token or 0)
-                        reasoning_cost = reasoning_tok * (cl.cost_per_reasoning_token or cl.cost_per_output_token or 0)
-                    else:
-                        # output_only: charge only for visible output
-                        output_cost = output_tok * (cl.cost_per_output_token or 0)
-                        reasoning_cost = 0.0
-                    total_cost = input_cost + output_cost
-
-                    if cl.max_input_cost is not None and input_cost > cl.max_input_cost:
-                        error_ctx = self._guard_error_context(
-                            "CostLimitExceeded",
-                            f"Input cost ${input_cost:.6f} > ${cl.max_input_cost:.6f}",
-                            session_id=session_id,
-                            attempt=attempt,
-                        )
-                        if cl._on_cost_limit:
-                            return AgentRunResult(
-                                output=cl._on_cost_limit(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise RuntimeError(error_ctx.error_message)
-
-                    if cl.max_output_cost is not None and output_cost > cl.max_output_cost:
-                        error_ctx = self._guard_error_context(
-                            "CostLimitExceeded",
-                            (
-                                f"Output cost ${output_cost:.6f} "
-                                f"> ${cl.max_output_cost:.6f}"
-                            ),
-                            session_id=session_id,
-                            attempt=attempt,
-                        )
-                        if cl._on_cost_limit:
-                            return AgentRunResult(
-                                output=cl._on_cost_limit(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise RuntimeError(error_ctx.error_message)
-
-                    if cl.max_total_cost is not None and total_cost > cl.max_total_cost:
-                        error_ctx = self._guard_error_context(
-                            "CostLimitExceeded",
-                            f"Total cost ${total_cost:.6f} > ${cl.max_total_cost:.6f}",
-                            session_id=session_id,
-                            attempt=attempt,
-                        )
-                        if cl._on_cost_limit:
-                            return AgentRunResult(
-                                output=cl._on_cost_limit(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise RuntimeError(error_ctx.error_message)
-
-                # ── Content filter ─────────────────────────────────
-                if self.config.content_filter and self.config.content_filter._on_filter:
-                    try:
-                        output = self.config.content_filter._on_filter(output)
-                    except Exception as e:
-                        cf = self.config.content_filter
-                        error_ctx = self._guard_error_context(
-                            type(e).__name__,
-                            str(e),
-                            session_id=session_id,
-                            attempt=attempt,
-                            stack_trace=traceback.format_exc(),
-                        )
-                        if cf._on_error:
-                            return AgentRunResult(
-                                output=cf._on_error(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise
-
-                # ── PII detection ──────────────────────────────────
-                if self.config.pii_detection and self.config.pii_detection._on_redact:
-                    try:
-                        output = self.config.pii_detection._on_redact(output)
-                    except Exception as e:
-                        pd = self.config.pii_detection
-                        error_ctx = self._guard_error_context(
-                            type(e).__name__,
-                            str(e),
-                            session_id=session_id,
-                            attempt=attempt,
-                            stack_trace=traceback.format_exc(),
-                        )
-                        if pd._on_error:
-                            return AgentRunResult(
-                                output=pd._on_error(error_ctx),
-                                success=False,
-                                error_context=error_ctx,
-                            )
-                        raise
-
-                # Accumulate token usage for this successful attempt
-                self._accumulate_usage(result)
-
-                # Build token_usage info for success path
-                token_usage_info = None
-                if usage_obj and self.config.token_limits:
-                    token_usage_info = self._build_token_usage_info(
-                        "success", 0, 0, usage_obj
-                    )
-
-                return AgentRunResult(
-                    output=output,
-                    success=True,
-                    error_context=None,
-                    new_messages=result.new_messages()
-                    if hasattr(result, "new_messages")
-                    else [],
-                    usage=usage_obj,
-                    cumulative_usage=self._cumulative_usage.copy(),
-                    token_usage=token_usage_info,
-                )
-
+            except _GuardrailHandled as handled:
+                return handled.result
             except UsageLimitExceeded as e:
-                # pydantic-ai flagged a token limit during the model call; route
-                # it through the graceful token-limit callback when configured.
-                self._accumulate_usage(result if "result" in dir() else None)
-                error_ctx = self._guard_error_context(
-                    "TokenLimitExceeded",
-                    str(e),
-                    session_id=session_id,
-                    attempt=attempt,
-                )
-                self._log(
-                    "error",
-                    "token_limit_exceeded",
-                    error_message=str(e),
-                    session_id=session_id,
-                    attempt=attempt + 1,
-                )
-                self._record_token_limit_metric(session_id, limit_type="usage_limits")
-                tl = self.config.token_limits
-                if tl and tl._on_token_limit:
-                    return AgentRunResult(
-                        output=tl._on_token_limit(error_ctx),
-                        success=False,
-                        error_context=error_ctx,
-                    )
-                raise RuntimeError(error_ctx.error_message) from e
-
+                return self._handle_usage_limit_exceeded(e, result, session_id, attempt)
             except asyncio.TimeoutError as e:
-                # Accumulate token usage even on timeout (input tokens were consumed)
-                self._accumulate_usage(result if "result" in dir() else None)
-
-                error_ctx = ErrorContext(
-                    error_type="TimeoutError",
-                    error_message=(
-                        f"Agent execution timed out after {self.config.agent.timeout}s"
-                    ),
-                    source="llm",
-                    session_id=session_id,
-                    attempt=attempt + 1,
-                    max_attempts=self.config.agent.max_retries,
-                    will_retry=attempt < self.config.agent.max_retries - 1,
-                    stack_trace=traceback.format_exc(),
-                )
-
-                self._log(
-                    "info",
-                    "retry_attempt",
-                    attempt=attempt + 1,
-                    max_attempts=self.config.agent.max_retries,
-                    reason="timeout",
-                    timeout_seconds=self.config.agent.timeout,
-                )
-
-                if self.config.agent._on_retry:
-                    self.config.agent._on_retry(error_ctx)
-
-                self._track_circuit_failure(type(e).__name__, str(e))
-
-                if attempt < self.config.agent.max_retries - 1:
-                    wait_time = self.config.agent.backoff_multiplier**attempt
-                    self._log(
-                        "debug",
-                        "retry_wait",
-                        wait_seconds=wait_time,
-                        attempt=attempt + 1,
-                    )
-                    await asyncio.sleep(wait_time)
+                if await self._handle_retryable(e, "timeout", result, session_id, attempt):
                     continue
-                else:
-                    last_exception = e
-
+                last_exception = e
             except Exception as e:
-                # Accumulate token usage even on error (input tokens were consumed)
-                self._accumulate_usage(result if "result" in dir() else None)
-
-                error_ctx = ErrorContext(
-                    error_type=type(e).__name__,
-                    error_message=str(e),
-                    source="llm",
-                    session_id=session_id,
-                    attempt=attempt + 1,
-                    max_attempts=self.config.agent.max_retries,
-                    will_retry=attempt < self.config.agent.max_retries - 1,
-                    stack_trace=traceback.format_exc(),
-                )
-
-                self._log(
-                    "info",
-                    "retry_attempt",
-                    attempt=attempt + 1,
-                    max_attempts=self.config.agent.max_retries,
-                    reason="error",
-                    error_type=type(e).__name__,
-                    error_message=str(e)[:200],
-                )
-
-                if self.config.agent._on_retry:
-                    self.config.agent._on_retry(error_ctx)
-
-                self._track_circuit_failure(type(e).__name__, str(e))
-
-                if attempt < self.config.agent.max_retries - 1:
-                    wait_time = self.config.agent.backoff_multiplier**attempt
-                    self._log(
-                        "debug",
-                        "retry_wait",
-                        wait_seconds=wait_time,
-                        attempt=attempt + 1,
-                    )
-                    await asyncio.sleep(wait_time)
+                if await self._handle_retryable(e, "error", result, session_id, attempt):
                     continue
-                else:
-                    last_exception = e
+                last_exception = e
 
-        # ── Fallback ───────────────────────────────────────────────
         if self.config.agent.fallback_model:
-            try:
-                fallback_agent = Agent(build_model_ref(self.config.agent.fallback_model))
-                result = await asyncio.wait_for(
-                    fallback_agent.run(prompt, message_history=message_history),
-                    timeout=self.config.agent.timeout,
-                )
-                return AgentRunResult(
-                    output=result.output if hasattr(result, "output") else result,
-                    success=True,
-                    error_context=None,
-                    used_fallback=True,
-                    new_messages=result.new_messages()
-                    if hasattr(result, "new_messages")
-                    else [],
-                    usage=result.usage if hasattr(result, "usage") else None,
-                )
-            except Exception as fallback_error:
-                error_ctx = ErrorContext(
-                    error_type="FallbackError",
-                    error_message=(
-                        f"All retries exhausted. "
-                        f"Last error: {last_exception}, "
-                        f"Fallback error: {fallback_error}"
-                    ),
-                    source="llm",
-                    session_id=session_id,
-                    attempt=self.config.agent.max_retries,
-                    max_attempts=self.config.agent.max_retries,
-                    will_retry=False,
-                    stack_trace=traceback.format_exc(),
+            return await self._run_fallback(prompt, message_history, session_id, last_exception)
+
+        return self._terminal_failure(session_id, last_exception)
+
+    # ── Circuit breaker ────────────────────────────────────────────
+    def _circuit_breaker_gate(self, session_id: Any) -> Optional[AgentRunResult]:
+        """Return a handled result when the circuit is open, otherwise None."""
+        cb = self.config.circuit_breaker
+        if not (cb and self._circuit_open):
+            return None
+        if self._circuit_opened_at is None:
+            return None
+        elapsed = time.time() - self._circuit_opened_at
+        if elapsed >= cb.circuit_timeout:
+            self._half_open_pending = True
+            return None
+        error_ctx = ErrorContext(
+            error_type="CircuitBreakerOpen",
+            error_message=(
+                f"Circuit breaker is open after {self._failure_count} "
+                f"failures. Retry in {cb.circuit_timeout - int(elapsed)}s"
+            ),
+            source="guardrail",
+            session_id=session_id,
+            attempt=self._failure_count,
+            max_attempts=cb.failure_threshold,
+            will_retry=False,
+        )
+        if cb._on_error:
+            return AgentRunResult(
+                output=cb._on_error(error_ctx),
+                success=False,
+                error_context=error_ctx,
+            )
+        raise RuntimeError(error_ctx.error_message)
+
+    def _reset_circuit_on_success(self) -> None:
+        if self.config.circuit_breaker:
+            self._failure_count = 0
+            if self._half_open_pending:
+                self._circuit_open = False
+                self._half_open_pending = False
+
+    # ── Usage helpers ──────────────────────────────────────────────
+    def _reset_cumulative_usage(self) -> None:
+        self._cumulative_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "total_tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
+
+    def _build_usage_limits(self) -> Optional[UsageLimits]:
+        """Return PydanticAI UsageLimits, or None.
+
+        The harness deliberately does NOT hand usage limits to PydanticAI:
+        PydanticAI raises ``UsageLimitExceeded`` inside its own asyncio task
+        (losing the caller frame and recording a second, differently-typed
+        error on the child span). Instead the harness enforces limits after
+        each response and emits one consistent ``*_limit_exceeded`` event.
+        """
+        return None
+
+    # ── Token / cost limits ────────────────────────────────────────
+    def _enforce_token_limits(self, usage_obj: Any, session_id: Any, attempt: int) -> None:
+        """Raise when a token limit is exceeded (handled or as RuntimeError)."""
+        tl = self.config.token_limits
+        if not (tl and usage_obj):
+            return
+        input_tok = getattr(usage_obj, "input_tokens", 0) or 0
+        output_tok = getattr(usage_obj, "output_tokens", 0) or 0
+        reasoning_tok = getattr(usage_obj, "reasoning_tokens", 0) or 0
+        checks = (
+            ("reasoning", "Reasoning", tl.max_reasoning_tokens, reasoning_tok),
+            ("input", "Input", tl.max_input_tokens, input_tok),
+            ("output", "Output", tl.max_output_tokens, output_tok),
+            ("total", "Total", tl.max_total_tokens, input_tok + output_tok),
+        )
+        for limit_type, label, limit, actual in checks:
+            if limit is not None and actual > limit:
+                self._raise_token_limit(
+                    limit_type, label, limit, actual, usage_obj, tl, session_id, attempt
                 )
 
-                if self.config.agent._on_error:
-                    fallback_output = self.config.agent._on_error(error_ctx)
-                    return AgentRunResult(
-                        output=fallback_output,
+    def _raise_token_limit(
+        self, limit_type, label, limit, actual, usage_obj, tl, session_id, attempt
+    ) -> None:
+        error_ctx = self._guard_error_context(
+            "TokenLimitExceeded",
+            f"{label} tokens {actual} > {limit}",
+            session_id=session_id,
+            attempt=attempt,
+            token_usage=self._build_token_usage_info(limit_type, limit, actual, usage_obj),
+        )
+        self._record_token_limit_metric(session_id, limit_type=limit_type)
+        error_ctx.handled = True
+        self._log(
+            "error",
+            "token_limit_exceeded",
+            error_type="TokenLimitExceeded",
+            error_message=error_ctx.error_message,
+            error_source="guardrail",
+            error_handled=True,
+            session_id=session_id,
+            attempt=attempt + 1,
+        )
+        output = (
+            tl._on_token_limit(error_ctx)
+            if tl._on_token_limit
+            else f"Token limit exceeded: {error_ctx.error_message}"
+        )
+        raise _GuardrailHandled(
+            AgentRunResult(output=output, success=False, error_context=error_ctx)
+        )
+
+    def _enforce_cost_limits(self, usage_obj: Any, session_id: Any, attempt: int) -> None:
+        """Raise when a cost limit is exceeded (handled or as RuntimeError)."""
+        cl = self.config.cost_limits
+        if not (cl and usage_obj):
+            return
+        input_tok = getattr(usage_obj, "input_tokens", 0) or 0
+        output_tok = getattr(usage_obj, "output_tokens", 0) or 0
+        reasoning_tok = getattr(usage_obj, "reasoning_tokens", 0) or 0
+
+        input_cost = input_tok * (cl.cost_per_input_token or 0)
+        if cl.billing_mode == "output_plus_reasoning":
+            output_cost = (output_tok + reasoning_tok) * (cl.cost_per_output_token or 0)
+        else:
+            output_cost = output_tok * (cl.cost_per_output_token or 0)
+        total_cost = input_cost + output_cost
+
+        checks = (
+            ("Input", cl.max_input_cost, input_cost),
+            ("Output", cl.max_output_cost, output_cost),
+            ("Total", cl.max_total_cost, total_cost),
+        )
+        for label, limit, cost in checks:
+            if limit is not None and cost > limit:
+                self._raise_cost_limit(label, limit, cost, cl, session_id, attempt)
+
+    def _raise_cost_limit(self, label, limit, cost, cl, session_id, attempt) -> None:
+        error_ctx = self._guard_error_context(
+            "CostLimitExceeded",
+            f"{label} cost ${cost:.6f} > ${limit:.6f}",
+            session_id=session_id,
+            attempt=attempt,
+        )
+        error_ctx.handled = True
+        self._log(
+            "error",
+            "cost_limit_exceeded",
+            error_type="CostLimitExceeded",
+            error_message=error_ctx.error_message,
+            error_source="guardrail",
+            error_handled=True,
+            session_id=session_id,
+            attempt=attempt + 1,
+        )
+        output = (
+            cl._on_cost_limit(error_ctx)
+            if cl._on_cost_limit
+            else f"Cost limit exceeded: {error_ctx.error_message}"
+        )
+        raise _GuardrailHandled(
+            AgentRunResult(output=output, success=False, error_context=error_ctx)
+        )
+
+    # ── Content transforms ─────────────────────────────────────────
+    def _apply_content_filter(self, output: Any, session_id: Any, attempt: int) -> Any:
+        cf = self.config.content_filter
+        if not (cf and cf._on_filter):
+            return output
+        try:
+            return cf._on_filter(output)
+        except Exception as e:
+            error_ctx = self._guard_error_context(
+                type(e).__name__,
+                str(e),
+                session_id=session_id,
+                attempt=attempt,
+                stack_trace=traceback.format_exc(),
+            )
+            if cf._on_error:
+                raise _GuardrailHandled(
+                    AgentRunResult(
+                        output=cf._on_error(error_ctx),
                         success=False,
                         error_context=error_ctx,
-                        used_fallback=True,
-                        new_messages=[],
-                        usage=None,
                     )
-
-                raise Exception(
-                    f"All retries exhausted and fallback failed. "
-                    f"Last error: {str(last_exception)}. "
-                    f"Fallback error: {str(fallback_error)}"
                 )
+            raise
 
-        # ── Exhaustion ─────────────────────────────────────────────
+    def _apply_pii_detection(self, output: Any, session_id: Any, attempt: int) -> Any:
+        pd = self.config.pii_detection
+        if not (pd and pd._on_redact):
+            return output
+        try:
+            return pd._on_redact(output)
+        except Exception as e:
+            error_ctx = self._guard_error_context(
+                type(e).__name__,
+                str(e),
+                session_id=session_id,
+                attempt=attempt,
+                stack_trace=traceback.format_exc(),
+            )
+            if pd._on_error:
+                raise _GuardrailHandled(
+                    AgentRunResult(
+                        output=pd._on_error(error_ctx),
+                        success=False,
+                        error_context=error_ctx,
+                    )
+                )
+            raise
+
+    # ── Results ────────────────────────────────────────────────────
+    def _build_success_result(self, result: Any, output: Any, usage_obj: Any) -> AgentRunResult:
+        self._accumulate_usage(result)
+        token_usage_info = None
+        if usage_obj and self.config.token_limits:
+            token_usage_info = self._build_token_usage_info("success", 0, 0, usage_obj)
+        return AgentRunResult(
+            output=output,
+            success=True,
+            error_context=None,
+            new_messages=result.new_messages()
+            if hasattr(result, "new_messages")
+            else [],
+            usage=usage_obj,
+            cumulative_usage=self._cumulative_usage.copy(),
+            token_usage=token_usage_info,
+        )
+
+    def _handle_usage_limit_exceeded(self, e, result, session_id, attempt) -> AgentRunResult:
+        self._accumulate_usage(result)
+        error_ctx = self._guard_error_context(
+            "TokenLimitExceeded", str(e), session_id=session_id, attempt=attempt
+        )
+        self._log(
+            "error",
+            "token_limit_exceeded",
+            error_type="TokenLimitExceeded",
+            error_message=str(e),
+            error_source="guardrail",
+            error_handled=True,
+            session_id=session_id,
+            attempt=attempt + 1,
+        )
+        self._record_token_limit_metric(session_id, limit_type="usage_limits")
+        error_ctx.handled = True
+        tl = self.config.token_limits
+        output = (
+            tl._on_token_limit(error_ctx)
+            if tl and tl._on_token_limit
+            else f"Token limit exceeded: {error_ctx.error_message}"
+        )
+        return AgentRunResult(output=output, success=False, error_context=error_ctx)
+
+    async def _handle_retryable(self, e, reason, result, session_id, attempt) -> bool:
+        """Record a retryable failure; return True when a retry should happen."""
+        self._accumulate_usage(result)
+        will_retry = attempt < self.config.agent.max_retries - 1
+        error_ctx = ErrorContext(
+            error_type="TimeoutError" if reason == "timeout" else type(e).__name__,
+            error_message=(
+                f"Agent execution timed out after {self.config.agent.timeout}s"
+                if reason == "timeout"
+                else str(e)
+            ),
+            source="llm",
+            session_id=session_id,
+            attempt=attempt + 1,
+            max_attempts=self.config.agent.max_retries,
+            will_retry=will_retry,
+            stack_trace=traceback.format_exc(),
+        )
+
+        log_fields: dict[str, Any] = {
+            "attempt": attempt + 1,
+            "max_attempts": self.config.agent.max_retries,
+            "wait_seconds": (
+                self.config.agent.backoff_multiplier**attempt if will_retry else 0.0
+            ),
+        }
+        if reason == "timeout":
+            log_fields["reason"] = "timeout"
+            log_fields["timeout_seconds"] = self.config.agent.timeout
+        else:
+            log_fields["reason"] = "error"
+            log_fields["error_type"] = type(e).__name__
+            log_fields["error_message"] = str(e)[:200]
+        self._log("info", "retry_attempt", **log_fields)
+
+        if self.config.agent._on_retry:
+            self.config.agent._on_retry(error_ctx)
+        self._track_circuit_failure(type(e).__name__, str(e))
+
+        if not will_retry:
+            return False
+        wait_time = self.config.agent.backoff_multiplier**attempt
+        self._log("debug", "retry_wait", wait_seconds=wait_time, attempt=attempt + 1)
+        await asyncio.sleep(wait_time)
+        return True
+
+    async def _run_fallback(
+        self, prompt, message_history, session_id, last_exception
+    ) -> AgentRunResult:
+        try:
+            fallback_agent = build_harness_agent(
+                build_model_ref(self.config.agent.fallback_model),
+                observability_getter=lambda: self._observability,
+            )
+            result = await asyncio.wait_for(
+                fallback_agent.run(prompt, message_history=message_history),
+                timeout=self.config.agent.timeout,
+            )
+            return AgentRunResult(
+                output=result.output if hasattr(result, "output") else result,
+                success=True,
+                error_context=None,
+                used_fallback=True,
+                new_messages=result.new_messages()
+                if hasattr(result, "new_messages")
+                else [],
+                usage=result.usage if hasattr(result, "usage") else None,
+            )
+        except Exception as fallback_error:
+            error_ctx = ErrorContext(
+                error_type="FallbackError",
+                error_message=(
+                    f"All retries exhausted. "
+                    f"Last error: {last_exception}, "
+                    f"Fallback error: {fallback_error}"
+                ),
+                source="llm",
+                session_id=session_id,
+                attempt=self.config.agent.max_retries,
+                max_attempts=self.config.agent.max_retries,
+                will_retry=False,
+                stack_trace=traceback.format_exc(),
+            )
+            if self.config.agent._on_error:
+                return AgentRunResult(
+                    output=self.config.agent._on_error(error_ctx),
+                    success=False,
+                    error_context=error_ctx,
+                    used_fallback=True,
+                    new_messages=[],
+                    usage=None,
+                )
+            raise Exception(
+                f"All retries exhausted and fallback failed. "
+                f"Last error: {str(last_exception)}. "
+                f"Fallback error: {str(fallback_error)}"
+            )
+
+    def _terminal_failure(self, session_id, last_exception) -> AgentRunResult:
         error_ctx = ErrorContext(
             error_type="MaxRetriesExceeded",
             error_message=str(last_exception),
@@ -1052,25 +1010,21 @@ class GuardRunner:
                 else None
             ),
         )
-
         if self.config.agent._on_error:
-            error_output = self.config.agent._on_error(error_ctx)
             return AgentRunResult(
-                output=error_output,
+                output=self.config.agent._on_error(error_ctx),
                 success=False,
                 error_context=error_ctx,
                 used_fallback=False,
                 new_messages=[],
                 usage=None,
             )
-
         exc = Exception(
             f"All {self.config.agent.max_retries} retries exhausted. "
             f"Last error: {str(last_exception)}"
         )
-        # Attach cumulative usage for logging
+        exc._error_source = getattr(last_exception, "_error_source", None) or "llm"
         exc._cumulative_usage = self._cumulative_usage.copy()
-        # Apply traceback frame limit if configured
         if self._observability and self._observability.traceback_frame_limit is not None:
             exc.__traceback__ = _truncate_traceback(
                 exc.__traceback__, self._observability.traceback_frame_limit

@@ -25,116 +25,9 @@ def _is_proxy_provider(provider: Any) -> bool:
     OpenTelemetry installs a proxy provider until a real one is registered, and
     rejects any attempt to override an already-registered real provider. We must
     distinguish OTEL's *internal* no-op default (``_ProxyMeterProvider``) from
-    other proxies (e.g. Logfire's ``ProxyMeterProvider``), which are real providers
-    that must not be overridden.
+    other proxies, which are real providers that must not be overridden.
     """
     return type(provider).__name__ == "_ProxyMeterProvider"
-
-
-class LogfireMetrics:
-    """Logfire metrics collector - sends metrics to Logfire."""
-
-    def __init__(self, service_name: str = "agent"):
-        """
-        Initialize Logfire metrics.
-
-        Args:
-            service_name: Service name for metrics
-        """
-        self.service_name = service_name
-        self.logfire = None
-        self._setup_logfire()
-
-    def _setup_logfire(self):
-        """Setup Logfire for metrics."""
-        try:
-            import logfire
-
-            # Reuse existing configuration if available
-            if getattr(logfire, "_configured", False):
-                self.logfire = logfire
-                return
-
-            # If a MeterProvider is already registered (e.g. by OTEL), Logfire
-            # will attempt to override it and OpenTelemetry logs a
-            # "Overriding of current MeterProvider is not allowed" warning via
-            # the `logging` module (not `warnings`). Suppress that logger while
-            # configuring Logfire, which then attaches to the existing provider.
-            import logging
-
-            otel_loggers = [
-                logging.getLogger("opentelemetry.metrics"),
-                logging.getLogger("opentelemetry.metrics._internal"),
-                logging.getLogger("opentelemetry.trace"),
-            ]
-            saved_levels = [(lg, lg.level) for lg in otel_loggers]
-            for lg in otel_loggers:
-                lg.setLevel(logging.ERROR)
-
-            try:
-                logfire.configure(
-                    service_name=self.service_name,
-                    send_to_logfire=True,
-                    console=False,
-                )
-            finally:
-                for lg, level in saved_levels:
-                    lg.setLevel(level)
-
-            logfire._configured = True
-            self.logfire = logfire
-            print(f"✅ Logfire metrics initialized")
-
-        except Exception as e:
-            print(f"⚠️  Failed to setup Logfire metrics: {str(e)}")
-            self.logfire = None
-
-    def counter(self, name: str, value: int = 1, **labels):
-        """Increment a counter metric."""
-        if self.logfire:
-            try:
-                metric_name = f"{self.service_name}_{name}"
-                # Logfire doesn't have explicit counters, use info with metrics
-                self.logfire.info(
-                    f"metric_counter",
-                    metric=metric_name,
-                    value=value,
-                    **labels,
-                )
-            except Exception:
-                pass
-
-    def gauge(self, name: str, value: float, **labels):
-        """Set a gauge metric."""
-        if self.logfire:
-            try:
-                metric_name = f"{self.service_name}_{name}"
-                self.logfire.info(
-                    f"metric_gauge",
-                    metric=metric_name,
-                    value=value,
-                    **labels,
-                )
-            except Exception:
-                pass
-
-    def histogram(self, name: str, value: float, **labels):
-        """Record a histogram value."""
-        if self.logfire:
-            try:
-                metric_name = f"{self.service_name}_{name}"
-                self.logfire.info(
-                    f"metric_histogram",
-                    metric=metric_name,
-                    value=value,
-                    **labels,
-                )
-            except Exception:
-                pass
-
-    def summary(self, name: str, value: float, **labels):
-        """Record a summary value."""
-        self.histogram(name, value, **labels)
 
 
 class MetricsCollector(Protocol):
@@ -240,6 +133,8 @@ class OTELMetrics:
         otlp_endpoint: str = "localhost:4317",
         flush_on_exit: bool = True,
         shutdown_on_exit: bool = True,
+        telemetry_level: str = "standard",
+        console: bool = False,
     ):
         """
         Initialize OTEL metrics.
@@ -252,9 +147,15 @@ class OTELMetrics:
             shutdown_on_exit: Register an atexit handler that calls
                 ``shutdown()`` on the MeterProvider (default True). Implies
                 ``flush_on_exit``.
+            telemetry_level: Granularity level exported as the
+                ``harness.telemetry.level`` resource attribute.
+            console: Also render metrics to the local console via the OTel
+                ``ConsoleMetricExporter``.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
+        self.telemetry_level = telemetry_level
+        self.console = console
         self._flush_on_exit = flush_on_exit or shutdown_on_exit
         self._shutdown_on_exit = shutdown_on_exit
         self._meter = None
@@ -269,19 +170,33 @@ class OTELMetrics:
             from opentelemetry import metrics
             from opentelemetry.sdk.metrics import MeterProvider
             from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-            from opentelemetry.sdk.resources import Resource
             from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
                 OTLPMetricExporter,
             )
 
-            resource = Resource.create({"service.name": self.service_name})
+            from ._otel import build_resource, register_atexit
 
-            exporter = OTLPMetricExporter(endpoint=self.otlp_endpoint, insecure=True)
-            reader = PeriodicExportingMetricReader(
-                exporter, export_interval_millis=5000
+            resource = build_resource(
+                self.service_name, telemetry_level=self.telemetry_level
             )
 
-            provider = MeterProvider(resource=resource, metric_readers=[reader])
+            exporter = OTLPMetricExporter(endpoint=self.otlp_endpoint, insecure=True)
+            readers = [
+                PeriodicExportingMetricReader(
+                    exporter, export_interval_millis=5000
+                )
+            ]
+            if self.console:
+                from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
+
+                readers.append(
+                    PeriodicExportingMetricReader(
+                        ConsoleMetricExporter(),
+                        export_interval_millis=5000,
+                    )
+                )
+
+            provider = MeterProvider(resource=resource, metric_readers=readers)
 
             # OpenTelemetry allows only one global MeterProvider per process.
             # Reuse an already-registered provider instead of overriding it
@@ -292,33 +207,16 @@ class OTELMetrics:
                 self._meter = metrics.get_meter(self.service_name)
                 self._provider = provider
                 print(f"✅ OTLP metrics initialized: {self.otlp_endpoint}")
-                # Register atexit only for our own provider
-                if self._flush_on_exit or self._shutdown_on_exit:
-                    import atexit
-
-                    # The SDK's MeterProvider.__init__ registers its own
-                    # atexit handler. Unregister it to avoid "shutdown can
-                    # only be called once" when our handler also fires.
-                    if getattr(provider, "_atexit_handler", None) is not None:
-                        atexit.unregister(provider._atexit_handler)
-                        provider._atexit_handler = None
-
-                    def _cleanup():
-                        try:
-                            if self._shut_down:
-                                return
-                            if self._shutdown_on_exit:
-                                self._provider.shutdown()
-                            elif self._flush_on_exit:
-                                self._provider.force_flush()
-                        except Exception:
-                            pass
-
-                    atexit.register(_cleanup)
+                register_atexit(
+                    provider,
+                    flush_on_exit=self._flush_on_exit,
+                    shutdown_on_exit=self._shutdown_on_exit,
+                    is_shut_down=lambda: self._shut_down,
+                )
             else:
-                # A provider is already registered (e.g. by Logfire). We cannot
-                # retrofit our OTLP reader onto it, so attach to the existing one.
-                # Don't register atexit — the original owner already did.
+                # A provider is already registered. We cannot retrofit our OTLP
+                # reader onto it, so attach to the existing one. Don't register
+                # atexit — the original owner already did.
                 self._meter = metrics.get_meter(self.service_name)
                 self._provider = existing
                 print(
@@ -363,7 +261,9 @@ class OTELMetrics:
         if not self._meter:
             return
 
-        metric_name = f"{self.service_name}_{name}"
+        # Semantic-convention names (e.g. gen_ai.*) are used verbatim so they
+        # align with pydantic-ai's native metrics; other names are namespaced.
+        metric_name = name if name.startswith("gen_ai.") else f"{self.service_name}_{name}"
         if metric_name not in self._histograms:
             self._histograms[metric_name] = self._meter.create_histogram(
                 metric_name, unit="1", description=f"Histogram for {name}"
@@ -391,198 +291,6 @@ class OTELMetrics:
             self._shut_down = True
 
 
-class PrometheusMetrics:
-    """Prometheus metrics collector."""
-
-    def __init__(self, namespace: str = "agent", push_gateway: Optional[str] = None):
-        """
-        Initialize Prometheus metrics.
-
-        Args:
-            namespace: Metric namespace
-            push_gateway: Prometheus push gateway URL (optional)
-        """
-        self.namespace = namespace
-        self.push_gateway = push_gateway
-        self._metrics = {}
-
-        self._setup_prometheus()
-
-    def _setup_prometheus(self):
-        """Setup Prometheus client."""
-        try:
-            from prometheus_client import Counter, Gauge, Histogram, Summary
-
-            self.Counter = Counter
-            self.Gauge = Gauge
-            self.Histogram = Histogram
-            self.Summary = Summary
-
-            print(f"✅ Prometheus metrics initialized (namespace: {self.namespace})")
-
-        except Exception as e:
-            print(f"⚠️  Failed to setup Prometheus: {str(e)}")
-            self.Counter = None
-            self.Gauge = None
-            self.Histogram = None
-            self.Summary = None
-
-    def counter(self, name: str, value: int = 1, **labels):
-        """Increment a counter metric."""
-        if not self.Counter:
-            return
-
-        metric_name = f"{self.namespace}_{name}"
-
-        if metric_name not in self._metrics:
-            label_names = list(labels.keys()) if labels else []
-            self._metrics[metric_name] = self.Counter(
-                metric_name, f"Counter for {name}", label_names
-            )
-
-        if labels:
-            self._metrics[metric_name].labels(**labels).inc(value)
-        else:
-            self._metrics[metric_name].inc(value)
-
-    def gauge(self, name: str, value: float, **labels):
-        """Set a gauge metric."""
-        if not self.Gauge:
-            return
-
-        metric_name = f"{self.namespace}_{name}"
-
-        if metric_name not in self._metrics:
-            label_names = list(labels.keys()) if labels else []
-            self._metrics[metric_name] = self.Gauge(
-                metric_name, f"Gauge for {name}", label_names
-            )
-
-        if labels:
-            self._metrics[metric_name].labels(**labels).set(value)
-        else:
-            self._metrics[metric_name].set(value)
-
-    def histogram(self, name: str, value: float, **labels):
-        """Record a histogram value."""
-        if not self.Histogram:
-            return
-
-        metric_name = f"{self.namespace}_{name}"
-
-        if metric_name not in self._metrics:
-            label_names = list(labels.keys()) if labels else []
-            self._metrics[metric_name] = self.Histogram(
-                metric_name, f"Histogram for {name}", label_names
-            )
-
-        if labels:
-            self._metrics[metric_name].labels(**labels).observe(value)
-        else:
-            self._metrics[metric_name].observe(value)
-
-    def summary(self, name: str, value: float, **labels):
-        """Record a summary value."""
-        if not self.Summary:
-            return
-
-        metric_name = f"{self.namespace}_{name}"
-
-        if metric_name not in self._metrics:
-            label_names = list(labels.keys()) if labels else []
-            self._metrics[metric_name] = self.Summary(
-                metric_name, f"Summary for {name}", label_names
-            )
-
-        if labels:
-            self._metrics[metric_name].labels(**labels).observe(value)
-        else:
-            self._metrics[metric_name].observe(value)
-
-    def push_to_gateway(self, job_name: str = "agent"):
-        """Push metrics to Prometheus push gateway."""
-        if not self.push_gateway:
-            return
-
-        try:
-            from prometheus_client import push_to_gateway as push
-
-            push(self.push_gateway, job=job_name, registry=None)
-        except Exception as e:
-            print(f"⚠️  Failed to push to gateway: {str(e)}")
-
-
-class StatsdMetrics:
-    """StatsD metrics collector."""
-
-    def __init__(
-        self, host: str = "localhost", port: int = 8125, prefix: str = "agent"
-    ):
-        """
-        Initialize StatsD metrics.
-
-        Args:
-            host: StatsD server host
-            port: StatsD server port
-            prefix: Metric prefix
-        """
-        self.host = host
-        self.port = port
-        self.prefix = prefix
-        self.client = None
-
-        self._setup_statsd()
-
-    def _setup_statsd(self):
-        """Setup StatsD client."""
-        try:
-            from statsd import StatsClient
-
-            self.client = StatsClient(
-                host=self.host, port=self.port, prefix=self.prefix
-            )
-
-            print(f"✅ StatsD metrics initialized: {self.host}:{self.port}")
-
-        except Exception as e:
-            print(f"⚠️  Failed to setup StatsD: {str(e)}")
-            self.client = None
-
-    def counter(self, name: str, value: int = 1, **labels):
-        """Increment a counter."""
-        if self.client:
-            metric_name = self._format_name(name, labels)
-            self.client.incr(metric_name, count=value)
-
-    def gauge(self, name: str, value: float, **labels):
-        """Set a gauge value."""
-        if self.client:
-            metric_name = self._format_name(name, labels)
-            self.client.gauge(metric_name, value)
-
-    def histogram(self, name: str, value: float, **labels):
-        """Record a histogram value (timing in StatsD)."""
-        if self.client:
-            metric_name = self._format_name(name, labels)
-            self.client.timing(metric_name, value)
-
-    def summary(self, name: str, value: float, **labels):
-        """Record a summary value (timing in StatsD)."""
-        if self.client:
-            metric_name = self._format_name(name, labels)
-            self.client.timing(metric_name, value)
-
-    def _format_name(self, name: str, labels: dict) -> str:
-        """Format metric name with labels."""
-        if not labels:
-            return name
-
-        # StatsD doesn't support labels natively, so we append them to the name
-        label_str = ".".join(f"{k}.{v}" for k, v in sorted(labels.items()))
-        return f"{name}.{label_str}"
-
-
-# Common metric names (constants for consistency)
 class MetricNames:
     """Standard metric names for agent operations."""
 

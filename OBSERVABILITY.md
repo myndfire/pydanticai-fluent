@@ -1,6 +1,6 @@
-# OBSERVABILITY.md — Langfuse, Elasticsearch & Kibana
+# OBSERVABILITY.md — Langfuse, Elasticsearch, Kibana & OpenObserve
 
-How to run the observability stack and inspect agent telemetry in **Langfuse** (traces), **Elasticsearch** (structured logs), and **Kibana** (log browser with a click-through link to the Langfuse trace where the event happened).
+How to run the observability stack and inspect agent telemetry in **Langfuse** (traces), **Elasticsearch + Kibana** (structured logs/metrics), and **OpenObserve** (unified logs/metrics/traces browser with provisioned dashboards). Kibana renders a click-through link to the Langfuse trace where the event happened.
 
 > The Jaeger / Prometheus / Grafana sections at the end describe the **legacy**
 > stack in `docker-compose.yml.old`; the default `docker-compose.yml` ships
@@ -36,18 +36,48 @@ This starts Langfuse (plus its Postgres/ClickHouse/Redis/MinIO dependencies), th
 
 | Service | Port | Role |
 |---|---|---|
-| `langfuse-web` | `3000` | Trace backend + UI (login with the seeded admin user from `.env`) |
-| `elasticsearch` | `9200` | Logs backend — native OTLP/HTTP intake (`/_otlp/v1/logs`) → OTel data stream `logs-generic.otel-default` |
-| `kibana` | `5601` | Log browser; renders `trace_id` as a "View in Langfuse" link |
-| `otel-collector` | `4317`, `4318` | Single OTLP receiver; traces → Langfuse, logs → Elasticsearch, metrics → debug |
+| `langfuse-web` | `3000` | Trace backend + UI (shared UI login, see below) |
+| `elasticsearch` | `9200` | Logs + metrics backend — native OTLP/HTTP intake (`/_otlp`) → `logs-generic.otel-default`, `metrics-generic.otel-default` |
+| `kibana` | `5601` | Log/metrics browser; renders `trace_id` as a "View in Langfuse" link (no login) |
+| `openobserve` | `5080`, `5081` | Unified logs + metrics + traces UI (OTLP/HTTP + gRPC; shared UI login) |
+| `otel-collector` | `4317`, `4318` | Single OTLP receiver; traces → Langfuse + OpenObserve, logs/metrics → Elasticsearch + OpenObserve |
 | `postgres`, `clickhouse`, `redis`, `minio` | internal | Langfuse storage backends |
+
+**Shared UI login** for Langfuse and OpenObserve: `admin@example.com` / `Admin1234!`
+(set via `LANGFUSE_INIT_USER_*` and `ZO_ROOT_USER_*` in `.env`; applied on first
+startup, so changing it requires recreating the affected volumes). Kibana has no
+login.
+
+**OpenObserve dashboards** are provisioned idempotently (replace-by-title) by
+`./openobserve/provision.sh`, which imports the bundles in
+`openobserve/dashboards/*.json`:
+
+| Dashboard | What it shows |
+|---|---|
+| **Agent Harness — Agent Runs** | Run volume over time, runs by model/component, status, avg turns/duration, top sessions |
+| **Agent Harness — Token Usage** | Total tokens over time, input/output/reasoning, tokens by model/phase, cache hit ratio |
+| **Agent Harness — Cost** | Cost over time, by model, input vs output, top sessions (priced models) |
+| **Agent Harness — Latency** | Avg run latency over time, avg/max, per-segment breakdown, slowest runs, per-turn model latency |
+| **Agent Harness — Errors** | Error volume, by event/component, and recent error records (`body` carries the error summary) |
+
+Each dashboard defaults its time range to the last day
+(`defaultDatetimeDuration`).
+
+**Trace → log correlation.** OpenObserve's trace "View Logs" is span-scoped
+(`span_id='…' AND trace_id='…'`). Every agent the harness constructs (the main
+agent, the `QualityCheck` LLM judge, and the guard fallback) carries a capability
+ordered inside PydanticAI's instrumentation, so each emits `model_request` inside
+its `chat` span and `agent_run` inside its `invoke_agent` span, and those spans
+resolve to logs; tool spans carry the existing `tool_call`/`tool_result` records.
+Records are gated by `HARNESS_TELEMETRY_LEVEL` (`minimal` emits none).
 
 ## 4. Elasticsearch
 
 Log records land in Elasticsearch:
 
 - Log records → data stream `logs-generic.otel-default` (backing indices `.ds-logs-generic.otel-default-…`).
-- Trace spans → **Langfuse** in the default stack (in the legacy stack they also went to `traces-generic.otel-default`, see §5-§7).
+- Metrics → data stream `metrics-generic.otel-default` (TSDS).
+- Trace spans → **Langfuse** (and **OpenObserve**) in the default stack.
 
 ### 4.1 Data shape
 
@@ -56,11 +86,20 @@ Log records land in Elasticsearch:
   `attributes.event.name`).
 - Structured context is **flattened into dotted, typed `attributes.*` fields** so
   it can be aggregated in Kibana Lens rather than read as an opaque string:
-  - `attributes.token_usage.total_tokens` / `.input_tokens` / `.output_tokens` / `.reasoning_tokens`
+  - `attributes.turn.index` / `.phase` / `.tool_names` / `.tool_call_count`
+  - `attributes.token_usage.total_tokens` / `.input_tokens` / `.output_tokens`
+    / `.reasoning_tokens` / `.cache_read_tokens` / `.cache_write_tokens`
+    / `.cache_hit_ratio`
+  - `attributes.cost.total_usd` / `.input_usd` / `.output_usd` / `.source`
+  - `attributes.latency.model_seconds` / `.tool_seconds` / `.total_seconds`
+  - `attributes.run.turn_count` / `.avg_turn_latency_seconds` / `.max_turn_latency_seconds`
   - `attributes.performance.duration_seconds`
   - `attributes.model_settings.max_tokens`
   - `attributes.tool.name` / `attributes.tool.parameters.*`
-  - `attributes.error.type` / `.message` / `.stacktrace`
+  - `attributes.error.type` / `.message` / `.stacktrace` / `.source` / `.handled`
+  - `attributes.exception.type` / `.message` / `.stacktrace` (OTel/ECS mirror)
+  - `attributes.code.file.path` / `.function` / `.line.number` (caller location on errors)
+  - `attributes.component` (emitting subsystem, also the OTel scope name)
 - Deployment-wide facts are **resource attributes** (set once per process, not
   repeated on every record): `resource.attributes.service.name`,
   `resource.attributes.deployment.environment`, `resource.attributes.host.name`.
@@ -70,15 +109,44 @@ Log records land in Elasticsearch:
   markers, and `retry_wait` backoff events before they reach Elasticsearch; the
   completion record, `retry_attempt`, and traces carry that information.
 
+### 4.1.1 Canonical error schema
+
+A failure is projected into one schema and emitted to **logs, spans (parent and
+child), and metric labels**, so the same fields appear everywhere:
+
+| Field | Meaning |
+|---|---|
+| `error.type` | Exception class or guardrail type (e.g. `TokenLimitExceeded`) |
+| `error.message` | Human-readable message |
+| `error.stacktrace` | Full traceback (unset/`None`/`0` = full; `N` = last `N` frames) |
+| `error.source` | `llm` / `guardrail` / `tool` / `memory` / `prompt` / `evaluator` / `output` / `unknown` |
+| `error.handled` | `true` when a guardrail/callback recovered the error |
+| `code.file.path` / `.function` / `.line.number` / `.namespace` | Caller location (your `agent.run(...)`) |
+| `exception.type` / `.message` / `.stacktrace` | OTel/ECS mirror of `error.*` |
+
+pydantic-ai runs the agent in its own asyncio task, so errors raised there do not
+carry your frame. The harness records the caller at `ManagedAgent.run()` entry
+and uses it as the `code.*` fallback (on error records and the parent/child
+spans only). Guardrail token/cost limits are enforced by the harness (not via
+pydantic-ai `UsageLimits`) and emitted once as `token_limit_exceeded` /
+`cost_limit_exceeded` with `error.handled=true`. Metric labels use the same
+keys: `agent_errors_total` carries `error.type`, `error.source`, `error.handled`,
+`operation`.
+
 ### 4.2 Log queries (`logs-generic.otel-default*`)
 
 ```text
-event_name: "agent_run_failed"           a failed operation by event name (keyword)
-event_name: (retry_attempt or filter_error or agent_run_failed)
+event_name: "run_summary"                per agent request: turn_count, cost, latency breakdown
+event_name: "agent_turn"                 per model iteration: tokens, cost, latency, phase
+event_name: "agent_run_failed"          a failed operation by event name (keyword)
+event_name: (retry_attempt or filter_error or agent_run_failed or token_limit_exceeded)
 severity_text: "ERROR"                   all error records
+attributes.component: guards             filter by emitting subsystem
 attributes.error.type: ValueError        drill into cause by type
-attributes.token_usage.total_tokens: >100   expensive calls
-attributes.code.file.path: *             records that carry a callsite (WARNING/ERROR only)
+attributes.token_usage.total_tokens: >100   expensive turns
+attributes.cost.total_usd: >0.01         expensive turns (priced models)
+attributes.latency.agent_core_seconds: >5   slow runs, split by segment
+attributes.code.file.path: *             records that carry a caller location (errors)
 ```
 
 Raw curl:
@@ -195,14 +263,14 @@ Dashboards (all built on the **logs** data view; trace analytics live in **Langf
 
 | Dashboard | URL path | What it shows |
 |---|---|---|
-| **Agent Harness — Errors** | `/app/dashboards#/view/errors-exceptions-dashboard` | ERROR-severity trend, top messages (`attributes.error_message`), exception types (`attributes.error.type`), raise sites, recent errors, and a retries/failures view (with `langfuse_trace_url`) |
+| **Agent Harness — Errors** | `/app/dashboards#/view/errors-exceptions-dashboard` | ERROR-severity trend, errors by event, exception types (`attributes.exception.type`), errors by component (`attributes.component`), recent errors, and a retries/failures view (drill down via clickable `trace_id`) |
 | **Agent Harness — Debug Logs** | `/app/dashboards#/view/log-levels-dashboard` | Severity overview, top events (`event_name`), log volume, recent logs |
 | **Agent Harness — Agent Runs** | `/app/dashboards#/view/agent-runs-dashboard` | Run volume, duration (`attributes.performance.duration_seconds`), runs by model/session/environment |
 | **Agent Harness — Token Usage** | `/app/dashboards#/view/token-usage-dashboard` | Token usage by model/phase (`attributes.token_usage.*`) |
 
 > The old trace-based Kibana dashboards (**Errors & Exceptions**, **LLM Performance**, **Tool Calls**) were removed: traces now go to **Langfuse**, so those ES-backed views would be empty. Use Langfuse for trace/LLM/tool analytics.
 
-**Finding errors in Discover:** widen the time picker (the Errors dashboard defaults to `now-24h`), select the `logs-generic.otel-default*` data view, and filter `severity_text: "ERROR"` or `event_name: (retry_attempt or filter_error or agent_run_failed)`. Each error record carries `trace_id` and a `langfuse_trace_url` field.
+**Finding errors in Discover:** widen the time picker (the Errors dashboard defaults to `now-24h`), select the `logs-generic.otel-default*` data view, and filter `severity_text: "ERROR"` or `event_name: (retry_attempt or filter_error or agent_run_failed)`. Each error record carries `trace_id` (rendered as a **View in Langfuse** link).
 
 In **Discover**, filter `service.name: <your-service-name>` to scope to one app.
 

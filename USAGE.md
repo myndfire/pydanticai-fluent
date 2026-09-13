@@ -722,7 +722,7 @@ The dev stack routes **traces → Langfuse**, **logs → Elasticsearch**, and br
 
 | Tool | URL | Login |
 |---|---|---|
-| Langfuse (traces) | http://localhost:3000 | `admin@example.com` / `langfuse` — required; session persists ~1 year |
+| Langfuse (traces) | http://localhost:3000 | `admin@example.com` / `Admin1234!` — required; session persists ~1 year |
 | Kibana (logs) | http://localhost:5601 | none — open access |
 | Elasticsearch (logs API) | http://localhost:9200 | none |
 
@@ -1464,7 +1464,7 @@ uv run 12-observability/fluent_app.py
 - [Ollama](https://ollama.ai/) running locally (for Ollama models) or API keys for cloud providers
 - MongoDB (optional, for persistent memory in examples 2/3)
 - RabbitMQ (optional, for the document classification example)
-- Langfuse + Elasticsearch + Kibana + OTel Collector — `docker compose up -d` from the repo root (Langfuse login `admin@example.com` / `langfuse`; Kibana is open access)
+- Langfuse + Elasticsearch + Kibana + OTel Collector — `docker compose up -d` from the repo root (Langfuse/OpenObserve login `admin@example.com` / `Admin1234!`; Kibana is open access)
 
 ---
 

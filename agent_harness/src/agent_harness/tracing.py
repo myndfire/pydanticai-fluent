@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Distributed tracing with Logfire (default) and OpenTelemetry."""
+"""Distributed tracing over OpenTelemetry (OTLP)."""
 
 import os
 from pathlib import Path
@@ -142,184 +142,11 @@ class NoOpTracer:
         pass
 
 
-class LogfireTracer:
-    """
-    Logfire distributed tracing (default).
-
-    Logfire is the official observability platform for PydanticAI,
-    built by the Pydantic team. It provides:
-    - Automatic PydanticAI instrumentation
-    - Beautiful trace visualization
-
-    For multi-destination tracing (e.g., Logfire + Jaeger), chain
-    LogfireTracer and OTELTracer using with_observability_chained().
-    """
-
-    def __init__(
-        self,
-        service_name: str,
-        send_to_logfire: bool = True,
-        instrument_pydantic_ai: bool = True,
-    ):
-        """
-        Initialize Logfire tracer.
-
-        Args:
-            service_name: Service name for traces
-            send_to_logfire: Send traces to Logfire cloud (default: True)
-            instrument_pydantic_ai: Automatically instrument PydanticAI (default: True)
-
-        Examples:
-            # Default: Send to Logfire cloud
-            tracer = LogfireTracer("my-agent")
-
-            # Logfire cloud disabled (local only)
-            tracer = LogfireTracer("my-agent", send_to_logfire=False)
-        """
-        self.service_name = service_name
-        self.send_to_logfire = send_to_logfire
-        self.logfire = None
-
-        self._setup_logfire()
-
-        if instrument_pydantic_ai:
-            self._instrument_pydantic_ai()
-
-    def _setup_logfire(self):
-        """Setup Logfire."""
-        try:
-            import logfire
-            from opentelemetry import trace
-
-            # Skip if already configured in this process
-            if getattr(logfire, "_configured", False):
-                self.logfire = logfire
-                destination = "Logfire cloud" if self.send_to_logfire else "local only"
-                print(f"✅ Logfire tracing initialized (reuse): {destination}")
-                return
-
-            config_kwargs = {
-                "service_name": self.service_name,
-                "send_to_logfire": self.send_to_logfire,
-                "console": False,
-                "scrubbing": False,
-            }
-
-            # If a TracerProvider is already registered (e.g. by OTEL), Logfire
-            # attempts to override it and OpenTelemetry logs a
-            # "Overriding of current TracerProvider is not allowed" warning via
-            # the `logging` module (not `warnings`). Suppress that logger while
-            # configuring Logfire, which then attaches to the existing provider.
-            import logging
-
-            otel_loggers = [
-                logging.getLogger("opentelemetry.trace"),
-                logging.getLogger("opentelemetry.metrics"),
-                logging.getLogger("opentelemetry.metrics._internal"),
-            ]
-            saved_levels = [(lg, lg.level) for lg in otel_loggers]
-            for lg in otel_loggers:
-                lg.setLevel(logging.ERROR)
-
-            try:
-                logfire.configure(**config_kwargs)
-            finally:
-                for lg, level in saved_levels:
-                    lg.setLevel(level)
-
-            logfire._configured = True
-            self.logfire = logfire
-
-            destination = "Logfire cloud" if self.send_to_logfire else "local only"
-            print(f"✅ Logfire tracing initialized: {destination}")
-
-        except Exception as e:
-            print(f"⚠️  Failed to setup Logfire: {str(e)}")
-            self.logfire = None
-
-    def _instrument_pydantic_ai(self):
-        """Automatically instrument PydanticAI."""
-        if self.logfire:
-            try:
-                self.logfire.instrument_pydantic_ai()
-                print("✅ PydanticAI instrumentation enabled")
-            except Exception as e:
-                print(f"⚠️  Failed to instrument PydanticAI: {str(e)}")
-
-    @asynccontextmanager
-    async def span(self, name: str, **attributes):
-        """
-        Create a Logfire span.
-
-        Args:
-            name: Span name (e.g., "agent_run", "tool_call")
-            **attributes: Span attributes as key-value pairs
-
-        Yields:
-            Logfire span object
-
-        Example:
-            async with tracer.span("agent_run", session_id="123", model="gpt-4"):
-                result = await agent.run(prompt)
-        """
-        if not self.logfire:
-            yield None
-            return
-
-        with self.logfire.span(f"{self.service_name}.{name}", **attributes) as span:
-            try:
-                yield span
-            except Exception as e:
-                # Logfire automatically captures exceptions
-                raise
-
-    def debug(self, message: str, **context):
-        """Log debug message to Logfire."""
-        if self.logfire:
-            self.logfire.debug(message, **context)
-
-    def info(self, message: str, **context):
-        """Log info message to Logfire."""
-        if self.logfire:
-            self.logfire.info(message, **context)
-
-    def notice(self, message: str, **context):
-        """Log notice message to Logfire."""
-        if self.logfire:
-            self.logfire.notice(message, **context)
-
-    def warning(self, message: str, **context):
-        """Log warning message to Logfire."""
-        if self.logfire:
-            self.logfire.warning(message, **context)
-
-    def error(self, message: str, **context):
-        """Log error message to Logfire."""
-        if self.logfire:
-            self.logfire.error(message, **context)
-
-    def set_attribute(self, key: str, value: Any):
-        """
-        Set an attribute on the current span.
-
-        Args:
-            key: Attribute key
-            value: Attribute value
-        """
-        # Logfire handles this automatically in the span context
-        pass
-
-    def add_event(self, name: str, **attributes) -> None:
-        """Add an event to the current span."""
-        # Logfire handles events automatically via span context
-        pass
-
-
 class OTELTracer:
     """
-    Pure OpenTelemetry distributed tracing (without Logfire).
+    Pure OpenTelemetry distributed tracing.
 
-    Use this if you want direct OTLP export without Logfire.
+    Use this for direct OTLP export to the collector.
 
     By default (``create_spans=False``) this tracer does NOT create its own
     harness spans. It only configures the global OTLP provider and lets
@@ -352,6 +179,8 @@ class OTELTracer:
         export_interval_ms: int = 5000,
         flush_on_exit: bool = True,
         shutdown_on_exit: bool = True,
+        telemetry_level: str = "standard",
+        console: bool = False,
     ):
         """
         Initialize OTEL tracer.
@@ -376,12 +205,18 @@ class OTELTracer:
             shutdown_on_exit: Register an atexit handler that calls
                 ``shutdown()`` on the TracerProvider (default True). Implies
                 ``flush_on_exit``.
+            telemetry_level: Granularity level; ``verbose`` enables native
+                prompt/completion content on spans.
+            console: Also render spans to the local console via the OTel
+                ``ConsoleSpanExporter``.
         """
         self.service_name = service_name
         self.otlp_endpoint = otlp_endpoint
         self.sample_rate = sample_rate
         self.create_spans = create_spans
         self.record_failures = record_failures
+        self.telemetry_level = telemetry_level
+        self.console = console
         self._export_interval_ms = export_interval_ms
         self._flush_on_exit = flush_on_exit or shutdown_on_exit
         self._shutdown_on_exit = shutdown_on_exit
@@ -403,8 +238,14 @@ class OTELTracer:
             return
         try:
             from pydantic_ai.agent import Agent
+            from pydantic_ai.models.instrumented import InstrumentationSettings
 
-            Agent.instrument_all(True)
+            # Prompt/completion content is only attached to native spans at the
+            # verbose level; lower levels keep spans lean.
+            include_content = self.telemetry_level == "verbose"
+            Agent.instrument_all(
+                InstrumentationSettings(include_content=include_content)
+            )
             _instrumentation_enabled = True
             print("✅ PydanticAI native instrumentation enabled (OTLP)")
         except Exception as e:
@@ -420,11 +261,10 @@ class OTELTracer:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
                 OTLPSpanExporter,
             )
-            from opentelemetry.sdk.resources import Resource
             from opentelemetry.trace import ProxyTracerProvider
 
             # OpenTelemetry allows only one global TracerProvider per process.
-            # Reuse any already-registered provider (including Logfire's) instead
+            # Reuse any already-registered provider instead
             # of overriding it (which OTEL rejects with
             # "Overriding of current TracerProvider"). We can still attach our
             # OTLP span processor to the existing provider.
@@ -439,6 +279,15 @@ class OTELTracer:
                     schedule_delay_millis=self._export_interval_ms,
                 )
                 existing_provider.add_span_processor(processor)
+                if self.console:
+                    from opentelemetry.sdk.trace.export import (
+                        ConsoleSpanExporter,
+                        SimpleSpanProcessor,
+                    )
+
+                    existing_provider.add_span_processor(
+                        SimpleSpanProcessor(ConsoleSpanExporter())
+                    )
                 self.tracer = trace.get_tracer(__name__)
                 self._provider = existing_provider
                 print(
@@ -449,8 +298,12 @@ class OTELTracer:
                 return
 
             # No existing provider — create one
-            resource = Resource.create(
-                {"service.name": self.service_name, "service.version": "0.1.0"}
+            from ._otel import build_resource, register_atexit
+
+            resource = build_resource(
+                self.service_name,
+                telemetry_level=self.telemetry_level,
+                extra={"service.version": "0.1.0"},
             )
 
             sampler = TraceIdRatioBased(self.sample_rate)
@@ -464,6 +317,15 @@ class OTELTracer:
                 schedule_delay_millis=self._export_interval_ms,
             )
             provider.add_span_processor(processor)
+            if self.console:
+                from opentelemetry.sdk.trace.export import (
+                    ConsoleSpanExporter,
+                    SimpleSpanProcessor,
+                )
+
+                provider.add_span_processor(
+                    SimpleSpanProcessor(ConsoleSpanExporter())
+                )
 
             trace.set_tracer_provider(provider)
             self.tracer = trace.get_tracer(__name__)
@@ -471,36 +333,16 @@ class OTELTracer:
 
             self._enable_pydanticai_instrumentation()
             print(f"✅ OTEL tracing initialized: {self.otlp_endpoint}")
-            self._register_atexit(provider)
+            register_atexit(
+                provider,
+                flush_on_exit=self._flush_on_exit,
+                shutdown_on_exit=self._shutdown_on_exit,
+                is_shut_down=lambda: self._shut_down,
+            )
 
         except Exception as e:
             print(f"⚠️  Failed to setup OTEL tracing: {str(e)}")
             self.tracer = None
-
-    def _register_atexit(self, provider):
-        """Register atexit handler to flush/shutdown the TracerProvider."""
-        if self._flush_on_exit or self._shutdown_on_exit:
-            import atexit
-
-            # The SDK's TracerProvider.__init__ registers its own atexit
-            # handler that calls provider.shutdown(). Unregister it to avoid
-            # "shutdown can only be called once" when our handler also fires.
-            if getattr(provider, "_atexit_handler", None) is not None:
-                atexit.unregister(provider._atexit_handler)
-                provider._atexit_handler = None
-
-            def _cleanup():
-                try:
-                    if self._shut_down:
-                        return
-                    if self._shutdown_on_exit:
-                        provider.shutdown()
-                    elif self._flush_on_exit:
-                        provider.force_flush()
-                except Exception:
-                    pass
-
-            atexit.register(_cleanup)
 
     def shutdown(self):
         """Explicitly flush and shut down the OTLP trace provider.
@@ -613,51 +455,51 @@ class OTELTracer:
 
         Returns None if no suitable frame is found.
         """
-        from .logging import _is_harness_or_internal_frame
+        from .logging import app_code_location
 
-        tb = error.__traceback__
-        deepest = None
-        while tb is not None:
-            frame = tb.tb_frame
-            if not _is_harness_or_internal_frame(frame.f_code.co_filename):
-                deepest = {
-                    "file": os.path.relpath(frame.f_code.co_filename),
-                    "function": frame.f_code.co_name,
-                    "line": frame.f_lineno,
-                }
-            tb = tb.tb_next
-        return deepest
+        loc = app_code_location(error.__traceback__)
+        if not loc:
+            return None
+        return {
+            "file": loc["code.file.path"],
+            "function": loc["code.function"],
+            "line": loc["code.line.number"],
+        }
 
     @staticmethod
     def _annotate_span_failure(span, error: Exception) -> None:
-        """Apply standard OTel failure fields to an open span (ERROR + exception).
+        """Apply the canonical error schema to an open span (ERROR + exception).
 
-        Sets ``error.type``, ``error.source``, and ``code.*`` attributes on the
-        span for programmatic access. Appends the source location to the
-        ``statusMessage`` so it is visible in Langfuse's error log UI.
+        Uses ``observability.build_error_attributes`` so spans carry the same
+        ``error.*`` / ``exception.*`` / ``code.*`` fields as log records.
+        ``code.*`` prefers the exception's user frame, falling back to the
+        caller recorded at ``ManagedAgent.run()`` (the asyncio task boundary
+        otherwise drops it).
         """
         from opentelemetry.trace import Status, StatusCode
 
-        error_type = type(error)
-        error_type_name = (
-            f"{error_type.__module__}.{error_type.__qualname__}"
-            if error_type.__module__ != "builtins"
-            else error_type.__qualname__
-        )
-        span.set_attribute("error.type", error_type_name)
-        span.set_attribute("error.source", getattr(error, "_error_source", "unknown"))
+        from .errorhandling import ErrorContext
+        from .logging import get_harness_call_site
+        from .observability import build_error_attributes
 
-        source_loc = OTELTracer._extract_source_location(error)
-        if source_loc:
-            span.set_attribute("code.file.path", source_loc["file"])
-            span.set_attribute("code.function", source_loc["function"])
-            span.set_attribute("code.line.number", source_loc["line"])
+        ctx = ErrorContext(
+            error_type=type(error).__name__,
+            error_message=str(error),
+            source=getattr(error, "_error_source", "unknown"),
+            handled=False,
+        )
+        attrs = build_error_attributes(
+            ctx, exception=error, callsite=get_harness_call_site()
+        )
+        for key, value in attrs.items():
+            span.set_attribute(key, value)
 
         span.record_exception(error, escaped=True)
 
         status_msg = str(error)
-        if source_loc:
-            status_msg = f"{status_msg} | at {source_loc['file']}:{source_loc['line']}"
+        file = attrs.get("code.file.path")
+        if file:
+            status_msg = f"{status_msg} | at {file}:{attrs.get('code.line.number')}"
         span.set_status(Status(StatusCode.ERROR, status_msg))
 
     def add_event(self, name: str, **attributes):
@@ -691,92 +533,3 @@ class OTELTracer:
         pass
 
 
-class JaegerTracer:
-    """
-    Jaeger distributed tracing (legacy, use LogfireTracer with Jaeger export instead).
-
-    Note: This uses the Jaeger client library directly.
-    Consider using LogfireTracer with jaeger_endpoint for better integration.
-    """
-
-    def __init__(
-        self, service_name: str, jaeger_host: str = "localhost", jaeger_port: int = 6831
-    ):
-        """
-        Initialize Jaeger tracer.
-
-        Args:
-            service_name: Service name for traces
-            jaeger_host: Jaeger agent host
-            jaeger_port: Jaeger agent port (UDP)
-        """
-        self.service_name = service_name
-        self.jaeger_host = jaeger_host
-        self.jaeger_port = jaeger_port
-        self.tracer = None
-
-        self._setup_jaeger()
-
-    def _setup_jaeger(self):
-        """Setup Jaeger tracing."""
-        try:
-            from jaeger_client import Config
-
-            config = Config(
-                config={
-                    "sampler": {"type": "const", "param": 1},
-                    "local_agent": {
-                        "reporting_host": self.jaeger_host,
-                        "reporting_port": self.jaeger_port,
-                    },
-                    "logging": True,
-                },
-                service_name=self.service_name,
-                validate=True,
-            )
-
-            self.tracer = config.initialize_tracer()
-            print(
-                f"✅ Jaeger tracing initialized: {self.jaeger_host}:{self.jaeger_port}"
-            )
-
-        except Exception as e:
-            print(f"⚠️  Failed to setup Jaeger: {str(e)}")
-            self.tracer = None
-
-    @asynccontextmanager
-    async def span(self, name: str, **attributes):
-        """Create a Jaeger span."""
-        if not self.tracer:
-            yield None
-            return
-
-        with self.tracer.start_span(f"{self.service_name}.{name}") as span:
-            # Add tags (attributes)
-            for key, value in attributes.items():
-                span.set_tag(key, str(value))
-
-            try:
-                yield span
-            except Exception as e:
-                span.set_tag("error", True)
-                span.log_kv({"event": "error", "message": str(e)})
-                raise
-
-    def set_attribute(self, key: str, value: Any):
-        pass
-
-    def add_event(self, name: str, **attributes):
-        pass
-
-    def debug(self, message: str, **context):
-        pass
-
-    def info(self, message: str, **context):
-        pass
-
-    def warning(self, message: str, **context):
-        pass
-
-    def error(self, message: str, **context):
-        pass

@@ -17,6 +17,7 @@
 import os
 import socket
 import traceback
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Optional, Union
@@ -24,12 +25,17 @@ from typing import Any, Optional, Union
 from pydantic_settings import BaseSettings
 from dotenv import find_dotenv
 
-from .logging import Logger, ConsoleLogger, LogfireLogger, OTELLogger
-from .tracing import Tracer, LogfireTracer, NoOpTracer, OTELTracer
-from .metrics import MetricsCollector, NoOpMetrics, MetricNames, LogfireMetrics, OTELMetrics
+from .logging import Logger, OTELLogger, app_code_location, get_harness_call_site
+from .errorhandling import ErrorContext
+from .tracing import Tracer, NoOpTracer, OTELTracer
+from .metrics import MetricsCollector, NoOpMetrics, MetricNames, OTELMetrics
 
 
 from pydantic import Field
+
+# Granularity ladder for telemetry emission across logs, metrics and traces.
+TELEMETRY_LEVELS = ("minimal", "standard", "verbose")
+
 
 class HarnessSettings(BaseSettings):
     """Harness environment settings read from .env at module load."""
@@ -37,9 +43,24 @@ class HarnessSettings(BaseSettings):
     app_env: str = "development"
     service_name: str = "agent-harness"
     traceback_frame_limit: Optional[int] = None
+    # Max innermost traceback frames kept in error stacktraces. Unset, None or
+    # <= 0 means the full traceback; a positive N keeps the last N frames.
     default_traceback_frames: Optional[int] = Field(
         default=None,
         validation_alias="HARNESS_DEFAULT_TRACEBACK_FRAMES",
+    )
+    # Granularity of emitted telemetry (logs, metrics, traces, memory):
+    #   minimal  -> run summary + warnings/errors only
+    #   standard -> + per-turn records/metrics and enriched TurnData
+    #   verbose  -> + retries, lifecycle events, trace content, TTFT
+    telemetry_level: str = Field(
+        default="standard",
+        validation_alias="HARNESS_TELEMETRY_LEVEL",
+    )
+    # Render OTel records to the local console via the OTel console exporters.
+    telemetry_console: bool = Field(
+        default=True,
+        validation_alias="HARNESS_TELEMETRY_CONSOLE",
     )
 
     class Config:
@@ -52,20 +73,55 @@ class HarnessSettings(BaseSettings):
 HARNESS_SETTINGS = HarnessSettings()
 
 
+class TelemetryGranularity:
+    """Resolve and compare the configured telemetry granularity level."""
+
+    _RANK = {"minimal": 0, "standard": 1, "verbose": 2}
+
+    def __init__(self, level: str | None = None):
+        level = (level or HARNESS_SETTINGS.telemetry_level or "standard").lower()
+        if level not in self._RANK:
+            level = "standard"
+        self.level = level
+
+    @property
+    def rank(self) -> int:
+        return self._RANK[self.level]
+
+    def at_least(self, level: str) -> bool:
+        return self.rank >= self._RANK[level]
+
+    @property
+    def minimal(self) -> bool:
+        return self.level == "minimal"
+
+    @property
+    def standard(self) -> bool:
+        return self.rank >= self._RANK["standard"]
+
+    @property
+    def verbose(self) -> bool:
+        return self.level == "verbose"
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return f"TelemetryGranularity({self.level!r})"
+
+
 def _truncate_traceback(tb, limit: int):
-    """Truncate traceback chain to show at most `limit` frames.
+    """Truncate traceback chain to show at most `limit` innermost frames.
 
     Args:
         tb: Traceback object (or None)
-        limit: Max frames to keep (0 = None, 1 = last frame, etc.)
+        limit: Max innermost frames to keep. ``None`` or ``<= 0`` means no
+            truncation (full traceback).
 
     Returns:
-        Truncated traceback or None
+        Truncated traceback, the original, or None.
     """
-    if tb is None or limit < 0:
+    if tb is None:
         return tb
-    if limit == 0:
-        return None
+    if limit is None or limit <= 0:
+        return tb
 
     import types
 
@@ -93,28 +149,257 @@ def _truncate_traceback(tb, limit: int):
     return prev
 
 
-def _exception_record(e: BaseException, limit: Optional[int] = None) -> dict:
-    """Build error.* + raise-site code.* fields for a caught exception.
+def _format_traceback(exception: Optional[BaseException], limit: Optional[int]) -> Optional[str]:
+    """Format an exception traceback, honoring the frame limit.
 
-    Args:
-        e: The exception to record
-        limit: Max traceback frames to include (None = all)
+    ``limit`` follows :func:`_truncate_traceback`: ``None``/``<= 0`` is full,
+    otherwise keep the innermost ``limit`` frames (``traceback`` uses a negative
+    limit for innermost frames).
     """
-    formatted = traceback.format_exception(type(e), e, e.__traceback__, limit=limit)
-    record = {
-        "error.type": type(e).__name__,
-        "error.message": str(e),
-        "error.stacktrace": "".join(formatted),
+    if exception is None:
+        return None
+    fmt_limit = None if (limit is None or limit <= 0) else -abs(limit)
+    return "".join(
+        traceback.format_exception(
+            type(exception), exception, exception.__traceback__, limit=fmt_limit
+        )
+    )
+
+
+def build_error_attributes(
+    ctx: Optional[ErrorContext] = None,
+    *,
+    exception: Optional[BaseException] = None,
+    callsite: Optional[Mapping] = None,
+    limit: Optional[int] = None,
+) -> dict:
+    """Project an ``ErrorContext`` (+ exception) into the canonical error schema.
+
+    This is the single source of truth for error fields emitted to logs, spans
+    and metric labels: ``error.type``/``.message``/``.stacktrace``/``.source``/
+    ``.handled``, the ``exception.*`` mirror, and ``code.*`` for the caller.
+
+    ``code.*`` prefers the deepest user frame of ``exception``; when the stack
+    is entirely internal (errors raised inside pydantic-ai's asyncio task) it
+    falls back to ``callsite`` -- the caller recorded at ``ManagedAgent.run()``.
+    """
+    error_type = getattr(ctx, "error_type", None)
+    error_message = getattr(ctx, "error_message", None)
+    source = getattr(ctx, "source", None)
+    handled = bool(getattr(ctx, "handled", False))
+    stack_trace = getattr(ctx, "stack_trace", None)
+
+    if exception is not None:
+        error_type = error_type or type(exception).__name__
+        error_message = error_message or str(exception)
+        source = source or getattr(exception, "_error_source", None)
+        if not stack_trace:
+            stack_trace = _format_traceback(exception, limit)
+
+    attrs: dict = {}
+    if error_type:
+        attrs["error.type"] = error_type
+        attrs["exception.type"] = error_type
+    if error_message:
+        attrs["error.message"] = error_message
+        attrs["exception.message"] = error_message
+    if stack_trace:
+        attrs["error.stacktrace"] = stack_trace
+        attrs["exception.stacktrace"] = stack_trace
+    attrs["error.source"] = source or "unknown"
+    attrs["error.handled"] = handled
+
+    location: dict = {}
+    if exception is not None:
+        location = app_code_location(exception.__traceback__)
+    if not location and callsite:
+        location = dict(callsite)
+    attrs.update(location)
+    return attrs
+
+
+def _exception_record(exception: BaseException, limit: Optional[int] = None) -> dict:
+    """Backwards-compatible wrapper: canonical attrs for a caught exception."""
+    return build_error_attributes(exception=exception, callsite=get_harness_call_site(), limit=limit)
+
+
+def _error_attrs(
+    exception: Optional[BaseException],
+    context: dict,
+    limit: Optional[int] = None,
+) -> dict:
+    """Collect canonical ``error.*``/``exception.*``/``code.*`` attrs.
+
+    Handles both an exception object and context-provided error details
+    (``error_type``/``error_message``/``stack_trace`` from guardrails, or an
+    ``error={"type", "message"}`` mapping from tools).
+    """
+    error = context.get("error")
+    error = error if isinstance(error, Mapping) else {}
+    error_type = context.get("error_type") or error.get("type")
+    error_message = context.get("error_message") or error.get("message")
+    stack_trace = context.get("stack_trace") or error.get("stacktrace")
+    error_source = context.get("error_source") or context.get("source")
+
+    ctx = None
+    if error_type or error_message or stack_trace or error_source or "error_handled" in context:
+        ctx = ErrorContext(
+            error_type=error_type or "",
+            error_message=error_message or "",
+            source=error_source or "unknown",
+            stack_trace=stack_trace,
+            handled=bool(context.get("error_handled", False)),
+        )
+    callsite = context.get("_error_callsite") or get_harness_call_site() or None
+    return build_error_attributes(
+        ctx, exception=exception, callsite=callsite, limit=limit
+    )
+
+
+def _error_body(event_name: str, attrs: dict) -> str:
+    """Build a human-readable message body for an error record."""
+    error_type = attrs.get("error.type")
+    error_message = attrs.get("error.message")
+    if not (error_type or error_message):
+        return event_name
+    prefix = f"{error_type}: " if error_type else ""
+    return f"{event_name}: {prefix}{error_message or ''}".rstrip()
+
+
+
+def _usage_metrics(usage: Any) -> dict:
+    """Normalize a pydantic-ai ``UsageBase`` into a flat token-usage dict."""
+    if usage is None:
+        return {}
+
+    def _get(name: str) -> int:
+        return getattr(usage, name, 0) or 0
+
+    input_tokens = _get("input_tokens")
+    output_tokens = _get("output_tokens")
+    cache_read = _get("cache_read_tokens")
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": _get("reasoning_tokens"),
+        "total_tokens": input_tokens + output_tokens,
+        "prompt_tokens": input_tokens,
+        "completion_tokens": output_tokens,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": _get("cache_write_tokens"),
+        "cache_hit_ratio": round(cache_read / input_tokens, 4) if input_tokens else 0.0,
     }
-    tb = e.__traceback__
-    while tb is not None and tb.tb_next is not None:
-        tb = tb.tb_next
-    if tb is not None:
-        frame = tb.tb_frame
-        record["code.file.path"] = os.path.relpath(frame.f_code.co_filename)
-        record["code.function"] = frame.f_code.co_name
-        record["code.line.number"] = frame.f_lineno
-    return record
+
+
+def _cost_metrics(usage: Any, response: Any) -> dict:
+    """Best-effort USD cost breakdown for a model response via genai-prices."""
+    if usage is None:
+        return {}
+    result: dict = {}
+    total = getattr(usage, "cost", None)
+    if total is not None:
+        result["total_usd"] = float(total)
+    try:
+        from pydantic_ai._genai_prices import best_effort_price
+
+        calc = best_effort_price(
+            usage,
+            model_name=getattr(response, "model_name", None),
+            provider_api_url=getattr(response, "provider_url", None),
+            provider_name=getattr(response, "provider_name", None),
+            genai_request_timestamp=getattr(response, "timestamp", None),
+        )
+    except Exception:
+        calc = None
+    if calc is not None:
+        result.setdefault("total_usd", float(calc.total_price))
+        result["input_usd"] = float(calc.input_price)
+        result["output_usd"] = float(calc.output_price)
+        result["source"] = "genai-prices"
+    elif "total_usd" in result:
+        result["source"] = "provider"
+    else:
+        result["source"] = "unpriced"
+    return result
+
+
+def _model_messages(result: Any) -> list:
+    """Return a result's new messages as a list (method or attribute)."""
+    try:
+        nm = getattr(result, "new_messages", None)
+        return list(nm() if callable(nm) else (nm or []))
+    except Exception:
+        return []
+
+
+def _attach_tool_latency(turn: dict, request_msg: Any) -> None:
+    """Record tool names/count and elapsed tool time for a turn."""
+    try:
+        from pydantic_ai.messages import ToolReturnPart
+    except Exception:  # pragma: no cover - pydantic-ai always available
+        return
+    returns = [
+        p for p in getattr(request_msg, "parts", [])
+        if isinstance(p, ToolReturnPart)
+    ]
+    if not returns:
+        return
+    stamps = [
+        p.timestamp for p in returns if getattr(p, "timestamp", None) is not None
+    ]
+    response_ts = turn.get("response_ts")
+    if stamps and response_ts:
+        turn["tool_seconds"] = max(0.0, (max(stamps) - response_ts).total_seconds())
+    turn["tool_call_count"] = len(returns)
+    turn["tool_names"] = [getattr(p, "tool_name", None) for p in returns]
+
+
+def _extract_turns(result: Any, detect_phase) -> list[dict]:
+    """Extract per-turn metrics from a run result's new messages.
+
+    A "turn" is one model-iteration: the ``ModelResponse`` and any tool returns
+    that follow it before the next request.
+    """
+    try:
+        from pydantic_ai.messages import ModelRequest, ModelResponse
+    except Exception:  # pragma: no cover - pydantic-ai always available
+        return []
+
+    turns: list[dict] = []
+    last_request_ts = None
+    current: dict | None = None
+
+    for msg in _model_messages(result):
+        if isinstance(msg, ModelRequest):
+            last_request_ts = getattr(msg, "timestamp", None)
+            if current is not None:
+                _attach_tool_latency(current, msg)
+        elif isinstance(msg, ModelResponse):
+            response_ts = getattr(msg, "timestamp", None)
+            model_seconds = None
+            if response_ts and last_request_ts:
+                model_seconds = max(
+                    0.0, (response_ts - last_request_ts).total_seconds()
+                )
+            current = {
+                "response": msg,
+                "response_ts": response_ts,
+                "usage": getattr(msg, "usage", None),
+                "model_seconds": model_seconds,
+                "tool_seconds": 0.0,
+                "tool_call_count": 0,
+                "tool_names": [],
+                "model_name": getattr(msg, "model_name", None),
+                "provider_name": getattr(msg, "provider_name", None),
+            }
+            turns.append(current)
+
+    total = len(turns)
+    for index, turn in enumerate(turns):
+        turn["index"] = index + 1
+        turn["phase"] = detect_phase(index, total)
+    return turns
+
 
 
 class Observability:
@@ -127,9 +412,9 @@ class Observability:
 
     Example:
         obs = Observability(
-            loggers=[ConsoleLogger(), ElasticsearchLogger(...)],
-            tracers=[LogfireTracer(...), OTELTracer(...)],
-            metrics=[InMemoryMetrics(), OTELMetrics(...)],
+            loggers=[OTELLogger(...)],
+            tracers=[OTELTracer(...)],
+            metrics=[OTELMetrics(...)],
         )
 
     Or via builder injection (recommended):
@@ -149,6 +434,7 @@ class Observability:
         metrics_list: Optional[list[MetricsCollector]] = None,
         traceback_frame_limit: Optional[int] = None,
         builder: Optional["ObservabilityBuilder"] = None,
+        granularity: Optional[str] = None,
     ):
         """
         Initialize observability with pluggable backends.
@@ -163,12 +449,16 @@ class Observability:
             metrics_list: Multiple metrics backends
             traceback_frame_limit: Max traceback frames (None = full)
             builder: ObservabilityBuilder to pull backends from directly
+            granularity: Telemetry granularity (``minimal``/``standard``/``verbose``);
+                defaults to ``HARNESS_TELEMETRY_LEVEL``.
         """
         if builder:
             self.service_name = builder.service_name
             self._loggers: list[Logger] = list(builder._loggers)
             self._tracers: list[Tracer] = list(builder._tracers)
             self._metrics: list[MetricsCollector] = list(builder._metrics)
+            if granularity is None:
+                granularity = builder.granularity
         else:
             self.service_name = service_name
             # Build lists from single or multiple args
@@ -182,6 +472,9 @@ class Observability:
             if metrics:
                 self._metrics.append(metrics)
 
+        # Telemetry granularity drives what is emitted across logs/metrics/traces.
+        self.granularity = TelemetryGranularity(granularity)
+
         # Priority: passed arg > env var > None (full)
         self.traceback_frame_limit = (
             traceback_frame_limit
@@ -189,24 +482,41 @@ class Observability:
             else HARNESS_SETTINGS.traceback_frame_limit
         )
 
-        # Apply OTEL defaults for empty lists
+        self._apply_otel_defaults()
+
+        # Base context injected into every log entry. Deployment-wide facts
+        # (service, environment, host) live on the OTel Resource instead of
+        # being repeated on every record. Harness-owned logs default to the
+        # ``agent`` component; subsystems override it per call.
+        self._base_context: dict = {"component": "agent"}
+
+    def _apply_otel_defaults(self) -> None:
+        """Fill empty backend lists with the default OTel backends."""
         if not self._loggers:
             self._loggers = [
                 OTELLogger(
                     service_name=self.service_name,
                     environment=HARNESS_SETTINGS.app_env,
                     host=socket.gethostname(),
+                    console=HARNESS_SETTINGS.telemetry_console,
+                    telemetry_level=self.granularity.level,
                 )
             ]
         if not self._tracers:
-            self._tracers = [OTELTracer(service_name=self.service_name)]
-        if not self._metrics:
-            self._metrics = [OTELMetrics(service_name=self.service_name)]
-
-        # Base context injected into every log entry. Deployment-wide facts
-        # (service, environment, host) live on the OTel Resource instead of
-        # being repeated on every record, so this stays empty by default.
-        self._base_context: dict = {}
+            self._tracers = [
+                OTELTracer(
+                    service_name=self.service_name,
+                    telemetry_level=self.granularity.level,
+                )
+            ]
+        # Metrics are not exported at the minimal level (low-noise mode).
+        if not self._metrics and not self.granularity.minimal:
+            self._metrics = [
+                OTELMetrics(
+                    service_name=self.service_name,
+                    telemetry_level=self.granularity.level,
+                )
+            ]
 
     # Convenience properties — delegate to first backend
     @property
@@ -239,10 +549,37 @@ class Observability:
         exception: Optional[BaseException] = None,
         **context,
     ) -> None:
-        if exception is not None:
-            context = {**context, **_exception_record(exception, self.traceback_frame_limit)}
+        attrs = _error_attrs(exception, context, self.traceback_frame_limit)
+        # Reserved key: used for attribution, never emitted as an attribute.
+        context.pop("_error_callsite", None)
+        context = {**context, **attrs}
+        self._set_span_error_attributes(attrs, exception)
+        body = _error_body(message, attrs)
         for lg in self._loggers:
-            lg.error(message, **context)
+            lg.error(body, event_name=message, **context)
+
+    def _set_span_error_attributes(
+        self, attrs: dict, exception: Optional[BaseException] = None
+    ) -> None:
+        """Write the canonical error attrs onto the current recording span.
+
+        Called from error logging so PydanticAI's ``chat``/``invoke_agent``
+        spans (which are current when the ``_span_logs`` hooks log) carry the
+        same fields as the log record -- keeping logs and traces consistent.
+        """
+        if not attrs:
+            return
+        try:
+            from opentelemetry import trace as _otel_trace
+
+            span = _otel_trace.get_current_span()
+            if span is None or not span.is_recording():
+                return
+            for key, value in attrs.items():
+                span.set_attribute(key, value)
+        except Exception:
+            pass
+
 
     @asynccontextmanager
     async def observe(self, operation: str, **context):
@@ -256,93 +593,128 @@ class Observability:
         import structlog as _structlog
 
         _structlog.contextvars.bind_contextvars(**context)
+        start_time = datetime.now()
         try:
-            start_time = datetime.now()
+            self._emit_lifecycle("debug", "started", operation, context)
+            self._record_lifecycle_counter(operation, context)
 
-            # Log start on all loggers (debug: lifecycle start is duplicated by
-            # the completion record and by traces, so it stays out of the
-            # Elasticsearch log pipeline).
-            for lg in self._loggers:
-                lg.debug(f"{operation}_started", **{**self._base_context, **context})
-
-            # Increment counter on all metrics
-            for m in self._metrics:
-                m.counter(
-                    MetricNames.AGENT_RUNS
-                    if operation == "agent_run"
-                    else f"{operation}_total",
-                    **{
-                        k: str(v)
-                        for k, v in context.items()
-                        if k in ["model", "session_id"]
-                    },
-                )
-
-            # Chain all tracers
             async with self._chain_tracers(operation, **context) as trace_contexts:
+                trace_context = self._trace_context(trace_contexts)
+                _structlog.contextvars.bind_contextvars(**trace_context)
                 try:
-                    trace_context = {}
-                    if trace_contexts:
-                        primary_ctx = trace_contexts[0]
-                        if primary_ctx:
-                            try:
-                                if hasattr(primary_ctx, "trace_id"):
-                                    ctx = primary_ctx
-                                else:
-                                    ctx = primary_ctx.context
-                                trace_context = {
-                                    "trace_id": format(ctx.trace_id, "032x"),
-                                    "span_id": format(ctx.span_id, "016x"),
-                                }
-                            except (AttributeError, TypeError):
-                                pass
-
-                    _structlog.contextvars.bind_contextvars(**trace_context)
-
-                    yield {**context, **trace_context, "tool_call": context.get("tool_call", {"tool": None, "parameters": {}})}
-
+                    yield {
+                        **context,
+                        **trace_context,
+                        "tool_call": context.get(
+                            "tool_call", {"tool": None, "parameters": {}}
+                        ),
+                    }
                     duration = (datetime.now() - start_time).total_seconds()
-
-                    for lg in self._loggers:
-                        merged = {**self._base_context, **context, **trace_context}
-                        merged["performance"] = {"duration_seconds": duration}
-                        lg.info(f"{operation}_completed", **merged)
-
-                    for m in self._metrics:
-                        m.histogram(
-                            MetricNames.AGENT_DURATION
-                            if operation == "agent_run"
-                            else f"{operation}_duration_seconds",
-                            duration,
-                            **{
-                                k: str(v)
-                                for k, v in context.items()
-                                if k in ["model", "status"]
-                            },
-                        )
-
+                    self._emit_lifecycle(
+                        "info",
+                        "completed",
+                        operation,
+                        context,
+                        trace_context,
+                        performance={"duration_seconds": duration},
+                    )
+                    self._record_lifecycle_duration(operation, duration, context)
                 except Exception as e:
                     duration = (datetime.now() - start_time).total_seconds()
-
-                    for lg in self._loggers:
-                        merged = {**self._base_context, **context, **trace_context}
-                        merged["performance"] = {"duration_seconds": duration}
-                        merged.update(_exception_record(e, self.traceback_frame_limit))
-                        lg.error(f"{operation}_failed", **merged)
-
-                    for m in self._metrics:
-                        m.counter(
-                            MetricNames.AGENT_ERRORS,
-                            error_type=type(e).__name__,
-                            operation=operation,
-                        )
-                        m.histogram(
-                            f"{operation}_duration_seconds", duration, status="error"
-                        )
-
+                    error_attrs = _exception_record(e, self.traceback_frame_limit)
+                    self._emit_lifecycle(
+                        "error",
+                        "failed",
+                        operation,
+                        context,
+                        trace_context,
+                        body=_error_body(f"{operation}_failed", error_attrs),
+                        performance={"duration_seconds": duration},
+                        **error_attrs,
+                    )
+                    self._record_lifecycle_error(operation, duration, e)
                     raise
         finally:
             _structlog.contextvars.clear_contextvars()
+
+    def _emit_lifecycle(
+        self,
+        level: str,
+        suffix: str,
+        operation: str,
+        context: dict,
+        trace_context: Optional[dict] = None,
+        body: Optional[str] = None,
+        **extra,
+    ) -> None:
+        """Emit ``<operation>_<suffix>`` on every logger.
+
+        ``body`` overrides the log message while ``event_name`` stays
+        ``<operation>_<suffix>`` (used for human-readable failure messages).
+        """
+        event_name = f"{operation}_{suffix}"
+        merged = {**self._base_context, **context, **(trace_context or {}), **extra}
+        message = body if body is not None else event_name
+        if body is not None:
+            merged["event_name"] = event_name
+        for logger in self._loggers:
+            getattr(logger, level)(message, **merged)
+
+    def _record_lifecycle_counter(self, operation: str, context: dict) -> None:
+        name = (
+            MetricNames.AGENT_RUNS
+            if operation == "agent_run"
+            else f"{operation}_total"
+        )
+        labels = {
+            k: str(v) for k, v in context.items() if k in ("model", "session_id")
+        }
+        for m in self._metrics:
+            m.counter(name, **labels)
+
+    def _record_lifecycle_duration(
+        self, operation: str, duration: float, context: dict
+    ) -> None:
+        name = (
+            MetricNames.AGENT_DURATION
+            if operation == "agent_run"
+            else f"{operation}_duration_seconds"
+        )
+        labels = {k: str(v) for k, v in context.items() if k in ("model", "status")}
+        for m in self._metrics:
+            m.histogram(name, duration, **labels)
+
+    def _record_lifecycle_error(
+        self, operation: str, duration: float, e: BaseException
+    ) -> None:
+        for m in self._metrics:
+            m.counter(
+                MetricNames.AGENT_ERRORS,
+                **{
+                    "error.type": type(e).__name__,
+                    "error.source": getattr(e, "_error_source", "unknown"),
+                    "error.handled": False,
+                    "operation": operation,
+                },
+            )
+            m.histogram(f"{operation}_duration_seconds", duration, status="error")
+
+    @staticmethod
+    def _trace_context(trace_contexts: list) -> dict:
+        """Extract trace_id/span_id from the primary tracer's span context."""
+        if not trace_contexts:
+            return {}
+        primary = trace_contexts[0]
+        if not primary:
+            return {}
+        try:
+            ctx = primary if hasattr(primary, "trace_id") else primary.context
+            return {
+                "trace_id": format(ctx.trace_id, "032x"),
+                "span_id": format(ctx.span_id, "016x"),
+            }
+        except (AttributeError, TypeError):
+            return {}
 
     @asynccontextmanager
     async def _chain_tracers(self, operation: str, **context):
@@ -381,71 +753,143 @@ class Observability:
             lg.warning(message, **enriched)
 
     def log_error(self, message: str, exception: Optional[BaseException] = None, **context):
-        if exception is not None:
-            context = {**context, **_exception_record(exception, self.traceback_frame_limit)}
-        enriched = {**self._base_context, **context}
+        attrs = _error_attrs(exception, context, self.traceback_frame_limit)
+        context.pop("_error_callsite", None)
+        enriched = {**self._base_context, **context, **attrs}
+        self._set_span_error_attributes(attrs, exception)
+        body = _error_body(message, attrs)
         for lg in self._loggers:
-            lg.error(message, **enriched)
+            lg.error(body, event_name=message, **enriched)
 
-    def log_token_usage(self, result: Any, context: dict) -> None:
-        """Extract and log token usage for all internal model requests."""
-        from .memory import UsageData, ModelResponse
+    def collect_turns(self, result: Any) -> dict:
+        """Extract per-turn token/cost/latency metrics and aggregate them."""
+        turns = _extract_turns(result, self._detect_phase)
+        summary = {
+            "turn_count": len(turns),
+            "token_usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+            },
+            "cost": {"total_usd": 0.0, "input_usd": 0.0, "output_usd": 0.0},
+            "latency": {"model_seconds": 0.0, "tool_seconds": 0.0, "total_seconds": 0.0},
+            "tool_call_count": 0,
+            "turns": [],
+        }
+        for turn in turns:
+            tokens = _usage_metrics(turn["usage"])
+            cost = _cost_metrics(turn["usage"], turn["response"])
+            latency = {
+                "model_seconds": turn["model_seconds"] or 0.0,
+                "tool_seconds": turn["tool_seconds"] or 0.0,
+            }
+            latency["total_seconds"] = latency["model_seconds"] + latency["tool_seconds"]
+            entry = {
+                "index": turn["index"],
+                "phase": turn["phase"],
+                "token_usage": tokens,
+                "cost": cost,
+                "latency": latency,
+                "tool_call_count": turn["tool_call_count"],
+                "tool_names": turn["tool_names"],
+                "model_name": turn["model_name"],
+            }
+            summary["turns"].append(entry)
+            for key in summary["token_usage"]:
+                summary["token_usage"][key] += tokens.get(key, 0)
+            for key in summary["cost"]:
+                summary["cost"][key] += cost.get(key, 0.0)
+            for key in summary["latency"]:
+                summary["latency"][key] += latency.get(key, 0.0)
+            summary["tool_call_count"] += turn["tool_call_count"]
+        return summary
 
-        usage_list = []
+    def log_turns(self, result: Any, context: dict) -> dict:
+        """Log one ``agent_turn`` per model iteration; return the run summary.
 
-        # Path 1: result.usage.requests (multiple internal calls)
-        if hasattr(result, "usage") and result.usage:
-            u = result.usage
-            if (
-                hasattr(u, "requests")
-                and isinstance(getattr(u, "requests", None), list)
-                and u.requests
-            ):
-                for i, req in enumerate(u.requests):
-                    usage_list.append({
-                        "turn": i + 1,
-                        "phase": self._detect_phase(i, len(u.requests)),
-                        "usage": UsageData(
-                            input_tokens=getattr(req, "input_tokens", 0) or 0,
-                            output_tokens=getattr(req, "output_tokens", 0) or 0,
-                            reasoning_tokens=getattr(req, "reasoning_tokens", 0) or 0,
-                            total_tokens=getattr(req, "total_tokens", 0) or 0,
-                            prompt_tokens=getattr(req, "input_tokens", 0) or 0,
-                            completion_tokens=getattr(req, "output_tokens", 0) or 0,
-                        )
-                    })
-            else:
-                # Path 2: result.usage direct access (single call)
-                usage_list.append({
-                    "turn": 1,
-                    "phase": "final_response",
-                    "usage": UsageData(
-                        input_tokens=getattr(u, "input_tokens", 0) or 0,
-                        output_tokens=getattr(u, "output_tokens", 0) or 0,
-                        reasoning_tokens=getattr(u, "reasoning_tokens", 0) or 0,
-                        total_tokens=getattr(u, "total_tokens", 0) or 0,
-                        prompt_tokens=getattr(u, "input_tokens", 0) or 0,
-                        completion_tokens=getattr(u, "output_tokens", 0) or 0,
-                    )
-                })
+        Per-turn records are emitted at the ``standard`` granularity and above.
+        The returned aggregate is used to build the run-level ``run_summary``
+        at every granularity.
+        """
+        summary = self.collect_turns(result)
+        if self.granularity.standard:
+            for turn in summary["turns"]:
+                ctx = {**self._base_context, **context}
+                ctx.pop("cumulative_usage", None)
+                ctx["model"] = turn.get("model_name") or ctx.get("model")
+                self.log_info(
+                    "agent_turn",
+                    turn={
+                        "index": turn["index"],
+                        "phase": turn["phase"],
+                        "tool_names": turn["tool_names"],
+                        "tool_call_count": turn["tool_call_count"],
+                    },
+                    token_usage=turn["token_usage"],
+                    cost=turn["cost"],
+                    latency=turn["latency"],
+                    **ctx,
+                )
+                self.record_metric(
+                    "histogram",
+                    "gen_ai.client.operation.duration",
+                    turn["latency"]["total_seconds"],
+                    operation="chat",
+                    phase=turn["phase"],
+                    model=str(turn.get("model_name") or context.get("model") or ""),
+                )
+        return summary
 
-        # Log each request separately
-        for entry in usage_list:
-            ctx = {**context, "turn": entry["turn"], "phase": entry["phase"]}
-            # Drop the run-level cumulative_usage key (and the plumbing key that
-            # fed it) — it duplicated token_usage on every record.
-            ctx.pop("cumulative_usage", None)
-            self.log_info(
-                "token_usage",
-                token_usage={
-                    "input_tokens": entry["usage"].input_tokens,
-                    "output_tokens": entry["usage"].output_tokens,
-                    "reasoning_tokens": entry["usage"].reasoning_tokens,
-                    "total_tokens": entry["usage"].total_tokens,
-                    "prompt_tokens": entry["usage"].prompt_tokens,
-                    "completion_tokens": entry["usage"].completion_tokens,
-                },
-                **ctx,
+    def log_run_summary(
+        self,
+        summary: dict,
+        context: dict,
+        latency_breakdown: Optional[dict] = None,
+        status: str = "success",
+    ) -> None:
+        """Emit the per-run ``run_summary`` aggregate."""
+        turn_count = summary.get("turn_count", 0) or 0
+        latency = {**summary.get("latency", {}), **(latency_breakdown or {})}
+        run = {
+            "turn_count": turn_count,
+            "request_count": turn_count,
+            "tool_call_count": summary.get("tool_call_count", 0),
+            "status": status,
+        }
+        if turn_count:
+            run["avg_turn_latency_seconds"] = round(
+                summary["latency"]["total_seconds"] / turn_count, 6
+            )
+            run["avg_turn_cost_usd"] = round(
+                summary["cost"]["total_usd"] / turn_count, 8
+            )
+            run["max_turn_latency_seconds"] = round(
+                max(
+                    (t["latency"]["total_seconds"] for t in summary.get("turns", [])),
+                    default=0.0,
+                ),
+                6,
+            )
+        ctx = {**self._base_context, **context}
+        ctx.pop("cumulative_usage", None)
+        self.log_info(
+            "run_summary",
+            run=run,
+            token_usage=summary.get("token_usage", {}),
+            cost=summary.get("cost", {}),
+            latency=latency,
+            **ctx,
+        )
+        if latency.get("total_seconds") is not None:
+            self.record_metric(
+                "histogram",
+                "gen_ai.client.operation.duration",
+                float(latency.get("total_seconds") or 0.0),
+                operation="invoke_agent",
+                model=str(context.get("model") or ""),
             )
 
     @staticmethod
@@ -484,17 +928,17 @@ class Observability:
 class ObservabilityBuilder:
     """Fluent builder for observability configuration.
 
-    Provides two convenience methods for the supported observability stacks:
+    Provides one convenience method for the supported stack:
 
     - ``with_otel_observability()`` — OpenTelemetry (logging + tracing + metrics)
-    - ``with_logfire_observability()`` — Logfire (logging + tracing + metrics)
 
     All parameters are optional with sensible defaults; pass only what you
     need to override.
     """
 
-    def __init__(self, service_name: str = "agent"):
+    def __init__(self, service_name: str = "agent", granularity: Optional[str] = None):
         self.service_name = service_name
+        self.granularity = granularity
         self._loggers: list[Logger] = []
         self._tracers: list[Tracer] = []
         self._metrics: list[MetricsCollector] = []
@@ -509,6 +953,8 @@ class ObservabilityBuilder:
         export_interval_ms: int = 5000,
         flush_on_exit: bool = True,
         shutdown_on_exit: bool = True,
+        granularity: Optional[str] = None,
+        console: Optional[bool] = None,
     ) -> "ObservabilityBuilder":
         """Add complete OpenTelemetry observability (logging + tracing + metrics).
 
@@ -532,6 +978,10 @@ class ObservabilityBuilder:
                 buffered telemetry is sent even for short-lived scripts.
             shutdown_on_exit: Register atexit handlers that call ``shutdown()``
                 on all OTEL providers (default True). Implies ``flush_on_exit``.
+            granularity: Telemetry granularity (``minimal``/``standard``/``verbose``).
+                Defaults to ``HARNESS_TELEMETRY_LEVEL``.
+            console: Render logs/traces/metrics to the local console via the
+                OTel console exporters. Defaults to ``HARNESS_TELEMETRY_CONSOLE``.
 
         Returns:
             Self for chaining
@@ -539,6 +989,12 @@ class ObservabilityBuilder:
         from .logging import OTELLogger
         from .tracing import OTELTracer
         from .metrics import OTELMetrics
+
+        if granularity is not None:
+            self.granularity = granularity
+        resolved = TelemetryGranularity(self.granularity)
+        if console is None:
+            console = HARNESS_SETTINGS.telemetry_console
 
         self._loggers.append(
             OTELLogger(
@@ -548,6 +1004,8 @@ class ObservabilityBuilder:
                 shutdown_on_exit=shutdown_on_exit,
                 environment=HARNESS_SETTINGS.app_env,
                 host=socket.gethostname(),
+                console=console,
+                telemetry_level=resolved.level,
             )
         )
         self._tracers.append(
@@ -560,6 +1018,8 @@ class ObservabilityBuilder:
                 export_interval_ms=export_interval_ms,
                 flush_on_exit=flush_on_exit,
                 shutdown_on_exit=shutdown_on_exit,
+                telemetry_level=resolved.level,
+                console=console,
             )
         )
         self._metrics.append(
@@ -568,37 +1028,10 @@ class ObservabilityBuilder:
                 otlp_endpoint=otlp_endpoint,
                 flush_on_exit=flush_on_exit,
                 shutdown_on_exit=shutdown_on_exit,
+                telemetry_level=resolved.level,
+                console=console,
             )
         )
-        return self
-
-    def with_logfire_observability(
-        self,
-        send_to_logfire: bool = True,
-        instrument_pydantic_ai: bool = True,
-    ) -> "ObservabilityBuilder":
-        """Add complete Logfire observability (logging + tracing + metrics).
-
-        Args:
-            send_to_logfire: Send to Logfire cloud or local only
-            instrument_pydantic_ai: Auto-instrument PydanticAI spans
-
-        Returns:
-            Self for chaining
-        """
-        from .logging import LogfireLogger
-        from .tracing import LogfireTracer
-        from .metrics import LogfireMetrics
-
-        self._loggers.append(LogfireLogger(service_name=self.service_name))
-        self._tracers.append(
-            LogfireTracer(
-                service_name=self.service_name,
-                send_to_logfire=send_to_logfire,
-                instrument_pydantic_ai=instrument_pydantic_ai,
-            )
-        )
-        self._metrics.append(LogfireMetrics(service_name=self.service_name))
         return self
 
     def build(self) -> Observability:

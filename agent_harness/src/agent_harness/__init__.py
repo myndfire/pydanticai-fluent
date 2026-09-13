@@ -34,9 +34,6 @@ from .memory import (
 from .prompts import PromptProvider, StaticPrompts, MongoPrompts
 from .logging import (
     Logger,
-    ConsoleLogger,
-    ElasticsearchLogger,
-    FileLogger,
     CompositeLogger,
     OTELLogger,
 )
@@ -50,20 +47,23 @@ from .tracing import (
     Tracer,
     NoOpTracer,
     InMemoryTracer,
-    LogfireTracer,
     OTELTracer,
-    JaegerTracer,
 )
 from .metrics import (
     MetricsCollector,
     NoOpMetrics,
     InMemoryMetrics,
     OTELMetrics,
-    PrometheusMetrics,
-    StatsdMetrics,
     MetricNames,
 )
-from .observability import Observability, ObservabilityBuilder
+from .observability import (
+    Observability,
+    ObservabilityBuilder,
+    HarnessSettings,
+    HARNESS_SETTINGS,
+    TelemetryGranularity,
+    TELEMETRY_LEVELS,
+)
 from .tools import ToolRegistry
 from .guards import (
     GuardConfig,
@@ -144,9 +144,6 @@ __all__ = [
     "MongoPrompts",
     # Logging
     "Logger",
-    "ConsoleLogger",
-    "ElasticsearchLogger",
-    "FileLogger",
     "CompositeLogger",
     "OTELLogger",
     # Log Enrichment
@@ -159,20 +156,20 @@ __all__ = [
     "Tracer",
     "NoOpTracer",
     "InMemoryTracer",
-    "LogfireTracer",
     "OTELTracer",
-    "JaegerTracer",
     # Metrics
     "MetricsCollector",
     "NoOpMetrics",
     "InMemoryMetrics",
     "OTELMetrics",
-    "PrometheusMetrics",
-    "StatsdMetrics",
     "MetricNames",
     # Observability (Unified)
     "Observability",
     "ObservabilityBuilder",
+    "HarnessSettings",
+    "HARNESS_SETTINGS",
+    "TelemetryGranularity",
+    "TELEMETRY_LEVELS",
     # Tools
     "ToolRegistry",
     # Guards

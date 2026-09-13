@@ -65,9 +65,10 @@ Services:
 |---|---|---|
 | `mongo` | `27017` | MongoMemory, MongoPrompts |
 | `redis` | `6379` | RedisMemory |
-| `elasticsearch` | `9200` | ElasticsearchMemory, ElasticsearchLogger, OTel logs backend |
-| `kibana` | `5601` | Kibana log browser — renders `trace_id` as a "View in Langfuse" link |
+| `elasticsearch` | `9200` | ElasticsearchMemory; OTel logs + metrics backend |
+| `kibana` | `5601` | Kibana log/metrics browser — renders `trace_id` as a "View in Langfuse" link |
 | `langfuse-web` | `3000` | Trace backend + UI (default `docker compose up -d` stack) |
+| `openobserve` | `5080`, `5081` | Unified logs + metrics + traces UI (default `docker compose up -d` stack) |
 | `grafana` | `3000` | Single pane: logs from ES, metrics from Prometheus, trace waterfall from Jaeger |
 | `prometheus` | `9090` | Metrics backend — native OTLP receiver (ingests the collector's OTLP metrics) |
 | `jaeger` | `16686`, `14317`, `14318` | Trace backend — native OTLP gRPC ingest (host :14317/:14318), UI at :16686 |
@@ -102,7 +103,7 @@ docker compose up -d kibana
 ```
 
 Dashboards are logs-based (trace analytics live in Langfuse):
-- **Agent Harness — Errors**: `http://localhost:5601/app/dashboards#/view/errors-exceptions-dashboard` (ERROR trend, top messages, exception types, raise sites, recent errors with `langfuse_trace_url`).
+- **Agent Harness — Errors**: `http://localhost:5601/app/dashboards#/view/errors-exceptions-dashboard` (ERROR trend, errors by event, exception types, errors by component, recent errors; drill down via clickable `trace_id`).
 - **Agent Harness — Debug Logs**: `http://localhost:5601/app/dashboards#/view/log-levels-dashboard`.
 
 The same script adds a URL field format on the logs data view so `trace_id` renders as a **"View in Langfuse"** link (built from `LANGFUSE_UI_URL` + `LANGFUSE_PROJECT_ID` in `.env`). In Discover, widen the time range and filter `severity_text: "ERROR"` or `event_name: (retry_attempt or filter_error or agent_run_failed)`. See **[`OBSERVABILITY.md §8`](../OBSERVABILITY.md#8-kibana-optional)** for the full dashboard list and the data-stream `-*` vs `*` gotcha.
@@ -194,7 +195,6 @@ if __name__ == "__main__":
 | | `observability/02_tracing_metrics.py` | In-memory spans & metrics inspection |
 | | `observability/03_builder_logs_metrics.py` | Fluent ObservabilityBuilder (logs + metrics) |
 | | `observability/04_composite_logs.py` | Multiple logging backends together |
-| | `observability/05_elasticsearch_logging.py` | Direct ES structured logging (daily indices) |
 | | `observability/06_otel_jaeger_logs_traces_metrics.py` | OTel logs+traces+metrics → Jaeger |
 | | `observability/07_prometheus_logs_metrics.py` | Prometheus logs + metrics with push gateway |
 | | `observability/08_live_agent_logs_metrics.py` | Live agent with composed logs + metrics |

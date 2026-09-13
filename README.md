@@ -177,7 +177,7 @@ cd ../agent_harness_examples && uv sync
 
 | Tool | URL | Login |
 |---|---|---|
-| Langfuse (traces) | http://localhost:3000 | `admin@example.com` / `langfuse` — required; session persists ~1 year |
+| Langfuse (traces) | http://localhost:3000 | `admin@example.com` / `Admin1234!` — required; session persists ~1 year |
 | Kibana (logs) | http://localhost:5601 | none — open access |
 | Elasticsearch (logs API) | http://localhost:9200 | none |
 

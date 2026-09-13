@@ -80,6 +80,7 @@ class PipelineContext:
         if self._observability:
             self._observability.log_info(
                 "pipeline_stage_completed",
+                component="pipeline",
                 stage=name,
                 success=success,
                 output_preview=output[:200] if output else "",

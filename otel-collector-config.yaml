@@ -19,6 +19,13 @@ processors:
         - severity_number == SEVERITY_NUMBER_DEBUG
         - IsMatch(body.string, ".*_started$")
         - body.string == "retry_wait"
+  # The harness does not even configure a metrics exporter at the minimal
+  # granularity; this is a safety net for any app that still emits metrics.
+  filter/drop_minimal_metrics:
+    error_mode: ignore
+    metrics:
+      metric:
+        - resource.attributes["harness.telemetry.level"] == "minimal"
   batch:
 
 exporters:
@@ -29,6 +36,13 @@ exporters:
       x-langfuse-ingestion-version: "4"
   otlp_http/elasticsearch:
     endpoint: http://elasticsearch:9200/_otlp
+  # OpenObserve ingests all three signals over OTLP/HTTP. The endpoint must not
+  # have a trailing slash (the collector appends /v1/{signal}).
+  otlp_http/openobserve:
+    endpoint: ${env:OPENOBSERVE_ENDPOINT}
+    headers:
+      Authorization: "Basic ${env:OPENOBSERVE_AUTH}"
+      stream-name: agent-harness
   debug:
     verbosity: basic
 
@@ -37,12 +51,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp_http/langfuse]
+      exporters: [otlp_http/langfuse, otlp_http/openobserve]
     metrics:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [debug]
+      processors: [filter/drop_minimal_metrics, batch]
+      exporters: [otlp_http/elasticsearch, otlp_http/openobserve]
     logs:
       receivers: [otlp]
       processors: [filter/drop_noise, batch]
-      exporters: [otlp_http/elasticsearch]
+      exporters: [otlp_http/elasticsearch, otlp_http/openobserve]

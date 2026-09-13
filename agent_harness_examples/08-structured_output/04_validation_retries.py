@@ -37,7 +37,7 @@ import os
 from dotenv import load_dotenv
 import structlog
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelRetry
+from pydantic_ai import ModelRetry
 
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory

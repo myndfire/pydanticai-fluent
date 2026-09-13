@@ -1,0 +1,551 @@
+{
+  "title": "Agent Harness \u2014 Latency",
+  "description": "Agent-request latency and its breakdown by segment, plus per-turn model latency.",
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "p1",
+          "type": "line",
+          "title": "Avg run latency over time",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS x, avg(latency_total_seconds) AS y FROM \"agent_harness\" WHERE event_name='run_summary' GROUP BY histogram(_timestamp)",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "x",
+                    "alias": "x",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "x",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "y",
+                    "alias": "y",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "y",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false
+                  }
+                ],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 96,
+            "h": 18,
+            "i": 1
+          }
+        },
+        {
+          "id": "p2",
+          "type": "table",
+          "title": "Run latency (avg / max)",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT avg(latency_total_seconds) AS avg_seconds, max(latency_total_seconds) AS max_seconds FROM \"agent_harness\" WHERE event_name='run_summary'",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "avg_seconds",
+                    "alias": "avg_seconds",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "avg_seconds",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "max_seconds",
+                    "alias": "max_seconds",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "max_seconds",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 18,
+            "w": 96,
+            "h": 18,
+            "i": 2
+          }
+        },
+        {
+          "id": "p3",
+          "type": "table",
+          "title": "Latency breakdown (avg seconds)",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT avg(latency_model_seconds) AS model, avg(latency_tool_seconds) AS tools, avg(latency_agent_core_seconds) AS agent_core, avg(latency_overhead_seconds) AS overhead, avg(latency_evaluator_seconds) AS evaluators, avg(latency_memory_load_seconds) AS memory_load, avg(latency_memory_save_seconds) AS memory_save FROM \"agent_harness\" WHERE event_name='run_summary'",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "model",
+                    "alias": "model",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "model",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "tools",
+                    "alias": "tools",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "tools",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "agent_core",
+                    "alias": "agent_core",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "agent_core",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "overhead",
+                    "alias": "overhead",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "overhead",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "evaluators",
+                    "alias": "evaluators",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "evaluators",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "memory_load",
+                    "alias": "memory_load",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "memory_load",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "memory_save",
+                    "alias": "memory_save",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "memory_save",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 36,
+            "w": 96,
+            "h": 18,
+            "i": 3
+          }
+        },
+        {
+          "id": "p4",
+          "type": "table",
+          "title": "Slowest runs",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT session_id, body, latency_total_seconds FROM \"agent_harness\" WHERE event_name='run_summary' ORDER BY latency_total_seconds DESC LIMIT 20",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "session_id",
+                    "alias": "session_id",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "session_id",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "body",
+                    "alias": "body",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "body",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  },
+                  {
+                    "label": "latency_total_seconds",
+                    "alias": "latency_total_seconds",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "latency_total_seconds",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 54,
+            "w": 96,
+            "h": 18,
+            "i": 4
+          }
+        },
+        {
+          "id": "p5",
+          "type": "line",
+          "title": "Avg per-turn model latency",
+          "description": "",
+          "config": {
+            "show_legends": true
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS x, avg(latency_model_seconds) AS y FROM \"agent_harness\" WHERE event_name='agent_turn' GROUP BY histogram(_timestamp)",
+              "customQuery": true,
+              "fields": {
+                "stream": "agent_harness",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "x",
+                    "alias": "x",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "x",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false,
+                    "sortBy": null
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "y",
+                    "alias": "y",
+                    "color": null,
+                    "type": "build",
+                    "functionName": null,
+                    "args": [
+                      {
+                        "type": "field",
+                        "value": {
+                          "field": "y",
+                          "streamAlias": null
+                        }
+                      }
+                    ],
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "treatAsNonTimestamp": true,
+                    "showFieldAsJson": false
+                  }
+                ],
+                "z": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": ""
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 72,
+            "w": 96,
+            "h": 18,
+            "i": 5
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "1d"
+  },
+  "variables": {
+    "list": [],
+    "showDynamicFilters": false
+  }
+}
