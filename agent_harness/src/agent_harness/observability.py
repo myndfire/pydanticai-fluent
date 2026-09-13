@@ -25,7 +25,7 @@ from typing import Any, Optional, Union
 from pydantic_settings import BaseSettings
 from dotenv import find_dotenv
 
-from .logging import Logger, OTELLogger, app_code_location, get_harness_call_site
+from .logging import NoOpLogger, Logger, OTELLogger, app_code_location, get_harness_call_site
 from .errorhandling import ErrorContext
 from .tracing import Tracer, NoOpTracer, OTELTracer
 from .metrics import MetricsCollector, NoOpMetrics, MetricNames, OTELMetrics
@@ -63,6 +63,10 @@ class HarnessSettings(BaseSettings):
     telemetry_level: str = Field(
         default="standard",
         validation_alias="HARNESS_TELEMETRY_LEVEL",
+    )
+    telemetry_enabled: bool = Field(
+        default=True,
+        validation_alias="HARNESS_TELEMETRY_ENABLED",
     )
     # Render OTel records to the local console via the OTel console exporters.
     telemetry_console: bool = Field(
@@ -534,6 +538,14 @@ class Observability:
 
     def _apply_otel_defaults(self) -> None:
         """Fill empty backend lists with the default OTel backends."""
+        if not HARNESS_SETTINGS.telemetry_enabled:
+            if not self._loggers:
+                self._loggers = [NoOpLogger()]
+            if not self._tracers:
+                self._tracers = [NoOpTracer()]
+            if not self._metrics:
+                self._metrics = [NoOpMetrics()]
+            return
         if not self._loggers:
             self._loggers = [
                 OTELLogger(
@@ -1088,6 +1100,12 @@ class ObservabilityBuilder:
         from .logging import OTELLogger
         from .tracing import OTELTracer
         from .metrics import OTELMetrics
+
+        if not HARNESS_SETTINGS.telemetry_enabled:
+            self._loggers.append(NoOpLogger())
+            self._tracers.append(NoOpTracer())
+            self._metrics.append(NoOpMetrics())
+            return self
 
         if granularity is not None:
             self.granularity = granularity

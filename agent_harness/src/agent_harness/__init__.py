@@ -34,6 +34,7 @@ from .memory import (
 from .prompts import PromptProvider, StaticPrompts, MongoPrompts
 from .logging import (
     Logger,
+    NoOpLogger,
     CompositeLogger,
     OTELLogger,
 )
@@ -155,6 +156,7 @@ __all__ = [
     "MongoPrompts",
     # Logging
     "Logger",
+    "NoOpLogger",
     "CompositeLogger",
     "OTELLogger",
     # Log Enrichment

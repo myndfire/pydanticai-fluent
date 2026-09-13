@@ -211,6 +211,28 @@ class Logger(Protocol):
         ...
 
 
+class NoOpLogger:
+    """No-op structured logger used when telemetry is disabled."""
+
+    def debug(self, message: str, **context):
+        pass
+
+    def info(self, message: str, **context):
+        pass
+
+    def warning(self, message: str, **context):
+        pass
+
+    def error(self, message: str, **context):
+        pass
+
+    def close(self):
+        pass
+
+    def shutdown(self):
+        pass
+
+
 # ── structlog → OTel bridge ────────────────────────────────────────────
 #
 # structlog remains the authoring API used across the examples, but all
@@ -240,6 +262,13 @@ class _StructlogBridge:
         if self._active is not None:
             return self._active
         if self._fallback is None:
+            if os.getenv("HARNESS_TELEMETRY_ENABLED", "true").lower() in (
+                "0",
+                "false",
+                "no",
+            ):
+                self._fallback = NoOpLogger()
+                return self._fallback
             try:
                 console = os.getenv("HARNESS_TELEMETRY_CONSOLE", "true").lower() not in (
                     "0",

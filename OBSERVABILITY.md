@@ -69,7 +69,9 @@ agent, the `QualityCheck` LLM judge, and the guard fallback) carries a capabilit
 ordered inside PydanticAI's instrumentation, so each emits `model_request` inside
 its `chat` span and `agent_run` inside its `invoke_agent` span, and those spans
 resolve to logs; tool spans carry the existing `tool_call`/`tool_result` records.
-Records are gated by `HARNESS_TELEMETRY_LEVEL` (`minimal` emits none).
+Records are gated by `HARNESS_TELEMETRY_LEVEL` (`minimal` emits none). Set
+`HARNESS_TELEMETRY_ENABLED=false` to disable all telemetry exporters when no
+OTel Collector is running.
 
 ## 4. Elasticsearch
 

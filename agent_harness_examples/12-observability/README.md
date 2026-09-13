@@ -28,6 +28,10 @@ metrics, traces, and memory:
 `HARNESS_TELEMETRY_CONSOLE=true` renders records to the local console through the
 OTel console exporters.
 
+Set `HARNESS_TELEMETRY_ENABLED=false` to disable all telemetry exporters and
+local telemetry output. This is useful when running examples without an OTel
+Collector.
+
 ## Error drill-down
 
 Start in either the Elasticsearch/Kibana or OpenObserve Errors view. Filter on
@@ -127,6 +131,7 @@ Shared UI login for Langfuse and OpenObserve: **`admin@example.com` / `Admin1234
 
 | Variable | Default | Description |
 |---|---|---|
+| `HARNESS_TELEMETRY_ENABLED` | `true` | Enable OTLP telemetry and local telemetry output |
 | `HARNESS_TELEMETRY_LEVEL` | `standard` | `minimal` / `standard` / `verbose` |
 | `HARNESS_TELEMETRY_CONSOLE` | `true` | Render OTel records to the local console |
 | `OTEL_COLLECTOR_ENDPOINT` | `localhost:4317` | OTLP gRPC collector endpoint |
