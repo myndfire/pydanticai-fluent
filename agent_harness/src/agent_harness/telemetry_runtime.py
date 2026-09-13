@@ -49,6 +49,14 @@ class TelemetryRuntime:
 
     def register(self, provider: Any) -> None:
         """Register a provider for coordinated cleanup exactly once."""
+        # The OTel SDK installs its own provider-level atexit handler. The
+        # runtime is the owner once a provider is adopted, so leaving both
+        # handlers active causes shutdown() to be called twice at process exit.
+        for attr in ("_at_exit_handler", "_atexit_handler"):
+            handler = getattr(provider, attr, None)
+            if handler is not None:
+                atexit.unregister(handler)
+                setattr(provider, attr, None)
         with self._lock:
             if provider not in self._providers:
                 self._providers.append(provider)

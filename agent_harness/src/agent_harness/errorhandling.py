@@ -55,6 +55,7 @@ class ErrorContext:
     max_attempts: int = 1
     will_retry: bool = False
     handled: bool = False  # True when a guardrail/callback recovered the error
+    handler_error: Optional[str] = None  # callback failure without masking the original
 
 
 @dataclass
@@ -191,7 +192,11 @@ class ErrorHandler:
                         success=False,
                         error_context=error_ctx,
                     )
-            except Exception:
-                pass
+            except Exception as handler_error:
+                # Preserve the original application exception while exposing
+                # that recovery itself failed to callers and telemetry.
+                error_ctx.handler_error = (
+                    f"{type(handler_error).__name__}: {handler_error}"
+                )
 
         return None

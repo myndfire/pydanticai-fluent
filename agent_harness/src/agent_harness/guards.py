@@ -20,6 +20,7 @@ import asyncio
 import structlog
 import time
 import traceback
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Union
@@ -269,6 +270,64 @@ class TokenLimitsConfig:
         return self
 
 
+class RateLimitError(RuntimeError):
+    """Raised when a token/request rate window has no remaining capacity."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after: float,
+        requested_tokens: int,
+        available_tokens: int,
+        window_seconds: float,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.requested_tokens = requested_tokens
+        self.available_tokens = available_tokens
+        self.window_seconds = window_seconds
+        self._error_source = "rate_limit"
+
+
+class TokenRateLimitConfig:
+    """Sliding-window request/token limiter for downstream model providers."""
+
+    def __init__(
+        self,
+        tokens_per_window: Optional[int] = None,
+        requests_per_window: Optional[int] = None,
+        window_seconds: float = 60.0,
+        reserve_output_tokens: int = 0,
+        on_exceeded: Optional[Callable[[ErrorContext], Any]] = None,
+    ):
+        self.tokens_per_window = tokens_per_window
+        self.requests_per_window = requests_per_window
+        self.window_seconds = window_seconds
+        self.reserve_output_tokens = reserve_output_tokens
+        self._on_exceeded = on_exceeded
+
+    def with_tokens_per_window(self, value: int) -> "TokenRateLimitConfig":
+        self.tokens_per_window = value
+        return self
+
+    def with_requests_per_window(self, value: int) -> "TokenRateLimitConfig":
+        self.requests_per_window = value
+        return self
+
+    def with_window(self, seconds: float) -> "TokenRateLimitConfig":
+        self.window_seconds = seconds
+        return self
+
+    def with_reserve_output_tokens(self, value: int) -> "TokenRateLimitConfig":
+        self.reserve_output_tokens = value
+        return self
+
+    def on_exceeded(self, callback: Callable[[ErrorContext], Any]) -> "TokenRateLimitConfig":
+        self._on_exceeded = callback
+        return self
+
+
 class CostLimitsConfig:
     """Configuration for cost limiting.
 
@@ -407,6 +466,7 @@ class GuardConfig:
     - content_filter: Filter harmful content
     - pii_detection: Detect and redact PII
     - token_limits: Cap token usage
+    - token_rate_limit: Cap requests/tokens over a sliding window
     - cost_limits: Cap dollar cost
     - circuit_breaker: Prevent cascading failures
     - turn_limits: Cap turns per session
@@ -421,6 +481,7 @@ class GuardConfig:
     content_filter: Optional[ContentFilterConfig] = None
     pii_detection: Optional[PIIDetectionConfig] = None
     token_limits: Optional[TokenLimitsConfig] = None
+    token_rate_limit: Optional[TokenRateLimitConfig] = None
     cost_limits: Optional[CostLimitsConfig] = None
     circuit_breaker: Optional[CircuitBreakerConfig] = None
     turn_limits: Optional[TurnLimitsConfig] = None
@@ -444,6 +505,7 @@ class GuardRunner:
         self._circuit_open = False
         self._circuit_opened_at: Optional[float] = None
         self._half_open_pending = False
+        self._rate_limit_events: deque[tuple[float, int]] = deque()
         self._cumulative_usage = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -583,6 +645,7 @@ class GuardRunner:
         string or a sequence of pydantic_ai UserContent parts for multimodal
         input.
         """
+        execution = kwargs.pop("execution_context", None)
         session_id = kwargs.get("conversation_id")
 
         gated = self._circuit_breaker_gate(session_id)
@@ -593,9 +656,20 @@ class GuardRunner:
         usage_limits = self._build_usage_limits()
         last_exception: Optional[BaseException] = None
 
-        for attempt in range(self.config.agent.max_retries):
+        # ``max_retries`` means retries after the first attempt. This matches
+        # the public configuration and PydanticAI terminology.
+        for attempt in range(self.config.agent.max_retries + 1):
             result = None
             try:
+                self._check_rate_limit(prompt, session_id, attempt)
+                if execution is not None:
+                    execution.budget.check()
+                    execution.budget.consume_model_request()
+                timeout = self.config.agent.timeout
+                if execution is not None:
+                    remaining = execution.budget.remaining_seconds()
+                    if remaining is not None:
+                        timeout = min(timeout, remaining)
                 result = await asyncio.wait_for(
                     agent.run(
                         prompt,
@@ -603,7 +677,7 @@ class GuardRunner:
                         usage_limits=usage_limits,
                         **kwargs,
                     ),
-                    timeout=self.config.agent.timeout,
+                    timeout=timeout,
                 )
                 usage_obj = self._extract_usage(result)
                 self._reset_circuit_on_success()
@@ -618,6 +692,12 @@ class GuardRunner:
 
             except _GuardrailHandled as handled:
                 return handled.result
+            except RateLimitError as e:
+                if await self._handle_retryable(
+                    e, "rate_limit", result, session_id, attempt
+                ):
+                    continue
+                last_exception = e
             except UsageLimitExceeded as e:
                 return self._handle_usage_limit_exceeded(e, result, session_id, attempt)
             except asyncio.TimeoutError as e:
@@ -694,6 +774,60 @@ class GuardRunner:
         each response and emits one consistent ``*_limit_exceeded`` event.
         """
         return None
+
+    def _check_rate_limit(self, prompt: Any, session_id: Any, attempt: int) -> None:
+        """Reserve estimated request capacity before calling the model."""
+        config = self.config.token_rate_limit
+        if config is None:
+            return
+        now = time.monotonic()
+        cutoff = now - config.window_seconds
+        while self._rate_limit_events and self._rate_limit_events[0][0] <= cutoff:
+            self._rate_limit_events.popleft()
+
+        request_count = len(self._rate_limit_events)
+        estimated_tokens = max(1, len(str(prompt)) // 4) + config.reserve_output_tokens
+        used_tokens = sum(tokens for _, tokens in self._rate_limit_events)
+        request_exceeded = (
+            config.requests_per_window is not None
+            and request_count >= config.requests_per_window
+        )
+        token_exceeded = (
+            config.tokens_per_window is not None
+            and used_tokens + estimated_tokens > config.tokens_per_window
+        )
+        if request_exceeded or token_exceeded:
+            retry_after = config.window_seconds
+            if self._rate_limit_events:
+                retry_after = max(
+                    0.0,
+                    self._rate_limit_events[0][0] + config.window_seconds - now,
+                )
+            available = max(
+                0,
+                (config.tokens_per_window or used_tokens + estimated_tokens) - used_tokens,
+            )
+            error = RateLimitError(
+                "model token/request rate limit exceeded",
+                retry_after=retry_after,
+                requested_tokens=estimated_tokens,
+                available_tokens=available,
+                window_seconds=config.window_seconds,
+            )
+            if config._on_exceeded:
+                config._on_exceeded(
+                    ErrorContext(
+                        error_type=type(error).__name__,
+                        error_message=str(error),
+                        source="rate_limit",
+                        session_id=session_id,
+                        attempt=attempt + 1,
+                        max_attempts=self.config.agent.max_retries + 1,
+                        will_retry=attempt < self.config.agent.max_retries,
+                    )
+                )
+            raise error
+        self._rate_limit_events.append((now, estimated_tokens))
 
     # ── Token / cost limits ────────────────────────────────────────
     def _enforce_token_limits(self, usage_obj: Any, session_id: Any, attempt: int) -> None:
@@ -894,7 +1028,8 @@ class GuardRunner:
     async def _handle_retryable(self, e, reason, result, session_id, attempt) -> bool:
         """Record a retryable failure; return True when a retry should happen."""
         self._accumulate_usage(result)
-        will_retry = attempt < self.config.agent.max_retries - 1
+        will_retry = attempt < self.config.agent.max_retries
+        max_attempts = self.config.agent.max_retries + 1
         error_ctx = ErrorContext(
             error_type="TimeoutError" if reason == "timeout" else type(e).__name__,
             error_message=(
@@ -902,17 +1037,17 @@ class GuardRunner:
                 if reason == "timeout"
                 else str(e)
             ),
-            source="llm",
+            source="rate_limit" if reason == "rate_limit" else "llm",
             session_id=session_id,
             attempt=attempt + 1,
-            max_attempts=self.config.agent.max_retries,
+            max_attempts=max_attempts,
             will_retry=will_retry,
             stack_trace=traceback.format_exc(),
         )
 
         log_fields: dict[str, Any] = {
             "attempt": attempt + 1,
-            "max_attempts": self.config.agent.max_retries,
+            "max_attempts": max_attempts,
             "wait_seconds": (
                 self.config.agent.backoff_multiplier**attempt if will_retry else 0.0
             ),
@@ -920,6 +1055,11 @@ class GuardRunner:
         if reason == "timeout":
             log_fields["reason"] = "timeout"
             log_fields["timeout_seconds"] = self.config.agent.timeout
+        elif reason == "rate_limit":
+            log_fields["reason"] = "rate_limit"
+            log_fields["retry_after_seconds"] = getattr(e, "retry_after", 0.0)
+            log_fields["requested_tokens"] = getattr(e, "requested_tokens", 0)
+            log_fields["available_tokens"] = getattr(e, "available_tokens", 0)
         else:
             log_fields["reason"] = "error"
             log_fields["error_type"] = type(e).__name__
@@ -932,7 +1072,11 @@ class GuardRunner:
 
         if not will_retry:
             return False
-        wait_time = self.config.agent.backoff_multiplier**attempt
+        wait_time = (
+            getattr(e, "retry_after", 0.0)
+            if reason == "rate_limit"
+            else self.config.agent.backoff_multiplier**attempt
+        )
         self._log("debug", "retry_wait", wait_seconds=wait_time, attempt=attempt + 1)
         await asyncio.sleep(wait_time)
         return True
@@ -967,10 +1111,10 @@ class GuardRunner:
                     f"Last error: {last_exception}, "
                     f"Fallback error: {fallback_error}"
                 ),
-                source="llm",
+                source=getattr(last_exception, "_error_source", "llm"),
                 session_id=session_id,
-                attempt=self.config.agent.max_retries,
-                max_attempts=self.config.agent.max_retries,
+                attempt=self.config.agent.max_retries + 1,
+                max_attempts=self.config.agent.max_retries + 1,
                 will_retry=False,
                 stack_trace=traceback.format_exc(),
             )
@@ -993,10 +1137,10 @@ class GuardRunner:
         error_ctx = ErrorContext(
             error_type="MaxRetriesExceeded",
             error_message=str(last_exception),
-            source="llm",
+            source=getattr(last_exception, "_error_source", "llm"),
             session_id=session_id,
-            attempt=self.config.agent.max_retries,
-            max_attempts=self.config.agent.max_retries,
+            attempt=self.config.agent.max_retries + 1,
+            max_attempts=self.config.agent.max_retries + 1,
             will_retry=False,
             stack_trace=(
                 "".join(

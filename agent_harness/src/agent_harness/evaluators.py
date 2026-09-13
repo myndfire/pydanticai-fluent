@@ -15,6 +15,7 @@
 """Evaluators for agent output quality and safety."""
 
 import os
+from dataclasses import dataclass, field
 
 import structlog
 from typing import Protocol, Any, Union
@@ -23,10 +24,22 @@ from ._agent_factory import build_harness_agent
 from .model_config import ModelConfig, build_model_ref
 
 
+@dataclass
+class EvaluationResult:
+    """Structured result returned by an evaluator."""
+
+    evaluator: str
+    passed: bool
+    score: float | None = None
+    labels: list[str] = field(default_factory=list)
+    evidence: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 class Evaluator(Protocol):
     """Protocol for evaluators — user code implements this."""
 
-    async def evaluate(self, prompt: str, result: Any, context: dict) -> None:
+    async def evaluate(self, prompt: str, result: Any, context: dict) -> EvaluationResult | None:
         """
         Evaluate agent result.
 
@@ -61,7 +74,7 @@ class QualityCheck:
         )
         self._logger = structlog.get_logger()
 
-    async def evaluate(self, prompt: str, result: Any, context: dict) -> None:
+    async def evaluate(self, prompt: str, result: Any, context: dict) -> EvaluationResult | None:
         """
         Evaluate response quality using LLM-as-judge.
 
@@ -90,10 +103,16 @@ Respond with just a number between 0 and 10."""
                 self._logger.warning(
                     "Could not parse quality score", judgment=judgment.output
                 )
-                return
+                return EvaluationResult(
+                    evaluator="quality",
+                    passed=False,
+                    labels=["invalid_score"],
+                    evidence="judge output was not numeric",
+                )
 
             # Log result
-            if score < self.threshold:
+            passed = score >= self.threshold
+            if not passed:
                 self._logger.warning(
                     "Low quality response detected",
                     score=score,
@@ -108,9 +127,22 @@ Respond with just a number between 0 and 10."""
                     threshold=self.threshold,
                     **context,
                 )
+            return EvaluationResult(
+                evaluator="quality",
+                passed=passed,
+                score=score,
+                labels=[] if passed else ["below_threshold"],
+                metadata={"threshold": self.threshold},
+            )
 
         except Exception as e:
             self._logger.error("Quality evaluation failed", error=str(e))
+            return EvaluationResult(
+                evaluator="quality",
+                passed=False,
+                labels=["evaluator_error"],
+                evidence=str(e),
+            )
 
 
 class SafetyCheck:
@@ -121,7 +153,7 @@ class SafetyCheck:
         self.model = os.getenv("SAFETY_CHECK_MODEL", "omni-moderation-2024-09-26")
         self._logger = structlog.get_logger()
 
-    async def evaluate(self, prompt: str, result: Any, context: dict) -> None:
+    async def evaluate(self, prompt: str, result: Any, context: dict) -> EvaluationResult | None:
         """
         Check content safety using OpenAI moderation API.
 
@@ -140,6 +172,7 @@ class SafetyCheck:
             moderation = openai.moderations.create(input=[prompt, result_text], model=self.model)
 
             # Check if any content was flagged
+            flagged_categories: list[str] = []
             for i, mod_result in enumerate(moderation.results):
                 content_type = "prompt" if i == 0 else "response"
 
@@ -156,13 +189,30 @@ class SafetyCheck:
                         content=content_type,
                         **context,
                     )
+                    flagged_categories.extend(categories)
                 else:
                     self._logger.debug(f"Safety check passed for {content_type}", **context)
+            return EvaluationResult(
+                evaluator="safety",
+                passed=not flagged_categories,
+                labels=sorted(set(flagged_categories)),
+            )
 
         except ImportError:
             self._logger.warning("OpenAI not available - skipping safety check")
+            return EvaluationResult(
+                evaluator="safety",
+                passed=False,
+                labels=["dependency_unavailable"],
+            )
         except Exception as e:
             self._logger.error("Safety evaluation failed", error=str(e))
+            return EvaluationResult(
+                evaluator="safety",
+                passed=False,
+                labels=["evaluator_error"],
+                evidence=str(e),
+            )
 
 
 class CustomEvaluator:
@@ -199,7 +249,7 @@ class CustomEvaluator:
         """Log error message."""
         self._logger.error(f"[{self.name}] {message}", **kwargs)
 
-    async def evaluate(self, prompt: str, result: Any, context: dict) -> None:
+    async def evaluate(self, prompt: str, result: Any, context: dict) -> EvaluationResult | None:
         """
         Override this method with custom evaluation logic.
 

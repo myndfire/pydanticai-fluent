@@ -14,6 +14,7 @@
 
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 import uuid
+import json
 from collections import defaultdict
 from dataclasses import field, asdict
 from datetime import datetime
@@ -91,17 +92,14 @@ def filter_thinking_parts(messages: List[ModelMessage]) -> List[dict]:
                 {
                     "kind": "request",
                     "parts": [
-                        {
-                            "type": p.__class__.__name__,
-                            "content": getattr(p, "content", ""),
-                        }
+                        _serialize_message_part(p)
                         for p in msg.parts
                     ],
                 }
             )
         elif isinstance(msg, ModelResponse):
             filtered_parts = [
-                {"type": p.__class__.__name__, "content": getattr(p, "content", "")}
+                _serialize_message_part(p)
                 for p in msg.parts
                 if not isinstance(p, ThinkingPart)
             ]
@@ -127,6 +125,15 @@ def filter_thinking_parts(messages: List[ModelMessage]) -> List[dict]:
     return serialized
 
 
+def _serialize_message_part(part: Any) -> dict[str, Any]:
+    """Preserve the complete PydanticAI part when storage supports JSON."""
+    try:
+        data = part.model_dump(mode="json")
+    except Exception:
+        data = {"content": getattr(part, "content", "")}
+    return {"type": type(part).__name__, **data}
+
+
 # ---------------------------------------------------------------------------
 # Protocol for storage back‑ends
 # ---------------------------------------------------------------------------
@@ -140,6 +147,7 @@ class MemoryProvider(Protocol):
     async def get_turn(self, session_id: str, turn_id: str) -> Optional[TurnData]: ...
     async def delete_turn(self, session_id: str, turn_id: str) -> bool: ...
     async def clear(self, session_id: str) -> None: ...
+    async def aclose(self) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -150,26 +158,35 @@ class MemoryProvider(Protocol):
 class MessageHistory:
     def __init__(self):
         self._messages: List[ModelMessage] = []
+        self._loaded_turn_ids: set[str] = set()
 
     async def load(
         self, session_id: str, from_memory: MemoryProvider
     ) -> "MessageHistory":
         turns = await from_memory.load_turns(session_id)
+        existing = {
+            json.dumps(message.model_dump(mode="json"), sort_keys=True, default=str)
+            if hasattr(message, "model_dump")
+            else repr(message)
+            for message in self._messages
+        }
         for turn in turns:
+            if turn.turn_id in self._loaded_turn_ids:
+                continue
             for msg_dict in turn.messages:
                 if msg_dict.get("kind") == "request":
                     from pydantic_ai.messages import UserPromptPart, ModelRequest
 
                     parts = [
-                        UserPromptPart(content=p["content"])
+                        _deserialize_message_part(p, UserPromptPart)
                         for p in msg_dict.get("parts", [])
                     ]
-                    self._messages.append(ModelRequest(parts=parts))
+                    message = ModelRequest(parts=parts)
                 elif msg_dict.get("kind") == "response":
                     from pydantic_ai.messages import TextPart, ModelResponse
 
                     parts = [
-                        TextPart(content=p["content"])
+                        _deserialize_message_part(p, TextPart)
                         for p in msg_dict.get("parts", [])
                     ]
                     msg = ModelResponse(parts=parts)
@@ -181,13 +198,37 @@ class MessageHistory:
                             input_tokens=u.get("input_tokens", 0),
                             output_tokens=u.get("output_tokens", 0),
                         )
-                    self._messages.append(msg)
+                    message = msg
+                else:
+                    continue
+                key = (
+                    json.dumps(message.model_dump(mode="json"), sort_keys=True, default=str)
+                    if hasattr(message, "model_dump")
+                    else repr(message)
+                )
+                if key not in existing:
+                    self._messages.append(message)
+                    existing.add(key)
+            self._loaded_turn_ids.add(turn.turn_id)
         return self
 
     @property
     def messages(self) -> List[ModelMessage]:
         return self._messages
 
+
+def _deserialize_message_part(data: dict[str, Any], fallback: type) -> Any:
+    """Rebuild a stored part while retaining tool-call and metadata fields."""
+    from pydantic_ai import messages
+
+    part_type = getattr(messages, data.get("type", ""), None)
+    payload = {key: value for key, value in data.items() if key != "type"}
+    if part_type is not None and hasattr(part_type, "model_validate"):
+        try:
+            return part_type.model_validate(payload)
+        except Exception:
+            pass
+    return fallback(content=payload.get("content", ""))
 
 # ---------------------------------------------------------------------------
 # In‑memory implementation (keeps TurnData objects directly)
@@ -200,7 +241,9 @@ class InMemoryProvider:
         self._max_turns = max_turns
 
     async def save_turn(self, session_id: str, turn: TurnData) -> None:
-        self._storage[session_id].append(turn)
+        turns = self._storage[session_id]
+        turns[:] = [stored for stored in turns if stored.turn_id != turn.turn_id]
+        turns.append(turn)
         if len(self._storage[session_id]) > self._max_turns:
             self._storage[session_id] = self._storage[session_id][-self._max_turns :]
 
@@ -229,6 +272,10 @@ class InMemoryProvider:
     async def clear(self, session_id: str) -> None:
         if session_id in self._storage:
             del self._storage[session_id]
+
+    async def aclose(self) -> None:
+        """In-memory providers have no external resources."""
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -265,19 +312,30 @@ class MongoMemory:
     async def save_turn(self, session_id: str, turn: TurnData) -> None:
         await self._ensure_connected()
         doc = {"session_id": session_id, "turn": turn.to_dict()}
-        await self._collection.insert_one(doc)
+        await self._collection.replace_one(
+            {"session_id": session_id, "turn.turn_id": turn.turn_id},
+            doc,
+            upsert=True,
+        )
 
     async def load_turns(
         self, session_id: str, limit: Optional[int] = None
     ) -> List[TurnData]:
         await self._ensure_connected()
         query = self._collection.find({"session_id": session_id}).sort(
-            "turn.timestamp", 1
+            "turn.timestamp", -1
         )
         if limit:
             query = query.limit(limit)
         docs = await query.to_list()
-        return [TurnData.from_dict(doc["turn"]) for doc in docs]
+        return [TurnData.from_dict(doc["turn"]) for doc in reversed(docs)]
+
+    async def aclose(self) -> None:
+        """Close the Mongo client when the provider owns it."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+            self._connected = False
 
     async def get_turn(self, session_id: str, turn_id: str) -> Optional[TurnData]:
         await self._ensure_connected()
@@ -392,6 +450,13 @@ class ElasticsearchMemory:
             body={"query": {"term": {"session_id": session_id}}},
         )
 
+    async def aclose(self) -> None:
+        """Close the Elasticsearch client."""
+        if self._es_client is not None:
+            await self._es_client.close()
+            self._es_client = None
+            self._connected = False
+
 
 # ---------------------------------------------------------------------------
 # Redis implementation (unchanged – still stores JSON strings)
@@ -406,12 +471,14 @@ class RedisMemory:
         db: int = 0,
         password: Optional[str] = None,
         key_prefix: str = "agent:memory:",
+        max_turns: int = 100,
     ):
         self._host = host
         self._port = port
         self._db = db
         self._password = password
         self._key_prefix = key_prefix
+        self._max_turns = max_turns
         self._client = None
 
     def _get_key(self, session_id: str) -> str:
@@ -442,7 +509,7 @@ class RedisMemory:
         await self._ensure_connected()
         key = self._get_key(session_id)
         await self._client.rpush(key, json.dumps(turn.to_dict()))
-        await self._client.ltrim(key, -100, -1)
+        await self._client.ltrim(key, -self._max_turns, -1)
 
     async def load_turns(
         self, session_id: str, limit: Optional[int] = None
@@ -486,6 +553,12 @@ class RedisMemory:
         if new_data:
             await self._client.rpush(key, *new_data)
         return True
+
+    async def aclose(self) -> None:
+        """Close the Redis client."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def clear(self, session_id: str) -> None:
         await self._ensure_connected()

@@ -50,9 +50,11 @@ from .guards import (
     ContentFilterConfig,
     PIIDetectionConfig,
     TokenLimitsConfig,
+    TokenRateLimitConfig,
     CostLimitsConfig,
     CircuitBreakerConfig,
     TurnLimitsConfig,
+    _GuardrailHandled,
 )
 from .model_config import ModelConfig, build_model
 from .errorhandling import ErrorHandlingConfig, ErrorHandler
@@ -77,6 +79,7 @@ from .persistence import (
     make_step_persistence,
     step_persistence_from_env,
 )
+from .execution import CURRENT_EXECUTION, ExecutionContext
 
 
 AgentDepsT = TypeVar("AgentDepsT")
@@ -281,7 +284,9 @@ class ManagedAgent:
         self._turn_counts: dict[str, int] = {}
 
         if self.tools.get_tools():
-            self.tools.register_to_agent(self._agent)
+            self.tools.register_to_agent(
+                self._agent, retries=self.guards.tool.max_retries
+            )
 
     def _propagate_observability(self, observability: Observability) -> None:
         """Attach an observability stack to all interested components.
@@ -399,7 +404,9 @@ class ManagedAgent:
             observability_getter=lambda: self._observability, **kwargs
         )
         if self.tools.get_tools():
-            self.tools.register_to_agent(self._agent)
+            self.tools.register_to_agent(
+                self._agent, retries=self.guards.tool.max_retries
+            )
 
     def with_model(
         self,
@@ -527,11 +534,15 @@ class ManagedAgent:
         """Set tool-level retry configuration."""
         self.guards.tool = config
         self._guard_runner = GuardRunner(self.guards)
+        self._rebuild_agent()
         return self
 
     def with_result_validator_retries(self, config: ResultValidatorRetryConfig) -> "ManagedAgent":
         """Set result validator retry configuration."""
         self.guards.result_validator = config
+        self._output_retries = config.max_retries
+        if self._output_type is not None:
+            self._rebuild_agent()
         self._guard_runner = GuardRunner(self.guards)
         return self
 
@@ -550,6 +561,12 @@ class ManagedAgent:
     def with_token_limits(self, config: TokenLimitsConfig) -> "ManagedAgent":
         """Set token limits configuration."""
         self.guards.token_limits = config
+        self._guard_runner = GuardRunner(self.guards)
+        return self
+
+    def with_token_rate_limit(self, config: TokenRateLimitConfig) -> "ManagedAgent":
+        """Limit model requests/tokens over a sliding time window."""
+        self.guards.token_rate_limit = config
         self._guard_runner = GuardRunner(self.guards)
         return self
 
@@ -576,6 +593,7 @@ class ManagedAgent:
         content_filter: Optional[ContentFilterConfig] = None,
         pii_detection: Optional[PIIDetectionConfig] = None,
         token_limits: Optional[TokenLimitsConfig] = None,
+        token_rate_limit: Optional[TokenRateLimitConfig] = None,
         cost_limits: Optional[CostLimitsConfig] = None,
     ) -> "ManagedAgent":
         """Set multiple guardrail configurations at once."""
@@ -585,6 +603,8 @@ class ManagedAgent:
             self.guards.pii_detection = pii_detection
         if token_limits:
             self.guards.token_limits = token_limits
+        if token_rate_limit:
+            self.guards.token_rate_limit = token_rate_limit
         if cost_limits:
             self.guards.cost_limits = cost_limits
         self._guard_runner = GuardRunner(self.guards)
@@ -879,7 +899,11 @@ class ManagedAgent:
 
     # ── Run helpers (shared by run and run_stream) ─────────────────
     def _build_run_context(
-        self, session_id: str, prompt_id: str, enrichment: Optional[LogContext]
+        self,
+        session_id: str,
+        prompt_id: str,
+        enrichment: Optional[LogContext],
+        execution: Optional[ExecutionContext] = None,
     ) -> dict:
         """Build the per-run log/trace context."""
         context = {
@@ -887,6 +911,8 @@ class ManagedAgent:
             "model": self.model,
             "model_settings": self._model_settings,
         }
+        if execution is not None:
+            context.update(execution.as_dict())
         if prompt_id != "default":
             context["prompt_id"] = prompt_id
         for provider in self._enrichment:
@@ -922,10 +948,11 @@ class ManagedAgent:
 
     async def _run_evaluators(
         self, prompt_text: str, evaluation_target: Any, context: dict
-    ) -> None:
-        """Run every configured evaluator with lifecycle + duration logging."""
+    ) -> list[Any]:
+        """Run evaluators and return structured results with lifecycle logging."""
         self._attach_observability_to_evaluators()
         session_id = context.get("session_id")
+        results: list[Any] = []
         for evaluator in self.evaluators:
             try:
                 evaluator_name = getattr(evaluator, "name", type(evaluator).__name__)
@@ -936,13 +963,22 @@ class ManagedAgent:
                     session_id=session_id,
                 )
                 started = time.time()
-                await evaluator.evaluate(prompt_text, evaluation_target, context)
+                evaluation = await evaluator.evaluate(
+                    prompt_text, evaluation_target, context
+                )
+                if evaluation is not None:
+                    results.append(evaluation)
                 self.observability.log_info(
                     "evaluator_completed",
                     component="evaluators",
                     evaluator=evaluator_name,
                     session_id=session_id,
                     performance={"duration_seconds": time.time() - started},
+                    evaluation=(
+                        evaluation.__dict__
+                        if hasattr(evaluation, "__dict__")
+                        else evaluation
+                    ),
                 )
             except Exception as e:
                 e._error_source = "evaluator"
@@ -954,6 +990,7 @@ class ManagedAgent:
                     session_id=session_id,
                 )
                 raise
+        return results
 
     def _turn_usage_from_summary(
         self, turn_summary: dict
@@ -1054,6 +1091,7 @@ class ManagedAgent:
         deps: Any = None,
         enrichment: Optional[LogContext] = None,
         conversation_id: Optional[str] = None,
+        execution: Optional[ExecutionContext] = None,
         **kwargs,
     ) -> Any:
         """
@@ -1094,16 +1132,24 @@ class ManagedAgent:
         # The original prompt is what reaches the model.
         prompt_text = prompt_to_text(prompt)
 
-        context = self._build_run_context(session_id, prompt_id, enrichment)
+        execution = execution or ExecutionContext(
+            session_id=session_id,
+            conversation_id=conversation_id or session_id,
+        )
+        context = self._build_run_context(session_id, prompt_id, enrichment, execution)
         timeline = _RunTimeline(start_time)
+        execution_token = CURRENT_EXECUTION.set(execution)
 
         try:
             async with self.observability.observe("agent_run", **context):
+                execution.budget.check()
+                execution.budget.consume_iteration()
                 await self._load_history(message_history, session_id)
                 timeline.mark("memory_load")
 
                 handled = self._enforce_turn_limit(session_id)
                 if handled is not None:
+                    CURRENT_EXECUTION.reset(execution_token)
                     return handled
 
                 history = message_history.messages
@@ -1117,6 +1163,7 @@ class ManagedAgent:
                     message_history=history,
                     deps=deps,
                     conversation_id=conversation_id or session_id,
+                    execution_context=execution,
                 )
 
                 timeline.mark("agent_core")
@@ -1192,6 +1239,7 @@ class ManagedAgent:
                     turn_summary, context, timeline.breakdown(), status=status
                 )
 
+                CURRENT_EXECUTION.reset(execution_token)
                 return result
 
         except Exception as e:
@@ -1234,6 +1282,7 @@ class ManagedAgent:
                     error_source=source,
                     session_id=session_id,
                 )
+                CURRENT_EXECUTION.reset(execution_token)
                 return error_result
 
             # Create error turn even on failure
@@ -1260,6 +1309,7 @@ class ManagedAgent:
                     except Exception:
                         pass  # Don't let save failure mask the original error
 
+            CURRENT_EXECUTION.reset(execution_token)
             raise
 
     async def run_stream(
@@ -1271,6 +1321,7 @@ class ManagedAgent:
         deps: Optional[Any] = None,
         enrichment: Optional[LogContext] = None,
         conversation_id: Optional[str] = None,
+        execution: Optional[ExecutionContext] = None,
         **kwargs,
     ):
         """Run agent with streaming output, yielding text chunks in real-time.
@@ -1306,9 +1357,15 @@ class ManagedAgent:
         prompt_vars = {k: v for k, v in kwargs.items() if not k.startswith("_")}
         prompt_text = prompt_to_text(prompt)
 
-        context = self._build_run_context(session_id, prompt_id, enrichment)
+        execution = execution or ExecutionContext(
+            session_id=session_id,
+            conversation_id=conversation_id or session_id,
+        )
+        context = self._build_run_context(session_id, prompt_id, enrichment, execution)
 
         async with self.observability.observe("agent_run_stream", **context):
+            execution.budget.check()
+            execution.budget.consume_iteration()
             await self._load_history(message_history, session_id)
 
             history = message_history.messages
@@ -1330,9 +1387,29 @@ class ManagedAgent:
                     conversation_id=conversation_id or session_id,
                 ) as result:
                     collected = ""
+                    buffer_stream = bool(
+                        self.guards.content_filter or self.guards.pii_detection
+                    )
                     async for chunk in result.stream_text(delta=True):
                         collected += chunk
-                        yield chunk
+                        if not buffer_stream:
+                            yield chunk
+
+                    usage_obj = self._guard_runner._extract_usage(result)
+                    self._guard_runner._enforce_token_limits(
+                        usage_obj, session_id, 0
+                    )
+                    self._guard_runner._enforce_cost_limits(
+                        usage_obj, session_id, 0
+                    )
+                    safe_output = self._guard_runner._apply_content_filter(
+                        collected, session_id, 0
+                    )
+                    safe_output = self._guard_runner._apply_pii_detection(
+                        safe_output, session_id, 0
+                    )
+                    if buffer_stream:
+                        yield safe_output
 
                     # Log per-turn metrics after stream completes
                     duration = time.time() - start_time
@@ -1362,7 +1439,7 @@ class ManagedAgent:
                     messages = []
                     if reasoning_traces:
                         messages.append({"role": "system", "content": f"Reasoning traces: {reasoning_traces}"})
-                    messages.append({"role": "assistant", "content": collected})
+                    messages.append({"role": "assistant", "content": safe_output})
 
                     turn = self._build_turn_data(
                         messages,
@@ -1384,7 +1461,7 @@ class ManagedAgent:
                             except Exception:
                                 pass
 
-                    await self._run_evaluators(prompt_text, collected, context)
+                    await self._run_evaluators(prompt_text, safe_output, context)
 
                     self._emit_run_summary(
                         turn_summary,
@@ -1393,6 +1470,13 @@ class ManagedAgent:
                         status="success",
                     )
 
+            except _GuardrailHandled as handled:
+                # A post-stream guard may recover with a safe replacement.
+                # The raw stream has already been withheld when a transform is
+                # configured, so yielding this value is safe.
+                yield handled.result.output
+                CURRENT_EXECUTION.reset(execution_token)
+                return
             except UsageLimitExceeded as e:
                 duration = time.time() - start_time
                 error_message = str(e)
@@ -1472,6 +1556,7 @@ class ManagedAgent:
                         yield callback_result
                     else:
                         yield f"\n[TRUNCATED: {error_message}]\nPartial output: {collected[:200]}..."
+                    CURRENT_EXECUTION.reset(execution_token)
                     return
                 elif (
                     self.guards.token_limits
@@ -1482,6 +1567,7 @@ class ManagedAgent:
                         yield callback_result
                     else:
                         yield f"\n[TRUNCATED: {error_message}]"
+                    CURRENT_EXECUTION.reset(execution_token)
                     return
                 else:
                     raise RuntimeError(error_ctx.error_message) from e
@@ -1489,7 +1575,10 @@ class ManagedAgent:
             except Exception as e:
                 if self.traceback_frame_limit is not None and self.traceback_frame_limit >= 0:
                     e.__traceback__ = _truncate_traceback(e.__traceback__, self.traceback_frame_limit)
+                CURRENT_EXECUTION.reset(execution_token)
                 raise
+
+            CURRENT_EXECUTION.reset(execution_token)
 
     async def run_sync(
         self,

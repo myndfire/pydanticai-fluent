@@ -66,6 +66,7 @@ from .observability import (
 )
 from .telemetry_runtime import TelemetryRuntime
 from .telemetry_schema import TelemetryFields, TelemetryEvents
+from .execution import ExecutionContext, ExecutionBudget, RunStatus, current_execution
 from .tools import ToolRegistry
 from .guards import (
     GuardConfig,
@@ -78,11 +79,19 @@ from .guards import (
     ContentFilterConfig,
     PIIDetectionConfig,
     TokenLimitsConfig,
+    TokenRateLimitConfig,
+    RateLimitError,
     CostLimitsConfig,
     CircuitBreakerConfig,
     TurnLimitsConfig,
 )
-from .evaluators import Evaluator, QualityCheck, SafetyCheck, CustomEvaluator
+from .evaluators import (
+    Evaluator,
+    EvaluationResult,
+    QualityCheck,
+    SafetyCheck,
+    CustomEvaluator,
+)
 from .persistence import (
     StepPersistence,
     InMemoryStepStore,
@@ -175,6 +184,10 @@ __all__ = [
     "TelemetryRuntime",
     "TelemetryFields",
     "TelemetryEvents",
+    "ExecutionContext",
+    "ExecutionBudget",
+    "RunStatus",
+    "current_execution",
     # Tools
     "ToolRegistry",
     # Guards
@@ -188,11 +201,14 @@ __all__ = [
     "ContentFilterConfig",
     "PIIDetectionConfig",
     "TokenLimitsConfig",
+    "TokenRateLimitConfig",
+    "RateLimitError",
     "CostLimitsConfig",
     "CircuitBreakerConfig",
     "TurnLimitsConfig",
     # Evaluators
     "Evaluator",
+    "EvaluationResult",
     "QualityCheck",
     "SafetyCheck",
     "CustomEvaluator",

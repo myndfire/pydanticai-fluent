@@ -19,6 +19,7 @@ import functools
 import time
 from typing import Any, Callable, Dict, Optional
 from pydantic_ai import Agent
+from .execution import current_execution
 
 
 # ── Tool call logging ─────────────────────────────────────────────────
@@ -92,17 +93,23 @@ class ToolRegistry:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.time()
+            execution = current_execution()
+            if execution is not None:
+                execution.budget.check()
+                execution.budget.consume_tool_call()
             _log_tool_call(self._observability, func.__name__, kwargs)
             try:
                 # Support both sync and async tools
                 if asyncio.iscoroutinefunction(func):
                     result = await func(*args, **kwargs)
                 else:
-                    result = func(*args, **kwargs)
+                    # Never block the agent event loop with synchronous user code.
+                    result = await asyncio.to_thread(func, *args, **kwargs)
                 duration = time.time() - start
                 _log_tool_result(self._observability, func.__name__, kwargs, result, duration)
                 return result
             except Exception as e:
+                e._error_source = "tool"
                 duration = time.time() - start
                 _log_tool_error(self._observability, func.__name__, kwargs, e, duration)
                 raise
@@ -166,7 +173,7 @@ class ToolRegistry:
 
         return self
 
-    def register_to_agent(self, agent: Agent):
+    def register_to_agent(self, agent: Agent, retries: Optional[int] = None):
         """
         Register all tools to a PydanticAI agent.
 
@@ -189,11 +196,11 @@ class ToolRegistry:
                 # Check if first param annotation contains RunContext
                 annotation = str(first_param.annotation)
                 if "RunContext" in annotation:
-                    agent.tool(func)
+                    agent.tool(func, retries=retries)
                 else:
-                    agent.tool_plain(func)
+                    agent.tool_plain(func, retries=retries)
             else:
-                agent.tool_plain(func)
+                agent.tool_plain(func, retries=retries)
 
     def get_tools(self) -> list[Callable]:
         """

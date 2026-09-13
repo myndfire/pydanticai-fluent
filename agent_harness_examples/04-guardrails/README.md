@@ -41,6 +41,7 @@ Guardrail types at a glance:
 | 08 | `08_circuit_breaker.py`         | Circuit breaker (CLOSED/OPEN/HALF_OPEN) protecting downstream failures              |
 | 09 | `09_all_guardrails.py`          | All guardrails combined on one agent + bulk `with_guardrails` setter               |
 | 10 | `10_turn_limits.py`             | Turn/session limits with per-session isolation; raises when no callback            |
+| 11 | `11_token_rate_limit_circuit_breaker.py` | Sliding token/request rate limit with Retry-After behavior and circuit recovery |
 
 ## Requirements
 
@@ -76,6 +77,7 @@ sensible defaults), for example:
 - `06`: `TOKEN_LIMITS_EX1_*`, `TOKEN_LIMITS_EX2_*`, `TOKEN_LIMITS_EX3_*`
 - `07`: `COST_LIMITS_INPUT_COST`, `COST_LIMITS_OUTPUT_COST`, `COST_LIMITS_EX*_*`
 - `08`: `CIRCUIT_BREAKER_BAD_MODEL_NAME`, `CIRCUIT_BREAKER_THRESHOLD`, `CIRCUIT_BREAKER_TIMEOUT`
+- `11`: `RATE_LIMIT_WINDOW_SECONDS`, `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_TOKENS`, `RATE_LIMIT_RESERVE_OUTPUT`, `RATE_LIMIT_CIRCUIT_THRESHOLD`, `RATE_LIMIT_CIRCUIT_TIMEOUT`
 - `09`: `ALL_GUARDRAILS_*`
 - `10`: `TURN_LIMITS_EX1_MAX_TURNS`, `TURN_LIMITS_EX2_MAX_TURNS`, `TURN_LIMITS_EX3_MAX_TURNS`
 
@@ -145,6 +147,28 @@ agent.run()
 ## Token & Cost Limit Flow
 
 ```
+
+## Token Rate Limit + Circuit Breaker
+
+`TokenLimitsConfig` limits one request. `TokenRateLimitConfig` limits model
+requests and estimated tokens over a sliding window. When the window has no
+capacity, the harness raises a typed `RateLimitError` with `retry_after` data.
+
+The `11_token_rate_limit_circuit_breaker.py` example intentionally allows one
+request per short window so the state transitions are reproducible:
+
+```text
+CLOSED -> request succeeds
+CLOSED -> rate limit failure
+CLOSED -> rate limit failure
+OPEN   -> request handled without model work
+HALF_OPEN after cooldown -> trial request
+CLOSED if the trial succeeds
+```
+
+Use this pattern for provider HTTP 429 responses, quota exhaustion, or any
+downstream service that supplies a retry-after interval. Rate-limit errors are
+classified separately from ordinary model failures as `source=rate_limit`.
 agent.run()
     │
     ▼

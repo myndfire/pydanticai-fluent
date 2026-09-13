@@ -17,8 +17,10 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional, TYPE_CHECKING, Union
+import uuid
 
 from pydantic_ai.messages import UserContent
+from .execution import ExecutionContext
 
 if TYPE_CHECKING:
     from .agent import ManagedAgent
@@ -46,6 +48,7 @@ class PipelineContext:
     _observability: Optional[Any] = None  # Observability
     _memory: Optional[Any] = None  # InMemoryProvider / MemoryProvider
     _enrichment: list[Any] = field(default_factory=list)  # LogEnrichmentProvider
+    _pipeline_run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def with_observability(self, obs: Any) -> "PipelineContext":
         """Attach observability for auto-logging on each post()."""
@@ -109,7 +112,14 @@ class PipelineContext:
         from .log_enrichment import LogContext
         from .memory import MessageHistory
 
-        session_id = f"stage-{name.lower().replace(' ', '-')}"
+        stage_key = name.lower().replace(" ", "-")
+        session_id = f"{self._pipeline_run_id}:{stage_key}"
+        parent = ExecutionContext(
+            run_id=self._pipeline_run_id,
+            session_id=session_id,
+            conversation_id=session_id,
+            metadata={"pipeline.stage": name},
+        )
 
         # Build enrichment for this stage
         stage_enrichment = LogContext().with_("stage", name)
@@ -132,6 +142,7 @@ class PipelineContext:
             history,
             session_id,
             enrichment=stage_enrichment,
+            execution=parent,
             **kwargs,
         )
 
