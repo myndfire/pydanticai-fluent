@@ -48,9 +48,28 @@ from agent_harness import (
 )
 from agent_harness.memory import InMemoryProvider
 from agent_harness.model_config import ModelConfig
-from agent_harness.observability import Observability, ObservabilityBuilder
+from agent_harness.observability import Observability
 
 log = structlog.get_logger()
+
+
+class StructlogLogger:
+    """Adapt the application's structlog logger to the harness logger port."""
+
+    def __init__(self, logger):
+        self._logger = logger
+
+    def debug(self, message: str, **context):
+        self._logger.debug(message, **context)
+
+    def info(self, message: str, **context):
+        self._logger.info(message, **context)
+
+    def warning(self, message: str, **context):
+        self._logger.warning(message, **context)
+
+    def error(self, message: str, **context):
+        self._logger.error(message, **context)
 
 
 async def main():
@@ -62,10 +81,7 @@ async def main():
         provider=os.getenv("LOGGING_MODEL_PROVIDER", "ollama"),
         model_name=os.getenv("LOGGING_MODEL_NAME", "gpt-oss:20b"),
     )
-    obs = Observability(
-        builder=ObservabilityBuilder(service_name="pipeline-logging")
-        .with_otel_observability()
-    )
+    obs = Observability(logger=StructlogLogger(log), service_name="pipeline-logging")
 
     # ── Agents with persistent enrichment ───────────────────────
     base = LogContext().with_(

@@ -1,13 +1,14 @@
 # Observability
 
-OpenTelemetry-only logging, tracing, and metrics for `ManagedAgent`. Every
-signal is emitted via OTLP to the collector; the collector fans out to the
-backends. No application code talks to a backend SDK directly.
+Explicit, application-owned OpenTelemetry for `ManagedAgent`. The application
+calls `configure_otlp(...)` to create the OTLP providers and exporters; the
+collector fans out to the backends. Harness events are emitted through the
+injected `Observability`. Application `structlog` is configured by the
+application and is not bridged into OTel by the harness.
 
 ```
-ManagedAgent  (OTel only: OTELLogger + OTELTracer + OTELMetrics + pydantic-ai native spans)
-   │  structlog call sites are bridged to OTel
-   │  local console rendered by the OTel Console{Log,Span,Metric}Exporter
+ManagedAgent  (configure_otlp: OTELLogger + OTELTracer + OTELMetrics + pydantic-ai native spans)
+   │  application owns providers/exporters and structlog configuration
    ▼ OTLP :4317
 otel-collector ──▶ Elasticsearch / Kibana   (logs + metrics + traces)
                ──▶ Langfuse                (traces)
@@ -25,12 +26,9 @@ metrics, traces, and memory:
 | `standard` (library default) | + `agent_turn` per model iteration | native + `gen_ai.client.operation.duration` | native PydanticAI spans; no prompt content | `cost`/`latency`/`turn_count` populated |
 | `verbose` (dev default in `.env`) | + retry attempts, `retry_wait`, lifecycle `*_started` | + retry/attempt metrics | + prompt/completion content (native spans), TTFT | full |
 
-`HARNESS_TELEMETRY_CONSOLE=true` renders records to the local console through the
-OTel console exporters.
-
-Set `HARNESS_TELEMETRY_ENABLED=false` to disable all telemetry exporters and
-local telemetry output. This is useful when running examples without an OTel
-Collector.
+Use `configure_console()` for harness logs without OpenTelemetry. Use
+`configure_otlp(...)` when the application explicitly wants OTLP logs, traces,
+and metrics. The application owns its own structlog configuration.
 
 ## Error drill-down
 
@@ -65,9 +63,11 @@ instrumentation scope) and `trace_id`/`span_id` when emitted inside a span.
 | `scenario_*`, `pipeline_stage_completed`, errors | as applicable | `component=app` / `pipeline` |
 
 Failure records add `error.type` / `error.message` / `error.stacktrace` /
-`error.source` / `error.handled` plus the `exception.*` mirror and, at
-WARNING/ERROR, the caller location (`code.file.path`, `code.function`,
-`code.line.number`, `code.namespace`). The same canonical fields are written to
+`error.source` / `error.handled` plus the `exception.*` mirror. Every record
+also carries the application caller location (`code.file.path`,
+`code.function`, `code.line.number`, `code.namespace`) when a user frame is
+available; failure records keep the exception's deepest raise-site frame. The
+same canonical fields are written to
 the parent and child spans and to the `agent_errors_total` metric labels. When an
 error is raised inside pydantic-ai's own asyncio task (no caller frame on the
 stack), the harness uses the call site captured at `agent.run()` entry.
@@ -87,9 +87,9 @@ on the spans' `gen_ai.*` attributes, and tool spans resolve against the existing
 |---|---|
 | `01_otel_tracing.py` | OTLP tracing basics |
 | `02_otel_full_stack.py` | Full OTLP stack (logs + traces + metrics) |
-| `03_otel_builder.py` | `ObservabilityBuilder` fluent configuration |
+| `03_otel_builder.py` | Explicit `configure_otlp()` setup and backend composition |
 | `04_otel_agent_run.py` | Agent-run telemetry (turns, tokens, latency) |
-| `fluent_app.py` | End-to-end `ManagedAgent` demo (tools, guardrails, evaluators) with the default stack |
+| `fluent_app.py` | End-to-end `ManagedAgent` demo (tools, guardrails, evaluators) with an explicit OTLP stack |
 
 ## Setup
 
@@ -131,9 +131,7 @@ Shared UI login for Langfuse and OpenObserve: **`admin@example.com` / `Admin1234
 
 | Variable | Default | Description |
 |---|---|---|
-| `HARNESS_TELEMETRY_ENABLED` | `true` | Enable OTLP telemetry and local telemetry output |
 | `HARNESS_TELEMETRY_LEVEL` | `standard` | `minimal` / `standard` / `verbose` |
-| `HARNESS_TELEMETRY_CONSOLE` | `true` | Render OTel records to the local console |
 | `OTEL_COLLECTOR_ENDPOINT` | `localhost:4317` | OTLP gRPC collector endpoint |
 | `OBSERVABILITY_SERVICE_NAME` | `agent-harness` | OTLP resource `service.name` |
 | `LANGFUSE_UI_URL` / `LANGFUSE_PROJECT_ID` | `http://localhost:3000` / `local-project` | Log → Langfuse deep links |

@@ -14,28 +14,8 @@
 
 """Distributed tracing over OpenTelemetry (OTLP)."""
 
-import os
-from pathlib import Path
 from typing import Protocol, Any
 from contextlib import asynccontextmanager
-
-# Load .env from common locations before other imports
-_env_paths = [
-    Path.cwd() / ".env",
-    Path(__file__).parent.parent.parent / ".env",
-    Path.cwd().parent / ".env",
-]
-for env_path in _env_paths:
-    if env_path.exists():
-        from dotenv import load_dotenv
-        load_dotenv(env_path)
-        break
-
-# Module-level guard: prevent Agent.instrument_all(True) from being called
-# multiple times across OTELTracer instances. Each call registers atexit
-# handlers on the global TracerProvider, causing "shutdown can only be called
-# once" warnings.
-_instrumentation_enabled = False
 
 
 class Tracer(Protocol):
@@ -146,11 +126,10 @@ class OTELTracer:
     """
     Pure OpenTelemetry distributed tracing.
 
-    Use this for direct OTLP export to the collector.
+    Use this with an application-owned OpenTelemetry provider.
 
     By default (``create_spans=False``) this tracer does NOT create its own
-    harness spans. It only configures the global OTLP provider and lets
-    PydanticAI's native instrumentation emit the canonical span tree
+    harness spans. PydanticAI's per-agent instrumentation emits the canonical span tree
     (``invoke_agent <name>``, ``execute_tool <tool>``, ``chat <model>``).
     ``Observability.span()`` then yields the current span's context (or
     ``None``) so in-run log records still correlate with that tree.
@@ -171,207 +150,48 @@ class OTELTracer:
 
     def __init__(
         self,
-        service_name: str,
-        otlp_endpoint: str = "localhost:4317",
-        headers: dict[str, str] | None = None,
-        runtime: Any = None,
-        sample_rate: float = 1.0,
+        tracer_provider: Any | None = None,
+        service_name: str = "agent",
         create_spans: bool = False,
         record_failures: bool = True,
-        export_interval_ms: int = 5000,
-        flush_on_exit: bool = True,
-        shutdown_on_exit: bool = True,
-        telemetry_level: str = "standard",
-        console: bool = False,
     ):
         """
         Initialize OTEL tracer.
 
         Args:
-            service_name: Service name for traces
-            otlp_endpoint: OTLP collector endpoint (gRPC)
-            sample_rate: Sampling rate (0.0 to 1.0, default 1.0 = trace everything)
+            tracer_provider: Application-owned OTel TracerProvider. ``None``
+                disables tracing for this adapter.
+            service_name: Instrumentation scope name for traces.
             create_spans: When True, every span() call starts/exports a
                 harness span. When False (default), no harness spans are
                 created — PydanticAI native spans are the trace content.
             record_failures: When True (default), exceptions escaping span()
                 blocks are recorded in the trace (ERROR status + exception event),
                 enriching a live span or emitting ``<service>.<operation>:failed``.
-            export_interval_ms: BatchSpanProcessor export interval in
-                milliseconds (default 5000). Lower values make traces appear
-                in the backend faster during development.
-            flush_on_exit: Register an atexit handler that calls
-                ``force_flush()`` on the TracerProvider before the process
-                exits (default True). Ensures buffered spans are sent even
-                for short-lived scripts.
-            shutdown_on_exit: Register an atexit handler that calls
-                ``shutdown()`` on the TracerProvider (default True). Implies
-                ``flush_on_exit``.
-            telemetry_level: Granularity level; ``verbose`` enables native
-                prompt/completion content on spans.
-            console: Also render spans to the local console via the OTel
-                ``ConsoleSpanExporter``.
         """
         self.service_name = service_name
-        self.otlp_endpoint = otlp_endpoint
-        self.headers = headers or {}
-        self.runtime = runtime
-        self.sample_rate = sample_rate
+        self._provider = tracer_provider
         self.create_spans = create_spans
         self.record_failures = record_failures
-        self.telemetry_level = telemetry_level
-        self.console = console
-        self._export_interval_ms = export_interval_ms
-        self._flush_on_exit = flush_on_exit or shutdown_on_exit
-        self._shutdown_on_exit = shutdown_on_exit
-        self.tracer = None
-        self._provider = None
-        self._shut_down = False
+        self.tracer = (
+            tracer_provider.get_tracer(service_name)
+            if tracer_provider is not None
+            else None
+        )
 
-        self._setup_otel()
+    @property
+    def provider(self) -> Any | None:
+        """Return the application-owned tracer provider, if configured."""
+        return self._provider
 
     def _enable_pydanticai_instrumentation(self) -> None:
-        """Auto-instrument PydanticAI to emit native run/model/tool spans.
-
-        PydanticAI parents its spans to the currently active span, so they nest
-        under the harness's ``agent_run`` umbrella and export through the global
-        OTLP tracer provider configured by ``OTELTracer``.
-        """
-        global _instrumentation_enabled
-        if _instrumentation_enabled:
-            return
-        try:
-            from pydantic_ai.agent import Agent
-            from pydantic_ai.models.instrumented import InstrumentationSettings
-
-            # Prompt/completion content is only attached to native spans at the
-            # verbose level; lower levels keep spans lean.
-            include_content = self.telemetry_level == "verbose"
-            Agent.instrument_all(
-                InstrumentationSettings(include_content=include_content)
-            )
-            _instrumentation_enabled = True
-            print("✅ PydanticAI native instrumentation enabled (OTLP)")
-        except Exception as e:
-            print(f"⚠️  Failed to enable PydanticAI instrumentation: {str(e)}")
-
-    def _setup_otel(self):
-        """Setup OpenTelemetry tracing."""
-        try:
-            from opentelemetry import trace
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
-            from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter,
-            )
-            from opentelemetry.trace import ProxyTracerProvider
-
-            # OpenTelemetry allows only one global TracerProvider per process.
-            # Reuse any already-registered provider instead
-            # of overriding it (which OTEL rejects with
-            # "Overriding of current TracerProvider"). We can still attach our
-            # OTLP span processor to the existing provider.
-            existing_provider = trace.get_tracer_provider()
-            if not isinstance(existing_provider, ProxyTracerProvider):
-                # Reuse existing provider, just add our exporter
-                otlp_exporter = OTLPSpanExporter(
-                    endpoint=self.otlp_endpoint,
-                    headers=self.headers or None,
-                    insecure=True,
-                    timeout=5,
-                )
-                processor = BatchSpanProcessor(
-                    otlp_exporter,
-                    schedule_delay_millis=self._export_interval_ms,
-                )
-                existing_provider.add_span_processor(processor)
-                if self.console:
-                    from opentelemetry.sdk.trace.export import (
-                        ConsoleSpanExporter,
-                        SimpleSpanProcessor,
-                    )
-
-                    existing_provider.add_span_processor(
-                        SimpleSpanProcessor(ConsoleSpanExporter())
-                    )
-                self.tracer = trace.get_tracer(__name__)
-                self._provider = existing_provider
-                print(
-                    f"✅ OTEL tracing initialized (reusing existing provider): {self.otlp_endpoint}"
-                )
-                self._enable_pydanticai_instrumentation()
-                # Don't register atexit — the original provider owner already did
-                return
-
-            # No existing provider — create one
-            from ._otel import build_resource, register_atexit
-
-            resource = self.runtime.resource if self.runtime else build_resource(
-                self.service_name,
-                telemetry_level=self.telemetry_level,
-                extra={"service.version": os.getenv("SERVICE_VERSION", "0.1.0")},
-            )
-
-            sampler = TraceIdRatioBased(self.sample_rate)
-            provider = TracerProvider(resource=resource, sampler=sampler)
-
-            otlp_exporter = OTLPSpanExporter(
-                endpoint=self.otlp_endpoint,
-                headers=self.headers or None,
-                insecure=True,
-                timeout=5,
-            )
-            processor = BatchSpanProcessor(
-                otlp_exporter,
-                schedule_delay_millis=self._export_interval_ms,
-            )
-            provider.add_span_processor(processor)
-            if self.console:
-                from opentelemetry.sdk.trace.export import (
-                    ConsoleSpanExporter,
-                    SimpleSpanProcessor,
-                )
-
-                provider.add_span_processor(
-                    SimpleSpanProcessor(ConsoleSpanExporter())
-                )
-
-            trace.set_tracer_provider(provider)
-            self.tracer = trace.get_tracer(__name__)
-            self._provider = provider
-
-            self._enable_pydanticai_instrumentation()
-            print(f"✅ OTEL tracing initialized: {self.otlp_endpoint}")
-            if self.runtime:
-                self.runtime.register(provider)
-            else:
-                register_atexit(
-                    provider,
-                    flush_on_exit=self._flush_on_exit,
-                    shutdown_on_exit=self._shutdown_on_exit,
-                    is_shut_down=lambda: self._shut_down,
-                )
-
-        except Exception as e:
-            print(f"⚠️  Failed to setup OTEL tracing: {str(e)}")
-            self.tracer = None
+        """Deprecated no-op; instrumentation is attached per agent."""
+        return
 
     def shutdown(self):
-        """Explicitly flush and shut down the OTLP trace provider.
-
-        Call this for deterministic cleanup in long-running processes or
-        when ``flush_on_exit=False``.
-        """
-        if self._provider:
-            try:
-                self._provider.force_flush()
-                self._provider.shutdown()
-            except Exception:
-                pass
-            self._provider = None
-            self.tracer = None
-            self._shut_down = True
+        """Release this adapter without shutting down the app-owned provider."""
+        self._provider = None
+        self.tracer = None
 
     @asynccontextmanager
     async def span(self, name: str, **attributes):
@@ -544,4 +364,3 @@ class OTELTracer:
 
     def error(self, message: str, **context):
         pass
-

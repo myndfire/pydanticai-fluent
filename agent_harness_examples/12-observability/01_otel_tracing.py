@@ -79,7 +79,8 @@ async def main():
     log.debug("separator", char="=", count=60)
 
     log.debug("checking_collector", endpoint=OTEL_COLLECTOR)
-    otlp_ok = await check_port("localhost", 4317)
+    otlp_host, _, otlp_port = OTEL_COLLECTOR.partition(":")
+    otlp_ok = await check_port(otlp_host or "localhost", int(otlp_port or 4317))
     log.debug("collector_status", reachable=otlp_ok)
 
     if not otlp_ok:
@@ -94,35 +95,35 @@ async def main():
         create_spans=True,
     )
 
-    async with obs.observe("manual_span", op="test", value=42):
-        obs.info("inside_span", detail="This appears in the trace")
-        obs.add_span_event("checkpoint_reached", step=1)
-        obs.set_span_attribute("custom_key", "custom_value")
-        await asyncio.sleep(0.05)
+    async with obs:
+        async with obs.observe("manual_span", op="test", value=42):
+            obs.info("inside_span", detail="This appears in the trace")
+            obs.add_span_event("checkpoint_reached", step=1)
+            obs.set_span_attribute("custom_key", "custom_value")
+            await asyncio.sleep(0.05)
 
-    log.debug("section", title="Agent run with OTEL tracing")
-    agent = (
-        ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
-        .with_model_settings({"max_tokens": MAX_TOKENS})
-        .with_observability(obs)
-    )
+        log.debug("section", title="Agent run with OTEL tracing")
+        agent = (
+            ManagedAgent()
+            .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+            .with_model_settings({"max_tokens": MAX_TOKENS})
+            .with_observability(obs)
+        )
 
-    memory = InMemoryProvider()
-    history = await MessageHistory().load("otel-tracing", memory)
-    result = await agent.run(
-        "What is 10 divided by 2?",
-        history,
-        "otel-tracing",
-        save_to=[memory],
-    )
-    log.debug("response", output=result.output)
+        memory = InMemoryProvider()
+        history = await MessageHistory().load("otel-tracing", memory)
+        result = await agent.run(
+            "What is 10 divided by 2?",
+            history,
+            "otel-tracing",
+            save_to=[memory],
+        )
+        log.debug("response", output=result.output)
 
-    log.debug("separator", char="=", count=60)
-    log.debug("view_traces", url="http://localhost:16686")
-    log.debug("service_filter", service_name=SERVICE_NAME)
-    log.debug("separator", char="=", count=60)
-    await obs.shutdown()
+        log.debug("separator", char="=", count=60)
+        log.debug("view_traces", url="http://localhost:16686")
+        log.debug("service_filter", service_name=SERVICE_NAME)
+        log.debug("separator", char="=", count=60)
 
 
 if __name__ == "__main__":

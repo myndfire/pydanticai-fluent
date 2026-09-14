@@ -30,7 +30,7 @@ from agent_harness.guards import (
     TurnLimitsConfig,
 )
 from agent_harness.errorhandling import ErrorHandlingConfig
-from agent_harness.observability import Observability, ObservabilityBuilder
+from agent_harness.observability import Observability
 from agent_harness.log_enrichment import (
     LogContext,
     EnvEnricher,
@@ -302,22 +302,10 @@ error_handling = (
 
 
 # -------------------------------------------------------------------
-# Observability — OTEL backends (logging + tracing + metrics via OTLP)
-#
-# The OTEL backends register the global OpenTelemetry providers with
-# their OTLP readers and span processors. All signals are exported
-# via OTLP gRPC to the OTel Collector (default: localhost:4317).
+# Observability — application-owned logging only
 # -------------------------------------------------------------------
 
-observability = Observability(
-    builder=ObservabilityBuilder(service_name="agent")
-    .with_otel_observability(
-        otlp_endpoint="localhost:4317",
-        sample_rate=1.0,
-        create_spans=False,
-        record_failures=True,
-    )
-)
+observability = Observability()
 
 
 # -------------------------------------------------------------------

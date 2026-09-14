@@ -586,41 +586,66 @@ async def run_scenario(agent: ManagedAgent, observability, session_id: str, prom
     )
 
 
+async def _collector_reachable(endpoint: str, timeout: float = 2.0) -> bool:
+    """Return True when the OTLP collector endpoint accepts a connection."""
+    host, _, port_text = endpoint.partition(":")
+    try:
+        port = int(port_text or "4317")
+    except ValueError:
+        port = 4317
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host or "localhost", port), timeout=timeout
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
+
+
 async def main():
     """Main entry point that orchestrates the demo execution.
 
     This function:
-        1. Builds the agent with all components
-        2. Runs each predefined scenario with a unique session ID
-        3. Waits for OTel batch exporters to flush data
-        4. Closes logger connections gracefully
-
-    The async sleep at the end ensures all OTel telemetry data is
-    flushed to the collector before the process exits.
+        1. Verifies the OTel Collector is reachable before creating exporters
+        2. Builds the agent with all components
+        3. Runs each predefined scenario with a unique session ID
+        4. Waits for OTel batch exporters to flush data
+        5. Shuts down the OTLP providers (even if a scenario fails)
     """
+    if not await _collector_reachable(OTEL_ENDPOINT):
+        log.warning("collector_unreachable", endpoint=OTEL_ENDPOINT)
+        log.info(
+            "start_instructions",
+            command="docker compose -f docker-compose.yml up -d otel-collector",
+        )
+        return
+
     agent, observability = build_agent()
 
-    for idx, prompt in enumerate(SCENARIOS, start=1):
-        session_id = f"fluent-session-{idx}"
-        await run_scenario(agent, observability, session_id, prompt)
+    try:
+        for idx, prompt in enumerate(SCENARIOS, start=1):
+            session_id = f"fluent-session-{idx}"
+            await run_scenario(agent, observability, session_id, prompt)
 
-    # Dedicated scenario to exercise on_filter_error logging
-    broken_filter_cfg = (
-        ContentFilterConfig()
-        .on_filter(broken_content_filter)
-        .on_error(lambda ctx: on_filter_error(ctx, observability))
-    )
-    broken_agent, _ = build_agent(
-        content_filter_config=broken_filter_cfg,
-        observability=observability,
-    )
-    await run_scenario(broken_agent, observability, "fluent-session-filter-error",
-                       "Say hello in one sentence.")
+        # Dedicated scenario to exercise on_filter_error logging
+        broken_filter_cfg = (
+            ContentFilterConfig()
+            .on_filter(broken_content_filter)
+            .on_error(lambda ctx: on_filter_error(ctx, observability))
+        )
+        broken_agent, _ = build_agent(
+            content_filter_config=broken_filter_cfg,
+            observability=observability,
+        )
+        await run_scenario(broken_agent, observability, "fluent-session-filter-error",
+                           "Say hello in one sentence.")
 
-    # Allow OTel batch exporters time to flush remaining data
-    await asyncio.sleep(5)
-
-    await observability.shutdown()
+        # Allow OTel batch exporters time to flush remaining data
+        await asyncio.sleep(5)
+    finally:
+        await observability.shutdown()
 
     log.info("all_scenarios_complete")
     log.info("view_traces_in_langfuse", url="http://localhost:3000")

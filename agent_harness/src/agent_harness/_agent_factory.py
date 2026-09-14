@@ -53,8 +53,12 @@ def build_harness_agent(
     Returns:
         The configured ``Agent``.
     """
-    return Agent(
+    agent = Agent(
         model=model,
         capabilities=[*capabilities, build_span_logging_capability(observability_getter)],
         **kwargs,
     )
+    observability = observability_getter()
+    if observability is not None:
+        agent.instrument = observability.instrumentation_settings()
+    return agent

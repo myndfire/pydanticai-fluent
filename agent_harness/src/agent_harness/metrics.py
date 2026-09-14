@@ -19,17 +19,6 @@ from collections import defaultdict
 from datetime import datetime
 
 
-def _is_proxy_provider(provider: Any) -> bool:
-    """Return True only if the global provider is still OTEL's unset default proxy.
-
-    OpenTelemetry installs a proxy provider until a real one is registered, and
-    rejects any attempt to override an already-registered real provider. We must
-    distinguish OTEL's *internal* no-op default (``_ProxyMeterProvider``) from
-    other proxies, which are real providers that must not be overridden.
-    """
-    return type(provider).__name__ == "_ProxyMeterProvider"
-
-
 class MetricsCollector(Protocol):
     """Protocol for metrics collection."""
 
@@ -129,121 +118,32 @@ class OTELMetrics:
 
     def __init__(
         self,
+        meter_provider: Any | None = None,
         service_name: str = "agent",
-        otlp_endpoint: str = "localhost:4317",
-        headers: dict[str, str] | None = None,
-        runtime: Any = None,
-        flush_on_exit: bool = True,
-        shutdown_on_exit: bool = True,
-        telemetry_level: str = "standard",
-        console: bool = False,
     ):
         """
         Initialize OTEL metrics.
 
         Args:
-            service_name: Service name for metrics
-            otlp_endpoint: OTel Collector OTLP gRPC endpoint (default: localhost:4317)
-            flush_on_exit: Register an atexit handler that calls
-                ``force_flush()`` on the MeterProvider before exit (default True).
-            shutdown_on_exit: Register an atexit handler that calls
-                ``shutdown()`` on the MeterProvider (default True). Implies
-                ``flush_on_exit``.
-            telemetry_level: Granularity level exported as the
-                ``harness.telemetry.level`` resource attribute.
-            console: Also render metrics to the local console via the OTel
-                ``ConsoleMetricExporter``.
+            meter_provider: Application-owned OTel MeterProvider. ``None``
+                disables metrics for this adapter.
+            service_name: Instrumentation scope name for metrics.
         """
         self.service_name = service_name
-        self.otlp_endpoint = otlp_endpoint
-        self.headers = headers or {}
-        self.runtime = runtime
-        self.telemetry_level = telemetry_level
-        self.console = console
-        self._flush_on_exit = flush_on_exit or shutdown_on_exit
-        self._shutdown_on_exit = shutdown_on_exit
-        self._meter = None
-        self._provider = None
-        self._shut_down = False
+        self._provider = meter_provider
+        self._meter = (
+            meter_provider.get_meter(service_name)
+            if meter_provider is not None
+            else None
+        )
+        self._counters = {}
+        self._gauges = {}
+        self._histograms = {}
 
-        self._setup_otlp()
-
-    def _setup_otlp(self):
-        """Setup OTLP metrics exporter."""
-        try:
-            from opentelemetry import metrics
-            from opentelemetry.sdk.metrics import MeterProvider
-            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
-                OTLPMetricExporter,
-            )
-
-            from ._otel import build_resource, register_atexit
-
-            existing = metrics.get_meter_provider()
-            if not _is_proxy_provider(existing):
-                # Never construct an unused provider/exporter when another
-                # application already owns the process-wide meter provider.
-                self._meter = metrics.get_meter(self.service_name)
-                self._provider = existing
-                self._counters = {}
-                self._gauges = {}
-                self._histograms = {}
-                return
-
-            resource = self.runtime.resource if self.runtime else build_resource(
-                self.service_name,
-                telemetry_level=self.telemetry_level,
-                extra={"service.version": "0.1.0"},
-            )
-
-            exporter = OTLPMetricExporter(
-                endpoint=self.otlp_endpoint,
-                headers=self.headers or None,
-                insecure=True,
-            )
-            readers = [
-                PeriodicExportingMetricReader(
-                    exporter, export_interval_millis=5000
-                )
-            ]
-            if self.console:
-                from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
-
-                readers.append(
-                    PeriodicExportingMetricReader(
-                        ConsoleMetricExporter(),
-                        export_interval_millis=5000,
-                    )
-                )
-
-            provider = MeterProvider(resource=resource, metric_readers=readers)
-
-            # OpenTelemetry allows only one global MeterProvider per process.
-            # Reuse an already-registered provider instead of overriding it
-            # (which OTEL rejects with "Overriding of current MeterProvider").
-            if _is_proxy_provider(existing):
-                metrics.set_meter_provider(provider)
-                self._meter = metrics.get_meter(self.service_name)
-                self._provider = provider
-                print(f"✅ OTLP metrics initialized: {self.otlp_endpoint}")
-                if self.runtime:
-                    self.runtime.register(provider)
-                else:
-                    register_atexit(
-                        provider,
-                        flush_on_exit=self._flush_on_exit,
-                        shutdown_on_exit=self._shutdown_on_exit,
-                        is_shut_down=lambda: self._shut_down,
-                    )
-
-            self._counters = {}
-            self._gauges = {}
-            self._histograms = {}
-
-        except Exception as e:
-            print(f"⚠️  Failed to setup OTLP metrics: {str(e)}")
-            self._meter = None
+    @property
+    def provider(self) -> Any | None:
+        """Return the application-owned meter provider, if configured."""
+        return self._provider
 
     def counter(self, name: str, value: int = 1, **labels):
         """Increment a counter metric."""
@@ -288,20 +188,9 @@ class OTELMetrics:
         self.histogram(name, value, **labels)
 
     def shutdown(self):
-        """Explicitly flush and shut down the OTLP metrics provider.
-
-        Call this for deterministic cleanup in long-running processes or
-        when ``flush_on_exit=False``.
-        """
-        if self._provider:
-            try:
-                self._provider.force_flush()
-                self._provider.shutdown()
-            except Exception:
-                pass
-            self._provider = None
-            self._meter = None
-            self._shut_down = True
+        """Release this adapter without shutting down the app-owned provider."""
+        self._provider = None
+        self._meter = None
 
 
 class MetricNames:

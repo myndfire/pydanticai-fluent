@@ -17,7 +17,6 @@
 import os
 from dataclasses import dataclass, field
 
-import structlog
 from typing import Protocol, Any, Union
 
 from ._agent_factory import build_harness_agent
@@ -72,7 +71,10 @@ class QualityCheck:
             build_model_ref(judge_model),
             observability_getter=lambda: self._observability,
         )
-        self._logger = structlog.get_logger()
+
+    def _log(self, level: str, message: str, **context) -> None:
+        if self._observability is not None:
+            getattr(self._observability, f"log_{level}")(message, **context)
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> EvaluationResult | None:
         """
@@ -100,7 +102,8 @@ Respond with just a number between 0 and 10."""
             try:
                 score = float(judgment.output.strip())
             except ValueError:
-                self._logger.warning(
+                self._log(
+                    "warning",
                     "Could not parse quality score", judgment=judgment.output
                 )
                 return EvaluationResult(
@@ -113,7 +116,8 @@ Respond with just a number between 0 and 10."""
             # Log result
             passed = score >= self.threshold
             if not passed:
-                self._logger.warning(
+                self._log(
+                    "warning",
                     "Low quality response detected",
                     score=score,
                     threshold=self.threshold,
@@ -121,7 +125,8 @@ Respond with just a number between 0 and 10."""
                     **context,
                 )
             else:
-                self._logger.info(
+                self._log(
+                    "info",
                     "Quality check passed",
                     score=score,
                     threshold=self.threshold,
@@ -136,7 +141,7 @@ Respond with just a number between 0 and 10."""
             )
 
         except Exception as e:
-            self._logger.error("Quality evaluation failed", error=str(e))
+            self._log("error", "Quality evaluation failed", error=str(e))
             return EvaluationResult(
                 evaluator="quality",
                 passed=False,
@@ -151,7 +156,11 @@ class SafetyCheck:
     def __init__(self):
         """Initialize safety evaluator."""
         self.model = os.getenv("SAFETY_CHECK_MODEL", "omni-moderation-2024-09-26")
-        self._logger = structlog.get_logger()
+        self._observability = None
+
+    def _log(self, level: str, message: str, **context) -> None:
+        if self._observability is not None:
+            getattr(self._observability, f"log_{level}")(message, **context)
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> EvaluationResult | None:
         """
@@ -183,7 +192,8 @@ class SafetyCheck:
                         if flagged
                     ]
 
-                    self._logger.warning(
+                    self._log(
+                        "warning",
                         f"Content policy violation in {content_type}",
                         categories=categories,
                         content=content_type,
@@ -191,7 +201,7 @@ class SafetyCheck:
                     )
                     flagged_categories.extend(categories)
                 else:
-                    self._logger.debug(f"Safety check passed for {content_type}", **context)
+                    self._log("debug", f"Safety check passed for {content_type}", **context)
             return EvaluationResult(
                 evaluator="safety",
                 passed=not flagged_categories,
@@ -199,14 +209,14 @@ class SafetyCheck:
             )
 
         except ImportError:
-            self._logger.warning("OpenAI not available - skipping safety check")
+            self._log("warning", "OpenAI not available - skipping safety check")
             return EvaluationResult(
                 evaluator="safety",
                 passed=False,
                 labels=["dependency_unavailable"],
             )
         except Exception as e:
-            self._logger.error("Safety evaluation failed", error=str(e))
+            self._log("error", "Safety evaluation failed", error=str(e))
             return EvaluationResult(
                 evaluator="safety",
                 passed=False,
@@ -235,19 +245,25 @@ class CustomEvaluator:
             name: Evaluator name for logging
         """
         self.name = name
-        self._logger = structlog.get_logger()
+        self._observability = None
+
+    def _log(self, level: str, message: str, **kwargs):
+        if self._observability is not None:
+            getattr(self._observability, f"log_{level}")(
+                f"[{self.name}] {message}", **kwargs
+            )
 
     def log_info(self, message: str, **kwargs):
         """Log info message."""
-        self._logger.info(f"[{self.name}] {message}", **kwargs)
+        self._log("info", message, **kwargs)
 
     def log_warning(self, message: str, **kwargs):
         """Log warning message."""
-        self._logger.warning(f"[{self.name}] {message}", **kwargs)
+        self._log("warning", message, **kwargs)
 
     def log_error(self, message: str, **kwargs):
         """Log error message."""
-        self._logger.error(f"[{self.name}] {message}", **kwargs)
+        self._log("error", message, **kwargs)
 
     async def evaluate(self, prompt: str, result: Any, context: dict) -> EvaluationResult | None:
         """

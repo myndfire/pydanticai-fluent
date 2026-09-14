@@ -16,11 +16,30 @@ from pathlib import Path
 from dotenv import load_dotenv
 import structlog
 
-# Load .env BEFORE any imports that trigger observability backends
+# Load application configuration before constructing the example.
 _env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(_env_path)
 
 log = structlog.get_logger()
+
+
+class StructlogLogger:
+    """Adapt the application's structlog logger to the harness logger port."""
+
+    def __init__(self, logger):
+        self._logger = logger
+
+    def debug(self, message: str, **context):
+        self._logger.debug(message, **context)
+
+    def info(self, message: str, **context):
+        self._logger.info(message, **context)
+
+    def warning(self, message: str, **context):
+        self._logger.warning(message, **context)
+
+    def error(self, message: str, **context):
+        self._logger.error(message, **context)
 
 import asyncio
 from datetime import datetime
@@ -28,7 +47,7 @@ from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.tools import ToolRegistry
 from agent_harness.prompts import StaticPrompts
-from agent_harness.observability import Observability, ObservabilityBuilder
+from agent_harness.observability import Observability
 from agent_harness.guards import (
     AgentRetryConfig,
     ToolRetryConfig,
@@ -114,7 +133,7 @@ async def chat_loop():
         .with_tools(tools)
         .with_prompts(StaticPrompts("You are a medical assistant. When user asks about labs, ALWAYS call get_labs with category='lipid panel'. When user asks about diagnosis, ALWAYS call get_diagnosis with category='general'. When user asks about imaging/films, ALWAYS call get_findings with category='chest xray'. Provide concise answers based on tool results."))
         .with_observability(
-            Observability(builder=ObservabilityBuilder().with_otel_observability())
+            Observability(logger=StructlogLogger(log))
         )
         .with_error_handling(ErrorHandlingConfig())
         .with_agent_retries(AgentRetryConfig(max_retries=3, timeout=120))

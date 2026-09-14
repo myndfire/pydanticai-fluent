@@ -35,9 +35,11 @@ from .prompts import PromptProvider, StaticPrompts, MongoPrompts
 from .logging import (
     Logger,
     NoOpLogger,
+    ConsoleLogger,
     CompositeLogger,
     OTELLogger,
 )
+from .telemetry import configure_console, configure_otlp
 from .log_enrichment import (
     LogEnrichmentProvider,
     LogContext,
@@ -65,7 +67,6 @@ from .observability import (
     TelemetryGranularity,
     TELEMETRY_LEVELS,
 )
-from .telemetry_runtime import TelemetryRuntime
 from .telemetry_schema import TelemetryFields, TelemetryEvents
 from .execution import ExecutionContext, ExecutionBudget, RunStatus, current_execution
 from .tools import ToolRegistry
@@ -157,8 +158,11 @@ __all__ = [
     # Logging
     "Logger",
     "NoOpLogger",
+    "ConsoleLogger",
     "CompositeLogger",
     "OTELLogger",
+    "configure_console",
+    "configure_otlp",
     # Log Enrichment
     "LogEnrichmentProvider",
     "LogContext",
@@ -183,7 +187,6 @@ __all__ = [
     "HARNESS_SETTINGS",
     "TelemetryGranularity",
     "TELEMETRY_LEVELS",
-    "TelemetryRuntime",
     "TelemetryFields",
     "TelemetryEvents",
     "ExecutionContext",

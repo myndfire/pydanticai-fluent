@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ObservabilityBuilder — fluent builder for OTEL observability.
+"""Observability configuration — explicit OTLP setup and composition.
 
 Demonstrates:
-  - ObservabilityBuilder.with_otel_observability() — one call configures
-    logging + tracing + metrics via OTLP gRPC
-  - Customizing endpoint, sample_rate, create_spans
-  - build() → Observability instance
+  - configure_otlp(): the application explicitly creates and owns the OTLP
+    providers/exporters for logs + traces + metrics
+  - ObservabilityBuilder: compose application-owned backends
   - observe() context manager for manual instrumentation
-  - Chaining builder methods
+  - Graceful behavior when the OTel Collector is not running
 
 Prerequisite:
     docker compose -f docker-compose.yml up -d otel-collector
@@ -43,7 +42,11 @@ import os
 from dotenv import load_dotenv
 import structlog
 
-from agent_harness.observability import Observability, ObservabilityBuilder
+from agent_harness.logging import ConsoleLogger
+from agent_harness.metrics import InMemoryMetrics
+from agent_harness.observability import ObservabilityBuilder
+from agent_harness.telemetry import configure_otlp
+from agent_harness.tracing import InMemoryTracer
 
 load_dotenv()
 
@@ -52,62 +55,97 @@ log = structlog.get_logger()
 OTEL_COLLECTOR = os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:4317")
 
 
+async def check_port(host: str, port: int) -> bool:
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=2.0
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
+
+
 async def main():
     log.debug("separator", char="=", count=60)
-    log.debug("title", title="ObservabilityBuilder — OTEL Fluent Configuration")
+    log.debug("title", title="Observability — Explicit Setup and Composition")
     log.debug("separator", char="=", count=60)
 
-    # ── Example 1: Default OTEL observability ────────────────────
-    log.debug("example", example=1, title="Default with_otel_observability()")
-    obs = Observability(
-        builder=ObservabilityBuilder(service_name="builder-demo")
-        .with_otel_observability()
+    # ── Example 1: Compose application-owned backends (no OTel) ──
+    log.debug("example", example=1, title="Compose application-owned backends")
+    composed = (
+        ObservabilityBuilder(service_name="builder-demo")
+        .with_logger(ConsoleLogger())
+        .with_tracer(InMemoryTracer())
+        .with_metrics(InMemoryMetrics())
+        .build()
     )
-    log.debug("service_name", service_name=obs.service_name)
-    log.debug("loggers", loggers=[type(l).__name__ for l in obs._loggers])
-    log.debug("tracers", tracers=[type(t).__name__ for t in obs._tracers])
-    log.debug("metrics", metrics=[type(m).__name__ for m in obs._metrics])
+    log.debug("service_name", service_name=composed.service_name)
+    log.debug("loggers", loggers=[type(l).__name__ for l in composed._loggers])
+    log.debug("tracers", tracers=[type(t).__name__ for t in composed._tracers])
+    log.debug("metrics", metrics=[type(m).__name__ for m in composed._metrics])
+    composed.info("composed_record", note="no OTel providers created")
 
-    # ── Example 2: Custom endpoint and sampling ──────────────────
-    log.debug("example", example=2, title="Custom endpoint + sampling")
-    obs2 = Observability(
-        builder=ObservabilityBuilder(service_name="custom-demo")
-        .with_otel_observability(
-            otlp_endpoint=OTEL_COLLECTOR,
-            sample_rate=0.5,
-            create_spans=True,
+    # ── Example 2: Explicit OTLP setup (collector required) ──────
+    log.debug("example", example=2, title="configure_otlp()")
+    log.debug("checking_collector", endpoint=OTEL_COLLECTOR)
+    otel_host, _, otel_port = OTEL_COLLECTOR.partition(":")
+    otel_ok = await check_port(otel_host or "localhost", int(otel_port or 4317))
+    log.debug("collector_status", reachable=otel_ok)
+
+    if not otel_ok:
+        log.debug("start_instructions")
+        log.debug(
+            "docker_command",
+            command="docker compose -f docker-compose.yml up -d otel-collector",
         )
+        return
+
+    obs = configure_otlp(
+        service_name="builder-demo",
+        endpoint=OTEL_COLLECTOR,
+        sample_rate=1.0,
+        create_spans=True,
     )
-    log.debug("endpoint", endpoint=OTEL_COLLECTOR)
-    log.debug("sample_rate", rate=0.5)
-    log.debug("create_spans", enabled=True)
+    try:
+        log.debug("loggers", loggers=[type(l).__name__ for l in obs._loggers])
+        log.debug("tracers", tracers=[type(t).__name__ for t in obs._tracers])
+        log.debug("metrics", metrics=[type(m).__name__ for m in obs._metrics])
 
-    # ── Example 3: observe() context manager ─────────────────────
-    log.debug("example", example=3, title="Manual observe()")
-    async with obs.observe("custom_operation", step="data_processing", batch_size=32):
-        obs.info("processing_chunk", chunks=8)
-        await asyncio.sleep(0.02)
-        obs.info("chunk_complete", chunks_done=8)
+        # ── Example 3: observe() context manager ─────────────────
+        log.debug("example", example=3, title="Manual observe()")
+        async with obs.observe(
+            "custom_operation", step="data_processing", batch_size=32
+        ):
+            obs.info("processing_chunk", chunks=8)
+            await asyncio.sleep(0.02)
+            obs.info("chunk_complete", chunks_done=8)
 
-    log.debug("observe_info", detail="observe() auto-logs _started/_completed, records duration + metrics")
-
-    # ── Example 4: Auth headers for cloud endpoints ──────────────
-    log.debug("example", example=4, title="Auth headers (for cloud OTLP endpoints)")
-    obs4 = Observability(
-        builder=ObservabilityBuilder(service_name="cloud-demo")
-        .with_otel_observability(
-            otlp_endpoint="otlp.grafana-cloud.com:4317",
-            headers={"Authorization": "Bearer <token>"},
+        log.debug(
+            "observe_info",
+            detail="observe() auto-logs _started/_completed, records duration + metrics",
         )
-    )
-    log.debug("auth_headers", detail="Built with auth headers (collector not running — gracefully no-ops)")
+
+        # ── Example 4: Auth headers for cloud OTLP endpoints ─────
+        log.debug(
+            "example",
+            example=4,
+            title="Auth headers (cloud OTLP endpoints)",
+        )
+        log.debug(
+            "auth_headers",
+            detail="configure_otlp(headers={'Authorization': 'Bearer <token>'})",
+        )
+    finally:
+        await obs.shutdown()
 
     log.debug("separator", char="=", count=60)
     log.debug("builder_methods")
-    log.debug("method", method="with_otel_observability", params="endpoint, sample_rate, create_spans, headers, granularity, console")
+    log.debug("method", method="configure_otlp", params="service_name, endpoint, sample_rate, create_spans, headers, granularity, console")
     log.debug("usage")
-    log.debug("usage_example", example="obs = Observability(builder=ObservabilityBuilder().with_otel_observability())")
-    log.debug("usage_example", example="obs = ObservabilityBuilder().with_otel_observability().build()")
+    log.debug("usage_example", example="obs = configure_otlp(service_name='agent', endpoint='localhost:4317')")
+    log.debug("usage_example", example="builder = ObservabilityBuilder().with_logger(my_logger).with_tracer(my_tracer).with_metrics(my_metrics)")
     log.debug("separator", char="=", count=60)
 
 

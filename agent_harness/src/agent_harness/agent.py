@@ -37,7 +37,7 @@ from .memory import (
     filter_thinking_parts,
 )
 from .prompts import PromptProvider, StaticPrompts
-from .observability import Observability, ObservabilityBuilder, HARNESS_SETTINGS, _truncate_traceback
+from .observability import Observability, HARNESS_SETTINGS, _truncate_traceback
 from .tools import ToolRegistry
 from .guards import (
     GuardConfig,
@@ -243,6 +243,7 @@ class ManagedAgent:
         self._model_settings = model_settings
         self._output_type: Optional[Any] = None
         self._output_retries: int = 3
+        self._observability = observability
         model_config = model or ModelConfig(provider="ollama", model_name="gpt-oss:20b")
         self._agent: Agent[Any, Any] = build_harness_agent(
             build_model(model_config), deps_type=deps_type,
@@ -253,7 +254,6 @@ class ManagedAgent:
         self._deps_type = deps_type
 
         self.prompts = prompts or StaticPrompts()
-        self._observability = observability  # Could be None; created lazily via property
         self.tools = tools or ToolRegistry(self._observability)
         self.evaluators = evaluators or []
         self._attach_observability_to_evaluators()
@@ -298,6 +298,7 @@ class ManagedAgent:
         through the ``observability`` property.
         """
         self._observability = observability
+        self._agent.instrument = observability.instrumentation_settings()
         if self.traceback_frame_limit is not None:
             observability.traceback_frame_limit = self.traceback_frame_limit
         if getattr(self, "tools", None) is not None:
@@ -311,16 +312,9 @@ class ManagedAgent:
 
     @property
     def observability(self) -> Observability:
-        """Lazy-init observability: creates default OTEL backends on first access."""
+        """Lazy-init an explicit no-op observability stack on first access."""
         if self._observability is None:
-            self._propagate_observability(
-                Observability(
-                    builder=ObservabilityBuilder(service_name="agent")
-                    .with_otel_observability(
-                        otlp_endpoint=os.getenv("OTEL_COLLECTOR_ENDPOINT", "localhost:4317"),
-                    )
-                )
-            )
+            self._propagate_observability(Observability())
         return self._observability
 
     @observability.setter
@@ -336,6 +330,11 @@ class ManagedAgent:
         for evaluator in getattr(self, "evaluators", []):
             if hasattr(evaluator, "_observability"):
                 evaluator._observability = self._observability
+                judge_agent = getattr(evaluator, "_judge_agent", None)
+                if judge_agent is not None and self._observability is not None:
+                    judge_agent.instrument = (
+                        self._observability.instrumentation_settings()
+                    )
 
     def _warn_if_provider_ignored_max_tokens(self, result: Any, context: dict) -> None:
         """Canary: warn when a provider generated more than the configured max_tokens.

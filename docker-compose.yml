@@ -59,6 +59,52 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------
+  # MongoDB (optional persistent memory and prompt storage)
+  # ---------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-Admin1234!}
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "-u",
+          "${MONGO_ROOT_USER:-admin}",
+          "-p",
+          "${MONGO_ROOT_PASSWORD:-Admin1234!}",
+          "--authenticationDatabase",
+          "admin",
+          "--eval",
+          "db.adminCommand('ping')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  mongoexpress:
+    image: mongo-express:1.0.2
+    container_name: mongoexpress
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-Admin1234!}@mongodb:27017/?authSource=admin
+      ME_CONFIG_BASICAUTH: "${ME_CONFIG_BASICAUTH:-true}"
+    ports:
+      - "127.0.0.1:8081:8081"
+
+  # ---------------------------------------------------------------
   # Langfuse Web (UI + API)
   # ---------------------------------------------------------------
   langfuse-web:
@@ -202,6 +248,22 @@ services:
       timeout: 3s
       retries: 10
 
+  redis-cache:
+    image: redis:7-alpine
+    container_name: redis-cache
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_cache_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
   # ---------------------------------------------------------------
   # MinIO (S3-compatible object storage)
   # ---------------------------------------------------------------
@@ -263,3 +325,5 @@ volumes:
   langfuse-minio-data:
   es_data:
   openobserve_data:
+  mongodb_data:
+  redis_cache_data:

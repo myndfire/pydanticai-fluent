@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import asyncio
-import structlog
 import time
 import traceback
 from collections import deque

@@ -20,8 +20,8 @@ from colorama import init as colorama_init
 from dotenv import load_dotenv
 import structlog
 from agent_harness.agent import ManagedAgent
-from agent_harness.memory import MessageHistory, InMemoryProvider, MongoMemory
-from agent_harness.observability import Observability, ObservabilityBuilder
+from agent_harness.memory import MessageHistory, InMemoryProvider
+from agent_harness.observability import Observability
 from agent_harness.prompts import StaticPrompts
 from agent_harness.errorhandling import ErrorHandlingConfig, ErrorContext
 from agent_harness.model_config import ModelConfig
@@ -30,22 +30,45 @@ from pydantic_ai.settings import ModelSettings
 
 load_dotenv()
 colorama_init()
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.format_exc_info,
+        structlog.dev.ConsoleRenderer(colors=True),
+    ],
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=False,
+)
+
+
+class StructlogLogger:
+    """Adapt the application's structlog logger to the harness logger port."""
+
+    def __init__(self, logger):
+        self._logger = logger
+
+    def debug(self, message: str, **context):
+        self._logger.debug(message, **context)
+
+    def info(self, message: str, **context):
+        self._logger.info(message, **context)
+
+    def warning(self, message: str, **context):
+        self._logger.warning(message, **context)
+
+    def error(self, message: str, **context):
+        self._logger.error(message, **context)
+
+
 log = structlog.get_logger()
 
 
 def create_memory_providers():
-    """Create short and long-term memory from .env config."""
-    short_term = InMemoryProvider(max_turns=10)
-    long_term = None
-
-    mongo_uri = os.getenv("MONGODB_URI")
-    if mongo_uri:
-        long_term = MongoMemory(
-            uri=mongo_uri,
-            database=os.getenv("MONGODB_DATABASE", "agent_memory"),
-            collection=os.getenv("MONGODB_COLLECTION", "conversations"),
-        )
-    return short_term, long_term
+    """Create short and long-term in-memory providers."""
+    return InMemoryProvider(max_turns=10), InMemoryProvider(max_turns=100)
 
 
 class AgentErrorHandler:
@@ -94,10 +117,7 @@ async def main():
         timeout=30.0,
     )
 
-    obs = Observability(
-        builder=ObservabilityBuilder(service_name="agent_example-2_service")
-        .with_otel_observability(otlp_endpoint="localhost:4317")
-    )
+    obs = Observability(logger=StructlogLogger(log))
     obs.info("Starting agent execution")
 
     agent = (

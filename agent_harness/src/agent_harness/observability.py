@@ -15,7 +15,6 @@
 """Unified observability facade combining logging, tracing, and metrics."""
 
 import os
-import socket
 import traceback
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -25,11 +24,10 @@ from typing import Any, Optional, Union
 from pydantic_settings import BaseSettings
 from dotenv import find_dotenv
 
-from .logging import NoOpLogger, Logger, OTELLogger, app_code_location, get_harness_call_site
+from .logging import NoOpLogger, Logger, _app_callsite, app_code_location, get_harness_call_site
 from .errorhandling import ErrorContext
-from .tracing import Tracer, NoOpTracer, OTELTracer
-from .metrics import MetricsCollector, NoOpMetrics, MetricNames, OTELMetrics
-from .telemetry_runtime import TelemetryRuntime
+from .tracing import Tracer, NoOpTracer
+from .metrics import MetricsCollector, NoOpMetrics, MetricNames
 from .telemetry_schema import (
     TelemetryFields,
     bounded_metric_attributes,
@@ -63,15 +61,6 @@ class HarnessSettings(BaseSettings):
     telemetry_level: str = Field(
         default="standard",
         validation_alias="HARNESS_TELEMETRY_LEVEL",
-    )
-    telemetry_enabled: bool = Field(
-        default=True,
-        validation_alias="HARNESS_TELEMETRY_ENABLED",
-    )
-    # Render OTel records to the local console via the OTel console exporters.
-    telemetry_console: bool = Field(
-        default=True,
-        validation_alias="HARNESS_TELEMETRY_CONSOLE",
     )
 
     class Config:
@@ -440,25 +429,18 @@ class Observability:
 
     Example:
         obs = Observability(
-            loggers=[OTELLogger(...)],
-            tracers=[OTELTracer(...)],
-            metrics=[OTELMetrics(...)],
-        )
-
-    Or via builder injection (recommended):
-        obs = Observability(
-            builder=ObservabilityBuilder("agent").with_otel_observability()
+            loggers=[my_logger],
+            tracers=[my_tracer],
+            metrics_list=[my_metrics],
         )
     """
 
     @classmethod
     def configure(cls, service_name: str = "agent", **kwargs) -> "Observability":
-        """Create the canonical OTLP-backed observability stack."""
-        if "endpoint" in kwargs and "otlp_endpoint" not in kwargs:
-            kwargs["otlp_endpoint"] = kwargs.pop("endpoint")
-        return ObservabilityBuilder(service_name=service_name).with_otel_observability(
-            **kwargs
-        ).build()
+        """Create an explicitly configured OTLP stack."""
+        from .telemetry import configure_otlp
+
+        return configure_otlp(service_name=service_name, **kwargs)
 
     def __init__(
         self,
@@ -494,7 +476,6 @@ class Observability:
             self._loggers: list[Logger] = list(builder._loggers)
             self._tracers: list[Tracer] = list(builder._tracers)
             self._metrics: list[MetricsCollector] = list(builder._metrics)
-            self._runtime = builder._runtime
             if granularity is None:
                 granularity = builder.granularity
         else:
@@ -509,18 +490,10 @@ class Observability:
             self._metrics = metrics_list or []
             if metrics:
                 self._metrics.append(metrics)
-            self._runtime = None
+        self._owned_providers: list[Any] = []
 
         # Telemetry granularity drives what is emitted across logs/metrics/traces.
         self.granularity = TelemetryGranularity(granularity)
-        if self._runtime is None:
-            self._runtime = TelemetryRuntime(
-                self.service_name,
-                environment=HARNESS_SETTINGS.app_env,
-                host=socket.gethostname(),
-                telemetry_level=self.granularity.level,
-            )
-
         # Priority: passed arg > env var > None (full)
         self.traceback_frame_limit = (
             traceback_frame_limit
@@ -537,43 +510,13 @@ class Observability:
         self._base_context: dict = {"component": "agent"}
 
     def _apply_otel_defaults(self) -> None:
-        """Fill empty backend lists with the default OTel backends."""
-        if not HARNESS_SETTINGS.telemetry_enabled:
-            if not self._loggers:
-                self._loggers = [NoOpLogger()]
-            if not self._tracers:
-                self._tracers = [NoOpTracer()]
-            if not self._metrics:
-                self._metrics = [NoOpMetrics()]
-            return
+        """Fill empty backend lists with explicit no-op components."""
         if not self._loggers:
-            self._loggers = [
-                OTELLogger(
-                    service_name=self.service_name,
-                    environment=HARNESS_SETTINGS.app_env,
-                    host=socket.gethostname(),
-                    console=HARNESS_SETTINGS.telemetry_console,
-                    telemetry_level=self.granularity.level,
-                    runtime=self._runtime,
-                )
-            ]
+            self._loggers = [NoOpLogger()]
         if not self._tracers:
-            self._tracers = [
-                OTELTracer(
-                    service_name=self.service_name,
-                    telemetry_level=self.granularity.level,
-                    runtime=self._runtime,
-                )
-            ]
-        # Metrics are not exported at the minimal level (low-noise mode).
-        if not self._metrics and not self.granularity.minimal:
-            self._metrics = [
-                OTELMetrics(
-                    service_name=self.service_name,
-                    telemetry_level=self.granularity.level,
-                    runtime=self._runtime,
-                )
-            ]
+            self._tracers = [NoOpTracer()]
+        if not self._metrics:
+            self._metrics = [NoOpMetrics()]
 
     # Convenience properties — delegate to first backend
     @property
@@ -644,57 +587,53 @@ class Observability:
         Observe an operation with logging, tracing, and metrics.
 
         Fires all loggers, all tracers, and all metrics backends.
-        Structlog contextvars are bound/unbound automatically so any
-        structlog call within the span inherits the enrichment keys.
         """
-        import structlog as _structlog
-
         context = execution_context(context)
         context.setdefault(TelemetryFields.OPERATION, operation)
-        _structlog.contextvars.bind_contextvars(**context)
+        # Capture the caller's location at operation entry so lifecycle records
+        # (e.g. ``scenario_completed``) keep the originating user frame rather
+        # than a deep harness frame.
+        for key, value in _app_callsite().items():
+            context.setdefault(key, value)
         start_time = datetime.now()
-        try:
-            self._emit_lifecycle("debug", "started", operation, context)
-            self._record_lifecycle_counter(operation, context)
+        self._emit_lifecycle("debug", "started", operation, context)
+        self._record_lifecycle_counter(operation, context)
 
-            async with self._chain_tracers(operation, **context) as trace_contexts:
-                trace_context = self._trace_context(trace_contexts)
-                _structlog.contextvars.bind_contextvars(**trace_context)
-                try:
-                    yield {
-                        **context,
-                        **trace_context,
-                        "tool_call": context.get(
-                            "tool_call", {"tool": None, "parameters": {}}
-                        ),
-                    }
-                    duration = (datetime.now() - start_time).total_seconds()
-                    self._emit_lifecycle(
-                        "info",
-                        "completed",
-                        operation,
-                        context,
-                        trace_context,
-                        performance={"duration_seconds": duration},
-                    )
-                    self._record_lifecycle_duration(operation, duration, context)
-                except Exception as e:
-                    duration = (datetime.now() - start_time).total_seconds()
-                    error_attrs = _exception_record(e, self.traceback_frame_limit)
-                    self._emit_lifecycle(
-                        "error",
-                        "failed",
-                        operation,
-                        context,
-                        trace_context,
-                        body=_error_body(f"{operation}_failed", error_attrs),
-                        performance={"duration_seconds": duration},
-                        **error_attrs,
-                    )
-                    self._record_lifecycle_error(operation, duration, e)
-                    raise
-        finally:
-            _structlog.contextvars.clear_contextvars()
+        async with self._chain_tracers(operation, **context) as trace_contexts:
+            trace_context = self._trace_context(trace_contexts)
+            try:
+                yield {
+                    **context,
+                    **trace_context,
+                    "tool_call": context.get(
+                        "tool_call", {"tool": None, "parameters": {}}
+                    ),
+                }
+                duration = (datetime.now() - start_time).total_seconds()
+                self._emit_lifecycle(
+                    "info",
+                    "completed",
+                    operation,
+                    context,
+                    trace_context,
+                    performance={"duration_seconds": duration},
+                )
+                self._record_lifecycle_duration(operation, duration, context)
+            except Exception as e:
+                duration = (datetime.now() - start_time).total_seconds()
+                error_attrs = _exception_record(e, self.traceback_frame_limit)
+                self._emit_lifecycle(
+                    "error",
+                    "failed",
+                    operation,
+                    context,
+                    trace_context,
+                    body=_error_body(f"{operation}_failed", error_attrs),
+                    performance={"duration_seconds": duration},
+                    **error_attrs,
+                )
+                self._record_lifecycle_error(operation, duration, e)
+                raise
 
     def _emit_lifecycle(
         self,
@@ -1009,12 +948,25 @@ class Observability:
         return attrs
 
     def flush(self) -> None:
-        """Flush all three signals through the shared runtime."""
-        self._runtime.flush()
+        """Flush providers explicitly created for this observability stack."""
+        for provider in self._owned_providers:
+            try:
+                provider.force_flush()
+            except Exception:
+                pass
 
     async def shutdown(self) -> None:
-        """Flush and shut down all providers exactly once."""
-        self._runtime.shutdown()
+        """Shut down providers explicitly created for this stack."""
+        for provider in self._owned_providers:
+            try:
+                provider.shutdown()
+            except Exception:
+                pass
+
+    def own_providers(self, *providers: Any) -> "Observability":
+        """Register providers created by an explicit application setup helper."""
+        self._owned_providers.extend(providers)
+        return self
 
     async def __aenter__(self) -> "Observability":
         return self
@@ -1032,17 +984,27 @@ class Observability:
             if hasattr(t, "set_attribute"):
                 t.set_attribute(key, value)
 
+    def instrumentation_settings(self):
+        """Build per-agent PydanticAI instrumentation from injected providers."""
+        tracer_provider = next(
+            (getattr(tracer, "provider", None) for tracer in self._tracers), None
+        )
+        meter_provider = next(
+            (getattr(metrics, "provider", None) for metrics in self._metrics), None
+        )
+        if tracer_provider is None and meter_provider is None:
+            return None
+        from pydantic_ai.models.instrumented import InstrumentationSettings
+
+        return InstrumentationSettings(
+            tracer_provider=tracer_provider,
+            meter_provider=meter_provider,
+            include_content=self.granularity.verbose,
+        )
+
 
 class ObservabilityBuilder:
-    """Fluent builder for observability configuration.
-
-    Provides one convenience method for the supported stack:
-
-    - ``with_otel_observability()`` — OpenTelemetry (logging + tracing + metrics)
-
-    All parameters are optional with sensible defaults; pass only what you
-    need to override.
-    """
+    """Fluent composition builder for application-owned backends."""
 
     def __init__(self, service_name: str = "agent", granularity: Optional[str] = None):
         self.service_name = service_name
@@ -1050,119 +1012,20 @@ class ObservabilityBuilder:
         self._loggers: list[Logger] = []
         self._tracers: list[Tracer] = []
         self._metrics: list[MetricsCollector] = []
-        self._runtime: TelemetryRuntime | None = None
 
-    def with_otel_observability(
-        self,
-        otlp_endpoint: str = "localhost:4317",
-        sample_rate: float = 1.0,
-        create_spans: bool = False,
-        record_failures: bool = True,
-        headers: Optional[dict[str, str]] = None,
-        export_interval_ms: int = 5000,
-        flush_on_exit: bool = True,
-        shutdown_on_exit: bool = True,
-        granularity: Optional[str] = None,
-        console: Optional[bool] = None,
-        environment: Optional[str] = None,
-        host: Optional[str] = None,
-    ) -> "ObservabilityBuilder":
-        """Add complete OpenTelemetry observability (logging + tracing + metrics).
+    def with_logger(self, logger: Logger) -> "ObservabilityBuilder":
+        """Compose an application-owned logging backend."""
+        self._loggers.append(logger)
+        return self
 
-        All signals are exported via OTLP gRPC to the same collector endpoint.
+    def with_tracer(self, tracer: Tracer) -> "ObservabilityBuilder":
+        """Compose an application-owned tracing backend."""
+        self._tracers.append(tracer)
+        return self
 
-        Args:
-            otlp_endpoint: OTel Collector OTLP gRPC endpoint
-            sample_rate: Trace sampling ratio (0.0–1.0, default 1.0)
-            create_spans: When True, export harness-owned spans in addition to
-                PydanticAI native spans (default False)
-            record_failures: Record exceptions in the trace stream (default True)
-            headers: Optional gRPC metadata headers for authenticated endpoints
-                (e.g. ``{"Authorization": "Bearer <token>"}``).  The standard
-                ``OTEL_EXPORTER_OTLP_HEADERS`` env var is also supported by the
-                SDK automatically.
-            export_interval_ms: BatchSpanProcessor export interval in
-                milliseconds (default 5000). Lower values make traces appear
-                in the backend faster during development.
-            flush_on_exit: Register atexit handlers that call ``force_flush()``
-                on all OTEL providers before exit (default True). Ensures
-                buffered telemetry is sent even for short-lived scripts.
-            shutdown_on_exit: Register atexit handlers that call ``shutdown()``
-                on all OTEL providers (default True). Implies ``flush_on_exit``.
-            granularity: Telemetry granularity (``minimal``/``standard``/``verbose``).
-                Defaults to ``HARNESS_TELEMETRY_LEVEL``.
-            console: Render logs/traces/metrics to the local console via the
-                OTel console exporters. Defaults to ``HARNESS_TELEMETRY_CONSOLE``.
-
-        Returns:
-            Self for chaining
-        """
-        from .logging import OTELLogger
-        from .tracing import OTELTracer
-        from .metrics import OTELMetrics
-
-        if not HARNESS_SETTINGS.telemetry_enabled:
-            self._loggers.append(NoOpLogger())
-            self._tracers.append(NoOpTracer())
-            self._metrics.append(NoOpMetrics())
-            return self
-
-        if granularity is not None:
-            self.granularity = granularity
-        resolved = TelemetryGranularity(self.granularity)
-        if console is None:
-            console = HARNESS_SETTINGS.telemetry_console
-        self._runtime = TelemetryRuntime(
-            self.service_name,
-            environment=environment or HARNESS_SETTINGS.app_env,
-            host=host or socket.gethostname(),
-            telemetry_level=resolved.level,
-            flush_on_exit=flush_on_exit,
-            shutdown_on_exit=shutdown_on_exit,
-        )
-
-        self._loggers.append(
-            OTELLogger(
-                service_name=self.service_name,
-                otlp_endpoint=otlp_endpoint,
-                flush_on_exit=flush_on_exit,
-                shutdown_on_exit=shutdown_on_exit,
-                environment=HARNESS_SETTINGS.app_env,
-                host=socket.gethostname(),
-                console=console,
-                telemetry_level=resolved.level,
-                headers=headers,
-                runtime=self._runtime,
-            )
-        )
-        self._tracers.append(
-            OTELTracer(
-                service_name=self.service_name,
-                otlp_endpoint=otlp_endpoint,
-                sample_rate=sample_rate,
-                create_spans=create_spans,
-                record_failures=record_failures,
-                export_interval_ms=export_interval_ms,
-                flush_on_exit=flush_on_exit,
-                shutdown_on_exit=shutdown_on_exit,
-                telemetry_level=resolved.level,
-                console=console,
-                headers=headers,
-                runtime=self._runtime,
-            )
-        )
-        self._metrics.append(
-            OTELMetrics(
-                service_name=self.service_name,
-                otlp_endpoint=otlp_endpoint,
-                flush_on_exit=flush_on_exit,
-                shutdown_on_exit=shutdown_on_exit,
-                telemetry_level=resolved.level,
-                console=console,
-                headers=headers,
-                runtime=self._runtime,
-            )
-        )
+    def with_metrics(self, metrics: MetricsCollector) -> "ObservabilityBuilder":
+        """Compose an application-owned metrics backend."""
+        self._metrics.append(metrics)
         return self
 
     def build(self) -> Observability:

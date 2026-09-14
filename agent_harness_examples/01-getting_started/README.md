@@ -30,13 +30,6 @@ example-1: Tools              example-2: Observability       example-3: Structur
 | **Model** | `ollama pull qwen2.5:3b` (or set `MODEL_NAME` in `../.env` to a pulled model) |
 | **Dependencies** | `cd agent_harness_examples && uv sync` |
 
-### Optional (example-2 and example-3)
-
-| Requirement | Purpose | Setup |
-|---|---|---|
-| **OTel Collector** | Logs, traces, and metrics backend | Run collector on `localhost:4317` (gRPC) |
-| **MongoDB** | Persistent long-term memory | Set `MONGODB_URI` in `../.env`; if unset, falls back to in-memory storage |
-
 ## Environment Variables
 
 All variables are read from `../.env`.
@@ -44,10 +37,6 @@ All variables are read from `../.env`.
 | Variable | Required | Default | Used By | Description |
 |---|---|---|---|---|
 | `MODEL_NAME` | Yes | `qwen2.5:3b` | all | Ollama model identifier |
-| `OTEL_COLLECTOR_ENDPOINT` | No | `localhost:4317` | example-2, example-3 | OTel Collector OTLP gRPC endpoint |
-| `MONGODB_URI` | No | - | example-2 | MongoDB connection string (e.g., `mongodb://localhost:27017`) |
-| `MONGODB_DATABASE` | No | `agent_memory` | example-2 | MongoDB database name |
-| `MONGODB_COLLECTION` | No | `conversations` | example-2 | MongoDB collection name |
 
 ## Running
 
@@ -80,22 +69,19 @@ Agent (LLM)
                                   Final output: "HELLO WORLD"
 ```
 
-### example-2 -- Observability, tracing, and memory
+### example-2 -- Application logging and memory
 
 ```bash
 uv run python 1-getting_started/agent_example-2.py
 ```
 
-Full observability stack: OTEL logging, tracing, and metrics. Runs three sequential prompts in the same session to demonstrate conversation continuity. Optionally uses MongoDB for persistent long-term memory.
+Application structlog console logging with no OpenTelemetry exporters. Runs three sequential prompts in the same session to demonstrate conversation continuity. Optionally uses MongoDB for persistent long-term memory.
 
 ```
-Observability stack:
+Application stack:
 ┌─────────────────────────────────────────────────┐
-│  Observability                                  │
-│  ├── logger:  OTELLogger   ──▶ localhost:4317   │
-│  ├── tracer:  OTELTracer   ──▶ localhost:4317   │
-│  ├── metrics: OTELMetrics  ──▶ localhost:4317   │
-│  └── memory:  MongoDB (optional)                │
+│  structlog -> console                           │
+│  memory:    InMemoryProvider                    │
 └─────────────────────────────────────────────────┘
 
 Session flow (3 turns, same session_id):
@@ -106,7 +92,7 @@ Session flow (3 turns, same session_id):
 
 Memory:
     ├── short_term: InMemoryProvider (ephemeral)
-    └── long_term:  MongoMemory (optional, persistent)
+    └── long_term:  InMemoryProvider (ephemeral)
 ```
 
 ### example-3 -- Structured output with Pydantic model

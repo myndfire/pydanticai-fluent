@@ -72,33 +72,36 @@ class WorkingEvaluator(Evaluator):
         log.debug("evaluator_working", output_length=len(output or ''))
 
 
-# ── Evaluator error handler ─────────────────────────────────────────
-
-def on_evaluator_failure(ctx: ErrorContext) -> str | None:
-    """Handle evaluator failures — suppress, don't crash the agent."""
-    log.debug(
-        "evaluator_error_intercepted",
+def log_evaluator_failure(ctx: ErrorContext) -> None:
+    """Surface an evaluator failure at error level."""
+    log.error(
+        "evaluator_failed",
         error_type=ctx.error_type,
         error_message=ctx.error_message,
+        source=ctx.source,
         session_id=ctx.session_id,
-        prompt=ctx.prompt,
     )
-    # Evaluators are non-critical — suppress and continue
-    return None  # return None to re-raise, or return a string to suppress
 
 
-def suppress_evaluator(ctx: ErrorContext) -> str | None:
-    """Suppress the evaluator failure and continue."""
-    log.debug("evaluator_suppressed", error_type=ctx.error_type)
-    return None  # suppress by returning None... wait, this would re-raise
+def on_quality_gate_error(ctx: ErrorContext) -> str:
+    """Log and suppress the quality-gate failure with a fallback note."""
+    log_evaluator_failure(ctx)
+    return "[quality_gate unavailable - result unverified]"
 
-# Actually: return a value = suppress, return None = re-raise
-# For evaluators we want to suppress gracefully
 
-def handle_evaluator_gracefully(ctx: ErrorContext) -> str | None:
-    """Suppress evaluator failures — they're non-critical."""
-    log.debug("evaluator_suppressed_gracefully", error_type=ctx.error_type, error_message=ctx.error_message[:80])
-    return None  # suppress with no fallback output
+def on_safety_scan_error(ctx: ErrorContext) -> None:
+    """Log the safety-scan failure and re-raise it."""
+    log_evaluator_failure(ctx)
+    return None
+
+
+def on_final_check_error(ctx: ErrorContext) -> str:
+    """Log and suppress the final-check failure with a detailed note."""
+    log_evaluator_failure(ctx)
+    return (
+        f"[Evaluator note]: quality check failed ({ctx.error_type}). "
+        "Results may not be verified."
+    )
 
 
 async def main():
@@ -108,12 +111,12 @@ async def main():
 
     memory = InMemoryProvider()
 
-    # ── Example 1: Failing evaluator with suppress handler ──────
-    log.debug("example", example=1, title="Suppress evaluator errors")
+    # ── Example 1: Failing evaluator with fallback ──────────────
+    log.debug("example", example=1, title="Suppress evaluator errors with fallback")
 
     config = (
         ErrorHandlingConfig()
-        .on_evaluator_error(lambda ctx: None)  # suppress completely
+        .on_evaluator_error(on_quality_gate_error)
     )
 
     agent = (
@@ -136,9 +139,7 @@ async def main():
 
     config2 = (
         ErrorHandlingConfig()
-        .on_evaluator_error(
-            lambda ctx: None  # suppress — don't let it kill the run
-        )
+        .on_evaluator_error(on_safety_scan_error)
     )
 
     agent2 = (
@@ -168,14 +169,11 @@ async def main():
         log.debug("status", message="To run all evaluators even if one fails, return a value from the handler.")
 
     # ── Example 3: Suppress with fallback message ───────────────
-    log.debug("example", example=3, title="Suppress evaluator errors with fallback")
+    log.debug("example", example=3, title="Suppress with detailed fallback")
 
     config3 = (
         ErrorHandlingConfig()
-        .on_evaluator_error(
-            lambda ctx: f"[Evaluator note]: quality check failed ({ctx.error_type}). "
-                         "Results may not be verified."
-        )
+        .on_evaluator_error(on_final_check_error)
     )
 
     agent3 = (

@@ -18,7 +18,7 @@ Demonstrates:
   - with_log_enrichment() to attach persistent enrichment to an agent
   - Per-run enrichment via agent.run(enrichment=LogContext().with_(...))
   - Enriched log context flowing to _started, _completed, token_usage events
-  - OTEL log records carrying pipeline, agent_role, and stage keys
+  - Structlog console records carrying pipeline, agent_role, and stage keys
 
 Usage:
     uv run python logging/01_basic_log_context.py

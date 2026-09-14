@@ -12,30 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OpenTelemetry-only structured logging.
+"""Composable structured logging backends.
 
-Every log record is emitted through OpenTelemetry (OTLP export to the
-collector) so the telemetry pipeline has a single egress. Local console output
-is rendered by the OTel ``ConsoleLogExporter`` rather than a separate
-structlog ``PrintLogger`` backend.
-
-Existing ``structlog.get_logger()`` call sites keep working: they are bridged
-to OTel by :func:`configure_structlog_otel_bridge`, which routes structlog
-events into the active :class:`OTELLogger`.
+The application chooses destinations and composes them before injecting a
+``Logger`` into ``Observability``. This module does not configure global
+logging or structlog state.
 """
 
 import contextvars
 import json
 import math
 import os
-import socket
 import sys
 import sysconfig
 from collections.abc import Mapping
 from typing import Protocol, Any
-
-import structlog
-
 
 def _normalize_otel_attr(v: Any) -> Any:
     """Keep OTel-supported primitive types; stringify everything else."""
@@ -106,7 +97,7 @@ def _app_callsite() -> dict:
     Walks the stack from the caller of the logger outward, skipping any frame
     that lives inside the agent_harness package, the Python stdlib, or a
     third-party site-package.  The first "user" frame encountered is treated as
-    the callsite.
+    the callsite. Uses a fast frame walk (no ``inspect.stack()``).
 
     Returns
     -------
@@ -114,17 +105,16 @@ def _app_callsite() -> dict:
         ``code.file.path`` / ``code.function`` / ``code.line.number`` /
         ``code.namespace`` or an empty dict if no suitable frame is found.
     """
-    import inspect
-
-    for frame_info in inspect.stack():
-        filename = frame_info.filename
-        if not _is_harness_or_internal_frame(filename):
+    frame = sys._getframe(1)
+    while frame is not None:
+        if not _is_harness_or_internal_frame(frame.f_code.co_filename):
             return {
-                "code.file.path": os.path.relpath(filename),
-                "code.function": frame_info.function,
-                "code.line.number": frame_info.lineno,
-                "code.namespace": frame_info.frame.f_globals.get("__name__", ""),
+                "code.file.path": os.path.relpath(frame.f_code.co_filename),
+                "code.function": frame.f_code.co_name,
+                "code.line.number": frame.f_lineno,
+                "code.namespace": frame.f_globals.get("__name__", ""),
             }
+        frame = frame.f_back
     return {}
 
 
@@ -233,121 +223,35 @@ class NoOpLogger:
         pass
 
 
-# ── structlog → OTel bridge ────────────────────────────────────────────
-#
-# structlog remains the authoring API used across the examples, but all
-# records are funneled through the active OTELLogger so the only egress is
-# OTLP. ``ReturnLoggerFactory`` prevents structlog from rendering/printing on
-# its own.
-class _StructlogBridge:
-    """Routes structlog events into the active OTel logger."""
+class ConsoleLogger:
+    """Structured logger that writes records to the application console."""
 
-    def __init__(self) -> None:
-        self._active: "OTELLogger | None" = None
-        self._fallback: "OTELLogger | None" = None
-        self._configured = False
+    def __init__(self, stream=None):
+        self.stream = stream or sys.stderr
 
-    def set_active(self, logger: "OTELLogger") -> None:
-        """Make ``logger`` the sink for structlog events and configure structlog."""
-        self._active = logger
-        self.configure()
+    def _write(self, level: str, message: str, context: dict) -> None:
+        suffix = " " + json.dumps(context, default=str, sort_keys=True) if context else ""
+        print(f"[{level.upper()}] {message}{suffix}", file=self.stream, flush=True)
 
-    def resolve(self) -> "OTELLogger | None":
-        """Return the active logger, lazily creating a default if needed.
+    def debug(self, message: str, **context):
+        self._write("debug", message, context)
 
-        The fallback lets ``structlog`` calls emitted before the harness builds
-        its own ``Observability`` still reach OTel (and the console exporter)
-        instead of a non-OTel print backend.
-        """
-        if self._active is not None:
-            return self._active
-        if self._fallback is None:
-            if os.getenv("HARNESS_TELEMETRY_ENABLED", "true").lower() in (
-                "0",
-                "false",
-                "no",
-            ):
-                self._fallback = NoOpLogger()
-                return self._fallback
-            try:
-                console = os.getenv("HARNESS_TELEMETRY_CONSOLE", "true").lower() not in (
-                    "0",
-                    "false",
-                    "no",
-                )
-                self._fallback = OTELLogger(
-                    service_name=os.getenv("OBSERVABILITY_SERVICE_NAME", "agent"),
-                    otlp_endpoint=os.getenv(
-                        "OTEL_COLLECTOR_ENDPOINT", "localhost:4317"
-                    ),
-                    environment=os.getenv("APP_ENV", "development"),
-                    host=socket.gethostname(),
-                    console=console,
-                )
-            except Exception:
-                self._fallback = None
-        return self._fallback
+    def info(self, message: str, **context):
+        self._write("info", message, context)
 
-    def process(self, logger, method_name: str, event_dict: dict) -> dict:
-        """structlog processor that forwards the event to the active logger."""
-        event = event_dict.pop("event", "")
-        active = self.resolve()
-        if active is not None:
-            level = (
-                method_name
-                if method_name in ("debug", "info", "warning", "error")
-                else "info"
-            )
-            context = {
-                k: v
-                for k, v in event_dict.items()
-                if k not in ("level", "timestamp")
-            }
-            # ``message`` is a valid application field in structlog events,
-            # but it is reserved as the positional body in ``_emit``.
-            if "message" in context:
-                context["log.message"] = context.pop("message")
-            active._emit(str(event), level, **context)
-        return event_dict
+    def warning(self, message: str, **context):
+        self._write("warning", message, context)
 
-    def configure(self) -> None:
-        """Install the bridge processors once (idempotent)."""
-        if self._configured:
-            return
-        try:
-            structlog.configure(
-                processors=[
-                    structlog.contextvars.merge_contextvars,
-                    structlog.processors.add_log_level,
-                    structlog.processors.TimeStamper(fmt="iso"),
-                    structlog.processors.StackInfoRenderer(),
-                    structlog.processors.format_exc_info,
-                    self.process,
-                ],
-                context_class=dict,
-                logger_factory=structlog.ReturnLoggerFactory(),
-                cache_logger_on_first_use=False,
-            )
-            self._configured = True
-        except Exception as exc:  # pragma: no cover - defensive
-            print(f"⚠️  Failed to configure structlog→OTel bridge: {exc}")
-
-
-_BRIDGE = _StructlogBridge()
-
-
-def configure_structlog_otel_bridge() -> None:
-    """Configure structlog to emit through OpenTelemetry (idempotent)."""
-    _BRIDGE.configure()
+    def error(self, message: str, **context):
+        self._write("error", message, context)
 
 
 class OTELLogger:
-    """OpenTelemetry structured logging via OTLP gRPC export.
+    """OpenTelemetry structured logging through an injected provider.
 
-    Sends log records to an OTel Collector (or any OTLP endpoint). Records
-    emitted inside an active span automatically carry trace_id/span_id for
-    log-trace correlation. Optionally also renders records to the local
-    console through the OTel ``ConsoleLogExporter``.
+    The application owns the provider and its exporters. Records emitted inside
+    an active span automatically carry trace_id/span_id for log-trace
+    correlation.
 
     Records are emitted under an instrumentation-scope named after the
     ``component`` attribute (falling back to ``service_name``), so backends can
@@ -356,113 +260,30 @@ class OTELLogger:
 
     def __init__(
         self,
+        logger_provider: Any,
         service_name: str = "agent",
-        otlp_endpoint: str = "localhost:4317",
-        headers: dict[str, str] | None = None,
-        runtime: Any = None,
-        flush_on_exit: bool = True,
-        shutdown_on_exit: bool = True,
-        environment: str = "development",
-        host: str | None = None,
-        console: bool = False,
         telemetry_level: str = "standard",
     ):
         """
         Initialize OTEL logging.
 
         Args:
-            service_name: Service name for log records
-            otlp_endpoint: OTel Collector OTLP gRPC endpoint (default: localhost:4317)
-            flush_on_exit: Register an atexit handler that calls
-                ``force_flush()`` on the LoggerProvider before exit (default True).
-            shutdown_on_exit: Register an atexit handler that calls
-                ``shutdown()`` on the LoggerProvider (default True). Implies
-                ``flush_on_exit``.
-            environment: Deployment environment, exported once as the
-                ``deployment.environment`` resource attribute.
-            host: Hostname, exported once as the ``host.name`` resource attribute.
-            console: Also render records to the local console via the OTel
-                ``ConsoleLogExporter``.
+            logger_provider: Application-owned OTel LoggerProvider.
+            service_name: Instrumentation scope name for log records.
             telemetry_level: Granularity level exported as the
                 ``harness.telemetry.level`` resource attribute.
         """
         self.service_name = service_name
-        self.otlp_endpoint = otlp_endpoint
-        self.headers = headers or {}
-        self.runtime = runtime
-        self.environment = environment
-        self.host = host
-        self.console = console
+        self._provider = logger_provider
         self.telemetry_level = telemetry_level
-        self._flush_on_exit = flush_on_exit or shutdown_on_exit
-        self._shutdown_on_exit = shutdown_on_exit
-        self._provider = None
         self._loggers: dict[str, Any] = {}
-        self._shut_down = False
-
-        self._setup_otlp()
-        _BRIDGE.set_active(self)
-
-    def _setup_otlp(self):
-        """Setup OTLP log exporter."""
-        try:
-            from opentelemetry._logs import SeverityNumber
-            from opentelemetry.sdk._logs import LoggerProvider
-            from opentelemetry.sdk._logs.export import (
-                BatchLogRecordProcessor,
-                ConsoleLogExporter,
-                SimpleLogRecordProcessor,
-            )
-            from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
-                OTLPLogExporter,
-            )
-
-            from ._otel import build_resource, register_atexit
-
-            resource = self.runtime.resource if self.runtime else build_resource(
-                self.service_name,
-                environment=self.environment,
-                host=self.host,
-                telemetry_level=self.telemetry_level,
-                extra={"service.version": os.getenv("SERVICE_VERSION", "0.1.0")},
-            )
-
-            exporter = OTLPLogExporter(
-                endpoint=self.otlp_endpoint,
-                headers=self.headers or None,
-                insecure=True,
-            )
-            self._provider = LoggerProvider(resource=resource)
-            self._provider.add_log_record_processor(
-                BatchLogRecordProcessor(exporter)
-            )
-            if self.console:
-                self._provider.add_log_record_processor(
-                    SimpleLogRecordProcessor(ConsoleLogExporter())
-                )
-
-            self._severity_map = {
-                "debug": SeverityNumber.DEBUG,
-                "info": SeverityNumber.INFO,
-                "warning": SeverityNumber.WARN,
-                "error": SeverityNumber.ERROR,
-            }
-
-            print(f"✅ OTEL logging initialized: {self.otlp_endpoint}")
-
-            if self.runtime:
-                self.runtime.register(self._provider)
-            else:
-                register_atexit(
-                    self._provider,
-                    flush_on_exit=self._flush_on_exit,
-                    shutdown_on_exit=self._shutdown_on_exit,
-                    is_shut_down=lambda: self._shut_down,
-                )
-
-        except Exception as e:
-            print(f"⚠️  Failed to setup OTEL logging: {str(e)}")
-            self._provider = None
+        from opentelemetry._logs import SeverityNumber
+        self._severity_map = {
+            "debug": SeverityNumber.DEBUG,
+            "info": SeverityNumber.INFO,
+            "warning": SeverityNumber.WARN,
+            "error": SeverityNumber.ERROR,
+        }
 
     def _logger_for(self, component: str):
         """Return (and cache) the OTel logger for an instrumentation scope."""
@@ -492,10 +313,11 @@ class OTELLogger:
         # OTel semantic convention for a log event name; Elasticsearch maps this
         # to the aggregatable top-level `event_name` keyword field.
         attrs["event.name"] = event_name
-        # Attach the application callsite only for actionable severities, and
-        # never clobber an exception's raise-site `code.*` fields. This keeps
-        # info-level records lean and avoids the per-emit `inspect.stack()` cost.
-        if severity in ("warning", "error") and "code.file.path" not in attrs:
+        # Attach the application callsite to every record, unless an
+        # exception's raise-site ``code.*`` fields were already projected in
+        # (errors carry the deepest user frame from the traceback). Uses a fast
+        # frame walk, so the cost is acceptable even at DEBUG/INFO.
+        if "code.file.path" not in attrs:
             attrs.update(_app_callsite())
         logger.emit(
             severity_number=severity_number,
@@ -521,23 +343,11 @@ class OTELLogger:
         self._emit(message, "error", **context)
 
     def close(self):
-        """Flush and shut down the OTLP log provider."""
-        if self._provider:
-            try:
-                self._provider.force_flush()
-                self._provider.shutdown()
-            except Exception:
-                pass
-            self._provider = None
-            self._loggers = {}
-            self._shut_down = True
+        """Clear adapter state without shutting down the app-owned provider."""
+        self._loggers = {}
 
     def shutdown(self):
-        """Explicitly flush and shut down the OTLP log provider.
-
-        Call this for deterministic cleanup in long-running processes or
-        when ``flush_on_exit=False``.
-        """
+        """Do not shut down the application-owned provider."""
         self.close()
 
 

@@ -53,7 +53,7 @@ import structlog
 from agent_harness.agent import ManagedAgent
 from agent_harness.memory import InMemoryProvider, MessageHistory
 from agent_harness.model_config import ModelConfig
-from agent_harness.observability import Observability
+from agent_harness.telemetry import configure_otlp
 
 load_dotenv()
 
@@ -83,7 +83,8 @@ async def main():
     log.debug("separator", char="=", count=60)
 
     log.debug("checking_collector", endpoint=OTEL_COLLECTOR)
-    otel_ok = await check_port("localhost", 4317)
+    otel_host, _, otel_port = OTEL_COLLECTOR.partition(":")
+    otel_ok = await check_port(otel_host or "localhost", int(otel_port or 4317))
     log.debug("collector_status", reachable=otel_ok)
 
     if not otel_ok:
@@ -91,46 +92,46 @@ async def main():
         log.debug("docker_command", command="docker compose -f docker-compose.yml up -d otel-collector")
         return
 
-    obs = Observability.configure(
+    obs = configure_otlp(
         service_name=SERVICE_NAME,
         endpoint=OTEL_COLLECTOR,
     )
 
-    agent = (
-        ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
-        .with_model_settings({"max_tokens": MAX_TOKENS})
-        .with_observability(obs)
-    )
-
-    memory = InMemoryProvider()
-    session = "otel-agent-session"
-
-    conversations = [
-        "My name is Carol and I live in Tokyo.",
-        "What is 7 * 8? Just the number.",
-        "Based on our conversation, what is my name and where do I live?",
-    ]
-
-    log.debug("section", title="Multi-turn conversation", session=session)
-    for i, prompt in enumerate(conversations, 1):
-        history = await MessageHistory().load(session, memory)
-        result = await agent.run(
-            prompt,
-            history,
-            session,
-            save_to=[memory],
+    async with obs:
+        agent = (
+            ManagedAgent()
+            .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+            .with_model_settings({"max_tokens": MAX_TOKENS})
+            .with_observability(obs)
         )
-        status = "success" if result.success else "error"
-        log.debug("turn", turn=i, status=status, output=result.output[:100])
-        obs.info("turn_completed", turn=i, session_id=session, status=status)
 
-    log.debug("separator", char="=", count=60)
-    log.debug("view_traces", url="http://localhost:16686")
-    log.debug("service_filter", service_name=SERVICE_NAME)
-    log.debug("info", detail="Each agent.run() + tool call creates spans automatically.")
-    log.debug("separator", char="=", count=60)
-    await obs.shutdown()
+        memory = InMemoryProvider()
+        session = "otel-agent-session"
+
+        conversations = [
+            "My name is Carol and I live in Tokyo.",
+            "What is 7 * 8? Just the number.",
+            "Based on our conversation, what is my name and where do I live?",
+        ]
+
+        log.debug("section", title="Multi-turn conversation", session=session)
+        for i, prompt in enumerate(conversations, 1):
+            history = await MessageHistory().load(session, memory)
+            result = await agent.run(
+                prompt,
+                history,
+                session,
+                save_to=[memory],
+            )
+            status = "success" if result.success else "error"
+            log.debug("turn", turn=i, status=status, output=result.output[:100])
+            obs.info("turn_completed", turn=i, session_id=session, status=status)
+
+        log.debug("separator", char="=", count=60)
+        log.debug("view_traces", url="http://localhost:16686")
+        log.debug("service_filter", service_name=SERVICE_NAME)
+        log.debug("info", detail="Each agent.run() + tool call creates spans automatically.")
+        log.debug("separator", char="=", count=60)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ Demonstrates:
   - Agent run instrumented end-to-end with a single Observability facade
   - Tool calls with RunContext for structured logging
   - Failure telemetry (record_failures=True): exceptions surface in traces
-  - ObservabilityBuilder.with_otel_observability() convenience method
+  - Explicit application-owned setup via Observability.configure(...)
 
 Architecture:
     agent_harness  --OTLP gRPC:4317-->  otel-collector  --otlphttp-->  Elasticsearch (logs)
@@ -151,7 +151,8 @@ async def main():
     log.debug("separator", char="=", count=60)
 
     log.debug("checking_collector", endpoint=OTEL_ENDPOINT)
-    otel_ok = await check_port("localhost", 4317)
+    otel_host, _, otel_port = OTEL_ENDPOINT.partition(":")
+    otel_ok = await check_port(otel_host or "localhost", int(otel_port or 4317))
     log.debug("collector_status", reachable=otel_ok)
 
     if not otel_ok:
@@ -165,59 +166,59 @@ async def main():
         sample_rate=1.0,
     )
 
-    log.debug("loggers", loggers=[type(lg).__name__ for lg in obs._loggers])
-    log.debug("tracers", tracers=[type(t).__name__ for t in obs._tracers])
-    log.debug("metrics", metrics=[type(m).__name__ for m in obs._metrics])
+    async with obs:
+        log.debug("loggers", loggers=[type(lg).__name__ for lg in obs._loggers])
+        log.debug("tracers", tracers=[type(t).__name__ for t in obs._tracers])
+        log.debug("metrics", metrics=[type(m).__name__ for m in obs._metrics])
 
-    obs.info("agent_initialized", version="0.1.0", pid=12345)
-    obs.warning("rate_limit_approaching", remaining=10, limit=500)
-    await asyncio.sleep(1)
+        obs.info("agent_initialized", version="0.1.0", pid=12345)
+        obs.warning("rate_limit_approaching", remaining=10, limit=500)
+        await asyncio.sleep(1)
 
-    session_id = "all-in-one-observability-session"
-    agent = (
-        ManagedAgent()
-        .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
-        .with_model_settings({"max_tokens": MAX_TOKENS})
-        .with_prompts(StaticPrompts(
-            "You are a helpful assistant with weather and calculator tools. "
-            "You MUST use the tools to answer questions. "
-            "Call get_weather for each city, then calculator to compute the average. "
-            "Never provide answers from memory."
-        ))
-        .with_deps_type(ToolDeps)
-        .with_observability(obs)
-        .with_tools(ToolRegistry().add_many(get_weather, calculator))
-    )
+        session_id = "all-in-one-observability-session"
+        agent = (
+            ManagedAgent()
+            .with_model(ModelConfig(provider="ollama", model_name=MODEL_NAME))
+            .with_model_settings({"max_tokens": MAX_TOKENS})
+            .with_prompts(StaticPrompts(
+                "You are a helpful assistant with weather and calculator tools. "
+                "You MUST use the tools to answer questions. "
+                "Call get_weather for each city, then calculator to compute the average. "
+                "Never provide answers from memory."
+            ))
+            .with_deps_type(ToolDeps)
+            .with_observability(obs)
+            .with_tools(ToolRegistry().add_many(get_weather, calculator))
+        )
 
-    memory = InMemoryProvider()
-    history = await MessageHistory().load(session_id, memory)
-    deps = ToolDeps(observability=obs, session_id=session_id)
-    result = await agent.run(
-        "What is the average temperature (in °C) of Tokyo, London, and New York? "
-        "Use get_weather for each city, then calculator.",
-        history,
-        session_id,
-        deps=deps,
-        save_to=[memory],
-    )
-    log.debug("agent_response", output=result.output)
+        memory = InMemoryProvider()
+        history = await MessageHistory().load(session_id, memory)
+        deps = ToolDeps(observability=obs, session_id=session_id)
+        result = await agent.run(
+            "What is the average temperature (in °C) of Tokyo, London, and New York? "
+            "Use get_weather for each city, then calculator.",
+            history,
+            session_id,
+            deps=deps,
+            save_to=[memory],
+        )
+        log.debug("agent_response", output=result.output)
 
-    if DEMO_FAILURES:
-        log.debug("section", title="Failure telemetry demo")
+        if DEMO_FAILURES:
+            log.debug("section", title="Failure telemetry demo")
 
-        async def _fail_guardrail():
-            raise RuntimeError("output guard rejected: hallucination score 0.87")
+            async def _fail_guardrail():
+                raise RuntimeError("output guard rejected: hallucination score 0.87")
 
-        try:
-            async with obs.observe("guardrail_eval", guard="output", session_id=session_id):
-                await _fail_guardrail()
-        except RuntimeError as e:
-            log.debug("expected_error", error_type=type(e).__name__, error=str(e))
+            try:
+                async with obs.observe("guardrail_eval", guard="output", session_id=session_id):
+                    await _fail_guardrail()
+            except RuntimeError as e:
+                log.debug("expected_error", error_type=type(e).__name__, error=str(e))
 
-    log.debug("section", title="Flushing OTLP batch exporters")
-    await asyncio.sleep(7)
-    await obs.shutdown()
-    log.debug("flushed")
+        log.debug("section", title="Flushing OTLP batch exporters")
+        await asyncio.sleep(7)
+        log.debug("flushed")
 
     log.debug("separator", char="=", count=60)
     log.debug("view_data")

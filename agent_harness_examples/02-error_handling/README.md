@@ -263,13 +263,16 @@ Defines two evaluators:
 
 Three sub-examples:
 
-1. **Suppress** — `on_evaluator_error` returns a value, suppressing the failure. Agent output is the normal LLM response.
+1. **Suppress with a fallback** — `on_evaluator_error` returns a value, suppressing the failure. The returned value replaces `AgentRunResult.output`.
 
 2. **Mixed evaluators** — First evaluator raises, handler returns `None` (re-raise). The `RuntimeError` propagates and the second evaluator (`WorkingEvaluator`) never runs.
 
-3. **Suppress with fallback** — Handler returns `"[Evaluator note]: quality check failed..."` which becomes part of the output. Agent continues normally.
+3. **Suppress with detailed fallback** — Handler returns `"[Evaluator note]: quality check failed..."`, which replaces the output. Agent continues normally.
 
 Evaluator failures previously were silently swallowed; now they propagate to the error handler with `source="evaluator"`.
+Each example handler also calls `log.error("evaluator_failed", ...)` before
+suppressing or re-raising the failure, so the failure remains visible when
+telemetry export is disabled.
 
 **Model:** `gpt-oss:20b` (working).
 
