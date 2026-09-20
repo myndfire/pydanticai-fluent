@@ -20,7 +20,19 @@ from dataclasses import field, asdict
 from datetime import datetime
 from typing import Protocol, Any, Optional, List
 
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
+import pydantic
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelRequestPart,
+    ModelResponse,
+    ModelResponsePart,
+)
+
+# pydantic-ai 2.x models message parts as dataclasses (no ``model_dump`` /
+# ``model_validate``). This adapter is the canonical way to (de)serialize any
+# request or response part, preserving tool names/ids/args and nested content.
+_MESSAGE_PART_ADAPTER = pydantic.TypeAdapter(ModelRequestPart | ModelResponsePart)
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -128,7 +140,7 @@ def filter_thinking_parts(messages: List[ModelMessage]) -> List[dict]:
 def _serialize_message_part(part: Any) -> dict[str, Any]:
     """Preserve the complete PydanticAI part when storage supports JSON."""
     try:
-        data = part.model_dump(mode="json")
+        data = _MESSAGE_PART_ADAPTER.dump_python(part, mode="json")
     except Exception:
         data = {"content": getattr(part, "content", "")}
     return {"type": type(part).__name__, **data}
@@ -219,15 +231,14 @@ class MessageHistory:
 
 def _deserialize_message_part(data: dict[str, Any], fallback: type) -> Any:
     """Rebuild a stored part while retaining tool-call and metadata fields."""
-    from pydantic_ai import messages
-
-    part_type = getattr(messages, data.get("type", ""), None)
     payload = {key: value for key, value in data.items() if key != "type"}
-    if part_type is not None and hasattr(part_type, "model_validate"):
-        try:
-            return part_type.model_validate(payload)
-        except Exception:
-            pass
+    try:
+        return _MESSAGE_PART_ADAPTER.validate_python(payload)
+    except Exception:
+        pass
+
+    # Legacy records (pre pydantic-ai 2.x) stored only ``content`` for parts
+    # that lacked ``model_dump``; fall back to the caller's simplified part.
     return fallback(content=payload.get("content", ""))
 
 # ---------------------------------------------------------------------------
